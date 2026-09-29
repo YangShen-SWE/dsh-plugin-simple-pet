@@ -1,0 +1,10 @@
+work/
+node_modules/
+.env
+.env.*
+*.log
+state-*.json
+stats-*.json
+settings*.json
+.credentials.*
+.DS_Store

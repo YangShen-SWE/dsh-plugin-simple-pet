@@ -1,0 +1,213 @@
+function Get-StatDay([string]$key) {
+  if ($null -eq $script:Stats -or $null -eq $script:Stats.days) { return $null }
+  $property = $script:Stats.days.PSObject.Properties[$key]
+  if ($null -eq $property) { return $null }
+  return $property.Value
+}
+
+function Format-StatCny([double]$value) {
+  if ($value -eq 0) { return '¥0.00' }
+  if ($value -lt 1) { return '¥' + $value.ToString('0.########') }
+  return '¥' + $value.ToString('N2')
+}
+
+function Add-ChartText($canvas, [string]$value, [double]$x, [double]$y, [double]$width = 56) {
+  $label = New-Object Windows.Controls.TextBlock
+  $label.Text = $value
+  $label.Width = $width
+  $label.TextAlignment = 'Center'
+  $label.FontFamily = New-Object Windows.Media.FontFamily('Microsoft YaHei')
+  $label.FontSize = 10
+  $label.Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString('#A9CEE2')
+  [Windows.Controls.Canvas]::SetLeft($label, $x - $width / 2)
+  [Windows.Controls.Canvas]::SetTop($label, $y)
+  [void]$canvas.Children.Add($label)
+}
+
+function Update-SettingsStats {
+  if ($null -eq $script:SettingsWindow -or -not $script:SettingsWindow.IsVisible) { return }
+  $statsReady = $null -ne $script:Stats -and $null -ne $script:Stats.days
+  $today = [DateTime]::Today
+  $entry = Get-StatDay ($today.ToString('yyyy-MM-dd'))
+  $tokens = if ($entry) { [int64]$entry.tokens } else { 0 }
+  $script:SettingsTokens.Text = if ($statsReady) { $tokens.ToString('N0') } else { '—' }
+  $script:SettingsCost.Text = if ($statsReady) { Format-StatCny $(if ($entry) { [double]$entry.cny } else { 0 }) } else { '—' }
+  $inputTotal = if ($entry) { [double]$entry.inputTokens + [double]$entry.cacheReadTokens } else { 0 }
+  $script:SettingsHitRate.Text = if ($inputTotal -gt 0) { '{0:N1}%' -f (100 * [double]$entry.cacheReadTokens / $inputTotal) } else { '—' }
+  $script:SettingsNote.Text = if (-not $statsReady) {
+    '等待 DSH 加载新版统计；重启 DSH 后，今日用量将从可用的记录开始显示。'
+  } elseif ($entry -and [double]$entry.unpricedTokens -gt 0) {
+    '部分 Token 的模型价格未知，人民币仅包含已计价部分。'
+  } elseif ($script:Stats -and $script:Stats.partialSince) {
+    '已补录升级时保存的最近事件；更早的历史可能缺失。人民币为用量估算。'
+  } else { '人民币为用量估算；统计从本版本首次启用后开始。' }
+
+  $unit = if ($script:ChartUnit.SelectedIndex -eq 1) { 'tokens' } else { 'cny' }
+  $range = $script:ChartRange.SelectedIndex
+  $buckets = New-Object System.Collections.ArrayList
+  if ($range -eq 0) {
+    $offset = (([int]$today.DayOfWeek + 6) % 7)
+    $first = $today.AddDays(-$offset)
+    for ($i = 0; $i -lt 7; $i++) {
+      $date = $first.AddDays($i)
+      $value = Get-StatDay ($date.ToString('yyyy-MM-dd'))
+      [void]$buckets.Add([pscustomobject]@{ label = @('一','二','三','四','五','六','日')[$i]; value = if ($value) { [double]$value.$unit } else { 0 } })
+    }
+  } elseif ($range -eq 1) {
+    $count = [DateTime]::DaysInMonth($today.Year, $today.Month)
+    for ($i = 1; $i -le $count; $i++) {
+      $date = [DateTime]::new($today.Year, $today.Month, $i)
+      $value = Get-StatDay ($date.ToString('yyyy-MM-dd'))
+      [void]$buckets.Add([pscustomobject]@{ label = [string]$i; value = if ($value) { [double]$value.$unit } else { 0 } })
+    }
+  } else {
+    for ($month = 1; $month -le 12; $month++) {
+      $sum = 0.0
+      $days = [DateTime]::DaysInMonth($today.Year, $month)
+      for ($i = 1; $i -le $days; $i++) {
+        $key = [DateTime]::new($today.Year, $month, $i).ToString('yyyy-MM-dd')
+        $value = Get-StatDay $key
+        if ($value) { $sum += [double]$value.$unit }
+      }
+      [void]$buckets.Add([pscustomobject]@{ label = [string]$month; value = $sum })
+    }
+  }
+
+  $canvas = $script:ChartCanvas
+  $canvas.Children.Clear()
+  $left = 61.0; $top = 18.0; $width = 515.0; $height = 158.0
+  $max = 0.0
+  foreach ($bucket in $buckets) { $max = [math]::Max($max, [double]$bucket.value) }
+  $axisMax = if ($max -gt 0) { $max * 1.18 } else { 1.0 }
+  for ($line = 0; $line -le 3; $line++) {
+    $y = $top + $height * $line / 3
+    $grid = New-Object Windows.Shapes.Line
+    $grid.X1 = $left; $grid.X2 = $left + $width; $grid.Y1 = $y; $grid.Y2 = $y
+    $grid.Stroke = [Windows.Media.BrushConverter]::new().ConvertFromString('#345F78')
+    $grid.StrokeThickness = 1
+    [void]$canvas.Children.Add($grid)
+    $tick = $axisMax * (1 - $line / 3)
+    $tickText = if ($unit -eq 'tokens') { [math]::Round($tick).ToString('N0') } else { if ($tick -lt .01) { $tick.ToString('0.####') } else { $tick.ToString('0.##') } }
+    Add-ChartText $canvas $tickText 24 ($y - 7) 49
+  }
+  $path = New-Object Windows.Shapes.Polyline
+  $path.Stroke = [Windows.Media.BrushConverter]::new().ConvertFromString('#6BE3FF')
+  $path.StrokeThickness = 2.5
+  $path.StrokeLineJoin = [Windows.Media.PenLineJoin]::Round
+  for ($i = 0; $i -lt $buckets.Count; $i++) {
+    $x = $left + $width * $i / [math]::Max(1, $buckets.Count - 1)
+    $y = $top + $height * (1 - [double]$buckets[$i].value / $axisMax)
+    [void]$path.Points.Add([Windows.Point]::new($x, $y))
+    if ($buckets[$i].value -gt 0) {
+      $dot = New-Object Windows.Shapes.Ellipse
+      $dot.Width = 7; $dot.Height = 7
+      $dot.Fill = [Windows.Media.Brushes]::LightCyan
+      [Windows.Controls.Canvas]::SetLeft($dot, $x - 3.5)
+      [Windows.Controls.Canvas]::SetTop($dot, $y - 3.5)
+      [void]$canvas.Children.Add($dot)
+    }
+    $showLabel = $range -ne 1 -or $i -eq 0 -or $i -eq ($buckets.Count - 1) -or ($i + 1) % 7 -eq 0
+    if ($showLabel) { Add-ChartText $canvas $buckets[$i].label $x 184 28 }
+  }
+  [void]$canvas.Children.Insert(4, $path)
+  if ($max -eq 0) { Add-ChartText $canvas $(if ($statsReady) { '当前周期暂无记录' } else { '等待 DSH 加载统计' }) 320 95 160 }
+}
+
+function Show-PetSettings {
+  if ($script:SettingsWindow -and $script:SettingsWindow.IsVisible) {
+    [void]$script:SettingsWindow.Activate()
+    return
+  }
+  $settingsXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="dsh-plugin-simple-pet 设置" Width="680" Height="625"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        Background="Transparent" ShowInTaskbar="False" Topmost="True">
+  <Border CornerRadius="22" BorderThickness="1" BorderBrush="#82CEEC">
+    <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+      <GradientStop Color="#102F51" Offset="0"/><GradientStop Color="#1B4964" Offset="1"/>
+    </LinearGradientBrush></Border.Background>
+    <Border.Effect><DropShadowEffect Color="#0A2039" BlurRadius="24" ShadowDepth="8" Opacity="0.55"/></Border.Effect>
+    <Grid Margin="25,20,25,23">
+      <Grid.RowDefinitions><RowDefinition Height="62"/><RowDefinition Height="83"/><RowDefinition Height="118"/><RowDefinition Height="*"/><RowDefinition Height="25"/></Grid.RowDefinitions>
+      <Grid Grid.Row="0">
+        <StackPanel><TextBlock Text="桌宠设置" FontFamily="Microsoft YaHei" FontSize="23" FontWeight="Bold" Foreground="White"/>
+          <TextBlock Text="DEEPSEEK · SIMPLE DESKTOP PET" FontFamily="Segoe UI" FontSize="10" Foreground="#9BCFE2"/></StackPanel>
+        <Button Name="CloseSettings" Content="×" Width="32" Height="32" HorizontalAlignment="Right" VerticalAlignment="Top"
+                FontSize="21" Foreground="White" Background="#315E7A" BorderBrush="#6599B6" Cursor="Hand"/>
+      </Grid>
+      <Border Grid.Row="1" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,10">
+        <Grid Margin="16,10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <StackPanel VerticalAlignment="Center"><TextBlock Text="打瞌睡等待时间" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+            <TextBlock Text="官方 DeepSeek 模型无调用后开始打瞌睡" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3"/></StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBox Name="SleepInput" Width="55" Height="31" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" BorderThickness="1" VerticalContentAlignment="Center"/>
+            <TextBlock Text="分钟" Foreground="#C5E6F3" FontFamily="Microsoft YaHei" VerticalAlignment="Center" Margin="7,0,12,0"/>
+            <Button Name="SaveSleep" Content="保存" Width="61" Height="31" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" FontFamily="Microsoft YaHei" Cursor="Hand"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+      <Grid Grid.Row="2" Margin="0,0,0,11">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
+          <TextBlock Text="今日 Token 消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+          <TextBlock Name="TodayTokens" Text="0" Foreground="White" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" Margin="0,7,0,0"/>
+        </StackPanel></Border>
+        <Border Grid.Column="2" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
+          <TextBlock Text="今日缓存命中率" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+          <TextBlock Name="TodayHitRate" Text="—" Foreground="#7DE9FF" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" Margin="0,7,0,0"/>
+        </StackPanel></Border>
+        <Border Grid.Column="4" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
+          <TextBlock Text="今日人民币消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+          <TextBlock Name="TodayCost" Text="¥0.00" Foreground="#FFE2A7" FontFamily="Segoe UI" FontSize="22" FontWeight="Bold" Margin="0,10,0,0"/>
+        </StackPanel></Border>
+      </Grid>
+      <Border Grid.Row="3" Background="#123653" CornerRadius="15" BorderBrush="#457A98" BorderThickness="1">
+        <Grid Margin="15,12"><Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <Grid Grid.Row="0"><TextBlock Text="周期消耗趋势" FontFamily="Microsoft YaHei" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+              <ComboBox Name="ChartUnit" Width="89" Height="27" SelectedIndex="0" Margin="0,0,8,0" Foreground="#17384F" Background="White">
+                <ComboBoxItem Content="人民币"/><ComboBoxItem Content="Token"/>
+              </ComboBox>
+              <ComboBox Name="ChartRange" Width="74" Height="27" SelectedIndex="0" Foreground="#17384F" Background="White">
+                <ComboBoxItem Content="本周"/><ComboBoxItem Content="本月"/><ComboBoxItem Content="本年"/>
+              </ComboBox>
+            </StackPanel></Grid>
+          <Canvas Name="ChartCanvas" Grid.Row="1" Width="600" Height="210" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+        </Grid>
+      </Border>
+      <TextBlock Name="StatsNote" Grid.Row="4" Text="人民币为用量估算；统计从本版本首次启用后开始。"
+                 FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A5C9DA" VerticalAlignment="Bottom"/>
+    </Grid>
+  </Border>
+</Window>
+'@
+  $script:SettingsWindow = [Windows.Markup.XamlReader]::Parse($settingsXaml)
+  $script:SettingsWindow.Owner = $script:Window
+  $script:SettingsWindow.Left = [math]::Max(10, [math]::Min([Windows.SystemParameters]::WorkArea.Right - 690, $script:Window.Left - 390))
+  $script:SettingsWindow.Top = [math]::Max(10, [math]::Min([Windows.SystemParameters]::WorkArea.Bottom - 635, $script:Window.Top - 270))
+  $script:SettingsTokens = $script:SettingsWindow.FindName('TodayTokens')
+  $script:SettingsHitRate = $script:SettingsWindow.FindName('TodayHitRate')
+  $script:SettingsCost = $script:SettingsWindow.FindName('TodayCost')
+  $script:SettingsNote = $script:SettingsWindow.FindName('StatsNote')
+  $script:ChartCanvas = $script:SettingsWindow.FindName('ChartCanvas')
+  $script:ChartUnit = $script:SettingsWindow.FindName('ChartUnit')
+  $script:ChartRange = $script:SettingsWindow.FindName('ChartRange')
+  $script:SleepInput = $script:SettingsWindow.FindName('SleepInput')
+  $script:SleepInput.Text = [string]$script:Prefs.sleepMinutes
+  ($script:SettingsWindow.FindName('CloseSettings')).Add_Click({ $script:SettingsWindow.Close() })
+  ($script:SettingsWindow.FindName('SaveSleep')).Add_Click({
+    $number = 0
+    if ([int]::TryParse($script:SleepInput.Text, [ref]$number) -and $number -ge 1 -and $number -le 240) {
+      $script:Prefs.sleepMinutes = $number
+      Save-Prefs
+      $script:SleepInput.BorderBrush = [Windows.Media.Brushes]::PaleGreen
+    } else { $script:SleepInput.BorderBrush = [Windows.Media.Brushes]::Salmon }
+  })
+  $script:ChartUnit.Add_SelectionChanged({ Update-SettingsStats })
+  $script:ChartRange.Add_SelectionChanged({ Update-SettingsStats })
+  $script:SettingsWindow.Add_Closed({ $script:SettingsWindow = $null })
+  $script:SettingsWindow.Show()
+  Update-SettingsStats
+}

@@ -1,0 +1,604 @@
+param([ValidateSet('desktop', 'web')][string]$DshProfile = 'desktop', [switch]$Preview,
+      [switch]$PreviewSleep, [switch]$PreviewSettings, [switch]$PreviewChartYear)
+
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+$ErrorActionPreference = 'Stop'
+$created = $false
+$mutexName = if ($Preview) { 'Local\DshSimpleDesktopPetPreview' } else { 'Local\DshSimpleDesktopPet' }
+$script:SingleInstance = New-Object Threading.Mutex($true, $mutexName, [ref]$created)
+if (-not $created) { exit 0 }
+$script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
+$script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
+$script:SettingsFile = Join-Path $script:DataDir $(if ($Preview) { 'settings-preview.json' } else { 'settings.json' })
+New-Item -ItemType Directory -Path $script:DataDir -Force | Out-Null
+if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
+  $legacySettings = Join-Path (Join-Path $env:LOCALAPPDATA 'DshDeepSeekPet') 'settings.json'
+  if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile }
+}
+
+$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; sleepMinutes = 10; left = $null; top = $null }
+if (Test-Path -LiteralPath $script:SettingsFile) {
+  try {
+    $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($key in @('skin', 'unit', 'size', 'sleepMinutes', 'left', 'top')) {
+      if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
+    }
+  } catch { }
+}
+if ($script:Prefs.skin -notin @('default', 'night')) { $script:Prefs.skin = 'default' }
+if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
+if ($script:Prefs.size -notin @('small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
+if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
+$script:Prefs.sleepMinutes = [math]::Max(1, [math]::Min(240, [int]$script:Prefs.sleepMinutes))
+
+function Save-Prefs {
+  $script:Prefs.left = [math]::Round($script:Window.Left, 0)
+  $script:Prefs.top = [math]::Round($script:Window.Top, 0)
+  $script:Prefs | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+}
+
+$xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeepSeek 米饭桌宠" Width="272" Height="296"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        Background="Transparent" Topmost="True" ShowInTaskbar="False"
+        SnapsToDevicePixels="True">
+  <Viewbox Stretch="Fill">
+  <Canvas Name="Root" Width="272" Height="296" Background="Transparent">
+    <Border Name="Card" Canvas.Left="5" Canvas.Top="199" Width="262" Height="92"
+            CornerRadius="17" BorderThickness="1" BorderBrush="#91DFFA" Background="#0C3D64"
+            Canvas.ZIndex="1" Cursor="SizeAll">
+      <Border.Effect>
+        <DropShadowEffect Color="#092A46" BlurRadius="15" ShadowDepth="5" Opacity="0.32"/>
+      </Border.Effect>
+      <Canvas Width="260" Height="90">
+        <TextBlock Name="CardHeader" Canvas.Left="13" Canvas.Top="26" Text="DEEPSEEK · API 余额"
+                   FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
+        <Border Name="PriceBadge" Canvas.Left="175" Canvas.Top="24" Width="78" Height="20"
+                CornerRadius="8" Background="#1D5B75">
+          <TextBlock Name="Mode" TextAlignment="Center" VerticalAlignment="Center"
+                     FontFamily="Microsoft YaHei" FontSize="9.5" FontWeight="Bold" Foreground="#D8F7FF"/>
+        </Border>
+        <TextBlock Name="Balance" Canvas.Left="13" Canvas.Top="49" Width="150"
+                   Text="查询中…" FontFamily="Microsoft YaHei" FontSize="26" FontWeight="Bold" Foreground="White"/>
+        <Border Canvas.Left="165" Canvas.Top="58" Width="1" Height="20" Background="#458BAC"/>
+        <TextBlock Name="Rate" Canvas.Left="174" Canvas.Top="66" Width="80" TextAlignment="Right"
+                   Text="缓存命中 —" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A8EEFF"/>
+      </Canvas>
+    </Border>
+    <Grid Name="SpriteLayer" Canvas.Left="17" Canvas.Top="-15" Width="238" Height="238"
+          Canvas.ZIndex="2" Cursor="SizeAll" RenderTransformOrigin="0.5,0.8">
+      <Grid.CacheMode><BitmapCache RenderAtScale="1.25"/></Grid.CacheMode>
+      <Image Name="Sprite" Stretch="Fill"/>
+      <Image Name="OldSprite" Stretch="Fill" Opacity="0" IsHitTestVisible="False"/>
+    </Grid>
+    <Path Name="CriticalMark" Canvas.Left="19" Canvas.Top="91" Canvas.ZIndex="3"
+          Data="M 17,0 L 5,10 L 13,13 L 0,29 M 28,3 L 20,13 L 27,17 L 16,31"
+          Stroke="#FF595F" StrokeThickness="3" StrokeStartLineCap="Round"
+          StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+    <TextBlock Name="SleepMark" Canvas.Left="190" Canvas.Top="39" Canvas.ZIndex="3"
+               Text="Zzz" FontFamily="Segoe UI" FontSize="22" FontWeight="Bold"
+               Foreground="#A8F2FF" Visibility="Collapsed" IsHitTestVisible="False">
+      <TextBlock.Effect><DropShadowEffect Color="#16374C" BlurRadius="5" ShadowDepth="2" Opacity="0.9"/></TextBlock.Effect>
+    </TextBlock>
+  </Canvas>
+  </Viewbox>
+</Window>
+'@
+
+$script:Window = [Windows.Markup.XamlReader]::Parse($xaml)
+$script:Root = $script:Window.FindName('Root')
+$script:Card = $script:Window.FindName('Card')
+$script:CardHeader = $script:Window.FindName('CardHeader')
+$script:SpriteLayer = $script:Window.FindName('SpriteLayer')
+$script:Sprite = $script:Window.FindName('Sprite')
+$script:OldSprite = $script:Window.FindName('OldSprite')
+$script:Balance = $script:Window.FindName('Balance')
+$script:Rate = $script:Window.FindName('Rate')
+$script:ModeLabel = $script:Window.FindName('Mode')
+$script:PriceBadge = $script:Window.FindName('PriceBadge')
+$script:CriticalMark = $script:Window.FindName('CriticalMark')
+$script:SleepMark = $script:Window.FindName('SleepMark')
+foreach ($name in @('Root', 'Card', 'CardHeader', 'SpriteLayer', 'Sprite', 'OldSprite', 'Balance', 'Rate', 'ModeLabel', 'PriceBadge', 'CriticalMark', 'SleepMark')) {
+  if ($null -eq (Get-Variable -Name $name -Scope Script -ValueOnly)) { throw "XAML element missing: $name" }
+}
+
+$script:Scale = New-Object Windows.Media.ScaleTransform
+$script:Rotate = New-Object Windows.Media.RotateTransform
+$script:Move = New-Object Windows.Media.TranslateTransform
+$script:SpriteTransform = New-Object Windows.Media.TransformGroup
+[void]$script:SpriteTransform.Children.Add($script:Scale)
+[void]$script:SpriteTransform.Children.Add($script:Rotate)
+[void]$script:SpriteTransform.Children.Add($script:Move)
+$script:SpriteLayer.RenderTransform = $script:SpriteTransform
+$script:BalanceScale = New-Object Windows.Media.ScaleTransform
+$script:Balance.RenderTransformOrigin = [Windows.Point]::new(0, 0.5)
+$script:Balance.RenderTransform = $script:BalanceScale
+$script:Sizes = @{ small = 0.85; medium = 1.0; large = 1.25 }
+function Set-PetSize {
+  $scale = [double]$script:Sizes[$script:Prefs.size]
+  $script:Window.Width = 272 * $scale
+  $script:Window.Height = 296 * $scale
+  $area = [Windows.SystemParameters]::WorkArea
+  if ($script:Window.Left + $script:Window.Width -gt $area.Right) { $script:Window.Left = $area.Right - $script:Window.Width }
+  if ($script:Window.Top + $script:Window.Height -gt $area.Bottom) { $script:Window.Top = $area.Bottom - $script:Window.Height }
+  Save-Prefs
+}
+
+$area = [Windows.SystemParameters]::WorkArea
+$script:Window.Left = if ($null -ne $script:Prefs.left) { [double]$script:Prefs.left } else { $area.Right - 292 }
+$script:Window.Top = if ($null -ne $script:Prefs.top) { [double]$script:Prefs.top } else { $area.Bottom - 316 }
+if ($Preview -and $null -eq $script:Prefs.left) { $script:Window.Left = $area.Right - 600 }
+Set-PetSize
+
+$script:Atlases = @{}
+$script:Frames = @{}
+foreach ($skin in @('default', 'night')) {
+  foreach ($mode in @('valley', 'peak')) {
+    $path = Join-Path $script:ProjectRoot "assets\$skin-$mode.png"
+    $bitmap = New-Object Windows.Media.Imaging.BitmapImage
+    $bitmap.BeginInit()
+    $bitmap.UriSource = [uri]$path
+    $bitmap.CacheOption = [Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+    $bitmap.EndInit()
+    $bitmap.Freeze()
+    $script:Atlases["$skin-$mode"] = $bitmap
+  }
+}
+$script:Cells = @{ idle = 0; blink = 1; sleep = 1; hit = 2; miss = 3; output = 7; combo = 5; depleted = 6; recharge = 4 }
+function Get-Frame([string]$skin, [string]$mode, [string]$action) {
+  $key = "$skin-$mode-$action"
+  if ($script:Frames.ContainsKey($key)) { return $script:Frames[$key] }
+  $bitmap = $script:Atlases["$skin-$mode"]
+  $cell = [int]$script:Cells[$action]
+  $col = $cell % 4
+  $row = [math]::Floor($cell / 4)
+  $x = [int][math]::Floor($col * $bitmap.PixelWidth / 4)
+  $x2 = [int][math]::Floor(($col + 1) * $bitmap.PixelWidth / 4)
+  $y = [int][math]::Floor($row * $bitmap.PixelHeight / 2)
+  $y2 = [int][math]::Floor(($row + 1) * $bitmap.PixelHeight / 2)
+  $rect = New-Object Windows.Int32Rect($x, $y, ($x2 - $x), ($y2 - $y))
+  $crop = New-Object Windows.Media.Imaging.CroppedBitmap($bitmap, $rect)
+  $crop.Freeze()
+  $script:Frames[$key] = $crop
+  return $crop
+}
+
+function Get-Peak {
+  $zone = [TimeZoneInfo]::FindSystemTimeZoneById('China Standard Time')
+  $china = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $zone)
+  if ($china.DayOfWeek -in @([DayOfWeek]::Saturday, [DayOfWeek]::Sunday)) { return $false }
+  $minute = $china.Hour * 60 + $china.Minute
+  return (($minute -ge 540 -and $minute -lt 720) -or ($minute -ge 840 -and $minute -lt 1080))
+}
+
+$script:Queue = New-Object 'System.Collections.Generic.Queue[object]'
+$script:ActiveFloats = New-Object System.Collections.ArrayList
+$script:Instance = $null
+$script:Cursor = 0
+$script:FileTicks = 0L
+$script:Current = 'idle'
+$script:ActionStart = [DateTime]::UtcNow
+$script:ActionEnd = [DateTime]::UtcNow
+$script:NextEventAt = [DateTime]::UtcNow
+$script:LastBlink = [DateTime]::UtcNow
+$script:LastFrameKey = ''
+$script:LastPeak = $null
+$script:LastUpdate = [DateTime]::MinValue
+$script:LastActivityAt = [DateTime]::UtcNow
+$script:Stats = $null
+if ($Preview) {
+  $script:CardHeader.Text = 'DEEPSEEK · 动效预览'
+  $script:Balance.Text = '¥4.29'
+  $script:Rate.Text = '缓存命中 84%'
+  $script:PreviewIndex = 0
+  $script:PreviewPeak = $false
+  $script:NextPreviewAt = [DateTime]::UtcNow.AddMilliseconds(700)
+  $script:PreviewEvents = @(
+    [pscustomobject]@{ kind='hit'; tokens=6200; cny=.000124 },
+    [pscustomobject]@{ kind='miss'; tokens=7000; cny=.007 },
+    [pscustomobject]@{ kind='output'; tokens=380; cny=.00152 },
+    [pscustomobject]@{ kind='combo'; tokens=0; cny=$null },
+    [pscustomobject]@{ kind='depleted'; tokens=0; cny=$null },
+    [pscustomobject]@{ kind='recharge'; tokens=0; cny=$null }
+  )
+  $day = [DateTime]::Today
+  $days = @{}
+  for ($i = 0; $i -lt 7; $i++) {
+    $date = $day.AddDays(-$i).ToString('yyyy-MM-dd')
+    $days[$date] = @{ tokens = (8000 - $i * 740); inputTokens = (1800 - $i * 120);
+      cacheReadTokens = (5700 - $i * 590); outputTokens = 500; cny = (.013 - $i * .0013); unpricedTokens = 0 }
+  }
+  $script:Stats = (@{ version = 1; activityAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); days = $days } | ConvertTo-Json -Depth 5 | ConvertFrom-Json)
+  if ($PreviewSleep) {
+    $script:NextPreviewAt = [DateTime]::MaxValue
+    $script:LastActivityAt = [DateTime]::UtcNow.AddMinutes(-30)
+    $script:NextPreviewModeAt = [DateTime]::UtcNow.AddSeconds(6)
+  }
+}
+
+function Format-Cost($item) {
+  if ($item.kind -eq 'recharge') { return '余额恢复' }
+  if ($item.kind -eq 'depleted') { return '余额耗尽' }
+  if ($script:Prefs.unit -eq 'token' -or $null -eq $item.cny) { return ('−{0:N0} token' -f [double]$item.tokens) }
+  $amount = [double]$item.cny
+  if ($amount -lt 0.01) { return ('−¥' + $amount.ToString('0.########')) }
+  return ('−¥' + $amount.ToString('0.###'))
+}
+
+function Read-PetState {
+  if (-not (Test-Path -LiteralPath $script:StateFile)) { return }
+  try {
+    $file = Get-Item -LiteralPath $script:StateFile
+    if ($file.LastWriteTimeUtc.Ticks -eq $script:FileTicks) { return }
+    $snapshot = [IO.File]::ReadAllText($script:StateFile) | ConvertFrom-Json
+    $script:FileTicks = $file.LastWriteTimeUtc.Ticks
+    if ($null -ne $snapshot.updatedAt) { $script:LastUpdate = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$snapshot.updatedAt).UtcDateTime }
+    if ($null -ne $snapshot.stats) {
+      $script:Stats = $snapshot.stats
+      if ($null -ne $snapshot.stats.activityAt) {
+        $script:LastActivityAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$snapshot.stats.activityAt).UtcDateTime
+      }
+      if ($script:SettingsWindow -and $script:SettingsWindow.IsVisible) { Update-SettingsStats }
+    }
+    if ($script:Instance -ne $snapshot.instance) {
+      $script:Instance = $snapshot.instance
+      $script:Cursor = [int64]$snapshot.seq
+      $script:Queue.Clear()
+    } else {
+      foreach ($item in $snapshot.events) {
+        if ([int64]$item.seq -gt $script:Cursor) { $script:Queue.Enqueue($item) }
+      }
+      $script:Cursor = [int64]$snapshot.seq
+    }
+    if ($null -ne $snapshot.balance) {
+      $script:Balance.Text = '¥' + ([double]$snapshot.balance).ToString('N2')
+      $script:Balance.FontSize = if ($script:Balance.Text.Length -gt 10) { 19 } elseif ($script:Balance.Text.Length -gt 8) { 22 } else { 26 }
+    } elseif ($snapshot.balanceStatus -eq 'loading') { $script:Balance.Text = '查询中…' }
+    else { $script:Balance.Text = '未连接' }
+    if ($null -ne $snapshot.cacheHitRate) {
+      $script:Rate.Text = '缓存命中 ' + ([math]::Round([double]$snapshot.cacheHitRate * 100)).ToString() + '%'
+    } else { $script:Rate.Text = '缓存命中 —' }
+  } catch { }
+}
+
+function Start-Track($target, [Windows.DependencyProperty]$property, [double]$duration,
+                     [double[]]$times, [double[]]$values) {
+  $animation = New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+  $animation.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($duration))
+  $animation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+  for ($i = 0; $i -lt $times.Length; $i++) {
+    $frame = New-Object Windows.Media.Animation.EasingDoubleKeyFrame
+    $frame.Value = $values[$i]
+    $frame.KeyTime = [Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds($duration * $times[$i]))
+    if ($i -gt 0) {
+      $ease = New-Object Windows.Media.Animation.CubicEase
+      $ease.EasingMode = [Windows.Media.Animation.EasingMode]::EaseOut
+      $frame.EasingFunction = $ease
+    }
+    [void]$animation.KeyFrames.Add($frame)
+  }
+  $target.BeginAnimation($property, $animation, [Windows.Media.Animation.HandoffBehavior]::SnapshotAndReplace)
+}
+
+function Start-Event($item, [DateTime]$now) {
+  $script:Current = [string]$item.kind
+  $script:ActionStart = $now
+  $pace = if ($script:LastPeak) { 0.88 } else { 1.08 }
+  $duration = switch ($script:Current) {
+    'hit' { 580 } 'miss' { 830 } 'output' { 1050 } 'combo' { 820 }
+    'depleted' { 1250 } 'recharge' { 1050 } default { 580 }
+  }
+  $script:ActionEnd = $now.AddMilliseconds($duration * $pace)
+  $script:NextEventAt = $now.AddMilliseconds(560)
+  Start-EventMotion ($duration * $pace) $script:LastPeak
+  if ($script:Current -eq 'combo') { return }
+  $float = New-Object Windows.Controls.TextBlock
+  $float.Text = Format-Cost $item
+  $float.FontFamily = New-Object Windows.Media.FontFamily('Microsoft YaHei')
+  $float.FontWeight = [Windows.FontWeights]::ExtraBold
+  $float.FontSize = if ($script:Current -eq 'miss') { 20 } else { 17 }
+  $float.Foreground = switch ($script:Current) {
+    'miss' { [Windows.Media.Brushes]::Tomato }
+    'output' { [Windows.Media.Brushes]::LightGoldenrodYellow }
+    'recharge' { [Windows.Media.Brushes]::PaleGreen }
+    default { [Windows.Media.Brushes]::LightCyan }
+  }
+  $float.Effect = New-Object Windows.Media.Effects.DropShadowEffect
+  $float.Effect.Color = [Windows.Media.Colors]::DarkSlateGray
+  $float.Effect.BlurRadius = 5
+  $float.Effect.ShadowDepth = 2
+  $float.Effect.Opacity = 0.7
+  $float.Measure([Windows.Size]::new([double]::PositiveInfinity, [double]::PositiveInfinity))
+  [Windows.Controls.Canvas]::SetLeft($float, (272 - $float.DesiredSize.Width) / 2)
+  [Windows.Controls.Canvas]::SetTop($float, 101)
+  [Windows.Controls.Canvas]::SetZIndex($float, 4)
+  [void]$script:Root.Children.Add($float)
+  [void]$script:ActiveFloats.Add([pscustomobject]@{ control = $float; start = $now; kind = $script:Current })
+  Start-Track $float ([Windows.Controls.Canvas]::TopProperty) 1250 @(0,.08,.64,.82,1) @(101,96,64,53,40)
+  Start-Track $float ([Windows.UIElement]::OpacityProperty) 1250 @(0,.08,.64,.82,1) @(0,1,1,.76,0)
+}
+
+function Set-ModeVisual([bool]$peak) {
+  $script:ModeLabel.Text = if ($peak) { '☀ 峰值价' } else { '☾ 谷时价' }
+  $start = [Windows.Media.ColorConverter]::ConvertFromString($(if ($peak) { '#F43C345C' } else { '#F407294B' }))
+  $end = [Windows.Media.ColorConverter]::ConvertFromString($(if ($peak) { '#F3A05B53' } else { '#F4146884' }))
+  $script:Card.Background = [Windows.Media.LinearGradientBrush]::new($start, $end, 18)
+  $script:Card.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#FFD184' } else { '#91DFFA' }))
+  $script:CardBaseBorder = $script:Card.BorderBrush
+  $script:PriceBadge.Background = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#A06943' } else { '#1D5B75' }))
+  $script:Rate.Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#FFE1A8' } else { '#95E8FF' }))
+}
+
+function Start-IdleMotion([bool]$peak) {
+  $script:SleepMark.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+  $script:SleepMark.Visibility = 'Collapsed'
+  $script:Rotate.BeginAnimation([Windows.Media.RotateTransform]::AngleProperty, $null)
+  $script:Rotate.Angle = 0
+  $amplitude = if ($peak) { 1.8 } else { 1.15 }
+  $halfCycle = if ($peak) { 750 } else { 1100 }
+  $drift = New-Object Windows.Media.Animation.DoubleAnimation
+  $drift.From = 0; $drift.To = -$amplitude
+  $drift.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($halfCycle))
+  $drift.AutoReverse = $true
+  $drift.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::new(1.0)
+  $drift.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+  $script:Move.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, $drift)
+  $breath = New-Object Windows.Media.Animation.DoubleAnimation
+  $breath.From = 1; $breath.To = 1.006
+  $breath.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($halfCycle))
+  $breath.AutoReverse = $true
+  $breath.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::new(1.0)
+  $breath.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
+  $script:Scale.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, $breath)
+  $script:IdleMotionActive = $true
+  $script:NextIdlePulse = [DateTime]::UtcNow.AddSeconds(4)
+}
+
+function Start-SleepLoop($target, [Windows.DependencyProperty]$property,
+                         [double]$from, [double]$to, [double]$halfCycle) {
+  $animation = New-Object Windows.Media.Animation.DoubleAnimation
+  $animation.From = $from; $animation.To = $to
+  $animation.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($halfCycle))
+  $animation.AutoReverse = $true
+  $animation.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+  $target.BeginAnimation($property, $animation)
+}
+
+function Start-SleepMotion([bool]$peak) {
+  $script:Current = 'sleep'
+  $script:SleepMark.Visibility = 'Visible'
+  [Windows.Controls.Canvas]::SetTop($script:SleepMark, $(if ($peak) { 42 } else { 39 }))
+  $script:SleepMark.Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#FFAB62' } else { '#528BE8' }))
+  $script:Move.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $null)
+  $script:Move.X = 0
+  Start-SleepLoop $script:Move ([Windows.Media.TranslateTransform]::YProperty) $(if ($peak) { 4 } else { 2 }) $(if ($peak) { 8 } else { 5 }) $(if ($peak) { 1150 } else { 1700 })
+  Start-SleepLoop $script:Rotate ([Windows.Media.RotateTransform]::AngleProperty) $(if ($peak) { -3 } else { 1 }) $(if ($peak) { -7 } else { 3 }) $(if ($peak) { 1150 } else { 1700 })
+  Start-SleepLoop $script:Scale ([Windows.Media.ScaleTransform]::ScaleYProperty) 1 $(if ($peak) { .978 } else { .988 }) $(if ($peak) { 1150 } else { 1700 })
+  Start-SleepLoop $script:SleepMark ([Windows.UIElement]::OpacityProperty) .55 1 1250
+}
+
+function Start-EventMotion([double]$duration, [bool]$peak) {
+  $script:SleepMark.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+  $script:SleepMark.Visibility = 'Collapsed'
+  $a = if ($peak) { 1.22 } else { 0.78 }
+  $t = @(0,1)
+  $x = @(0,0); $y = @(0,0); $sx = @(1,1); $sy = @(1,1); $angle = @(0,0); $balance = @(1,1)
+  $script:CriticalMark.Visibility = 'Collapsed'
+  $script:FlashEnd = [DateTime]::UtcNow.AddMilliseconds(250)
+  switch ($script:Current) {
+    'hit' {
+      $t = @(0,.16,.42,1)
+      $x = @(0,(-3*$a),(2*$a),0); $y = @(0,(2*$a),(-2*$a),0)
+      $sx = @(1,.97,1.015,1); $sy = @(1,.985,1.012,1)
+      $balance = @(1,.978,1.012,1)
+      $script:Card.BorderBrush = [Windows.Media.Brushes]::LightSkyBlue
+    }
+    'miss' {
+      $t = @(0,.10,.23,.38,.55,.78,1)
+      $x = @(0,(-10*$a),(7*$a),(-5*$a),(3*$a),(-1*$a),0)
+      $y = @(0,(6*$a),(-4*$a),(2*$a),0,0,0)
+      $sx = @(1,.91,1.055,.985,1,1,1)
+      $sy = @(1,.94,1.04,.99,1,1,1)
+      $angle = @(0,(-4*$a),(3*$a),(-1*$a),0,0,0)
+      $balance = @(1,.95,1.025,1,1,1,1)
+      $script:CriticalMark.Visibility = 'Visible'
+      $script:MarkEnd = [DateTime]::UtcNow.AddMilliseconds(390)
+      $script:FlashEnd = [DateTime]::UtcNow.AddMilliseconds(390)
+      $script:Card.BorderBrush = [Windows.Media.Brushes]::Salmon
+    }
+    'output' {
+      $t = @(0,.24,.45,.66,.82,1)
+      $y = @(0,(-12*$a),(2*$a),(-6*$a),(1*$a),0)
+      $sx = @(1,1.075,.975,1.015,1,1)
+      $sy = @(1,1.075,.975,1.015,1,1)
+      $balance = @(1,1.012,.99,1.01,1,1)
+      $script:Card.BorderBrush = [Windows.Media.Brushes]::LightGoldenrodYellow
+    }
+    'combo' {
+      $t = @(0,.10,.21,.43,.54,.72,1)
+      $x = @(0,(-7*$a),(4*$a),0,(-9*$a),(5*$a),0)
+      $y = @(0,(4*$a),(-3*$a),0,(5*$a),(-2*$a),0)
+      $sx = @(1,.95,1.03,1,.94,1.03,1)
+      $sy = @(1,.97,1.02,1,.96,1.02,1)
+      $script:CriticalMark.Visibility = 'Visible'
+      $script:MarkEnd = [DateTime]::UtcNow.AddMilliseconds(480)
+      $script:FlashEnd = [DateTime]::UtcNow.AddMilliseconds(480)
+      $script:Card.BorderBrush = [Windows.Media.Brushes]::Salmon
+    }
+    'depleted' {
+      $t = @(0,.3,.7,1)
+      $y = @(0,(4*$a),(9*$a),(8*$a))
+      $sx = @(1,.97,.97,.97); $sy = @(1,.94,.94,.94)
+      $angle = @(0,-1,-2,-2)
+    }
+    'recharge' {
+      $t = @(0,.16,.33,.5,.66,.83,1)
+      $y = @(0,(-4*$a),0,(-4*$a),0,(-4*$a),0)
+      $sx = @(1,1.025,1,1.025,1,1.025,1)
+      $sy = @(1,.978,1,.978,1,.978,1)
+      $angle = @(0,(1.5*$a),0,(-1.5*$a),0,(1.5*$a),0)
+      $script:Card.BorderBrush = [Windows.Media.Brushes]::PaleGreen
+    }
+  }
+  if ($x.Count -ne $t.Count) { $x = @($t | ForEach-Object { 0.0 }) }
+  if ($y.Count -ne $t.Count) { $y = @($t | ForEach-Object { 0.0 }) }
+  if ($sx.Count -ne $t.Count) { $sx = @($t | ForEach-Object { 1.0 }) }
+  if ($sy.Count -ne $t.Count) { $sy = @($t | ForEach-Object { 1.0 }) }
+  if ($angle.Count -ne $t.Count) { $angle = @($t | ForEach-Object { 0.0 }) }
+  if ($balance.Count -ne $t.Count) { $balance = @($t | ForEach-Object { 1.0 }) }
+  Start-Track $script:Move ([Windows.Media.TranslateTransform]::XProperty) $duration $t $x
+  Start-Track $script:Move ([Windows.Media.TranslateTransform]::YProperty) $duration $t $y
+  Start-Track $script:Scale ([Windows.Media.ScaleTransform]::ScaleXProperty) $duration $t $sx
+  Start-Track $script:Scale ([Windows.Media.ScaleTransform]::ScaleYProperty) $duration $t $sy
+  Start-Track $script:Rotate ([Windows.Media.RotateTransform]::AngleProperty) $duration $t $angle
+  Start-Track $script:BalanceScale ([Windows.Media.ScaleTransform]::ScaleXProperty) $duration $t $balance
+  Start-Track $script:BalanceScale ([Windows.Media.ScaleTransform]::ScaleYProperty) $duration $t $balance
+  $script:IdleMotionActive = $false
+}
+
+function Clear-ExpiredFloats([DateTime]$now) {
+  for ($i = $script:ActiveFloats.Count - 1; $i -ge 0; $i--) {
+    $entry = $script:ActiveFloats[$i]
+    if (($now - $entry.start).TotalMilliseconds -ge 1300) {
+      $script:Root.Children.Remove($entry.control)
+      $script:ActiveFloats.RemoveAt($i)
+    }
+  }
+}
+
+$script:IdleMotionActive = $false
+$script:NextIdlePulse = [DateTime]::UtcNow
+$script:FlashEnd = [DateTime]::MinValue
+$script:MarkEnd = [DateTime]::MinValue
+$script:Timer = New-Object Windows.Threading.DispatcherTimer
+$script:Timer.Interval = [TimeSpan]::FromMilliseconds(100)
+$script:Timer.Add_Tick({
+  $now = [DateTime]::UtcNow
+  if ($Preview) {
+    if ($PreviewSleep -and $now -ge $script:NextPreviewModeAt) {
+      $script:PreviewPeak = -not $script:PreviewPeak
+      $script:NextPreviewModeAt = $now.AddSeconds(6)
+    }
+    if ($now -ge $script:NextPreviewAt) {
+      $script:Queue.Enqueue($script:PreviewEvents[$script:PreviewIndex])
+      $script:PreviewIndex = ($script:PreviewIndex + 1) % $script:PreviewEvents.Count
+      if ($script:PreviewIndex -eq 0) { $script:PreviewPeak = -not $script:PreviewPeak }
+      $script:NextPreviewAt = $now.AddMilliseconds(900)
+    }
+  } else {
+    Read-PetState
+    if ($script:LastUpdate -eq [DateTime]::MinValue -or ($now - $script:LastUpdate).TotalSeconds -gt 90) {
+      $script:Balance.Text = '等待 DSH…'
+      $script:Rate.Text = '缓存命中 —'
+    }
+  }
+  $peak = if ($Preview) { $script:PreviewPeak } else { Get-Peak }
+  $modeChanged = $script:LastPeak -ne $peak
+  if ($modeChanged) {
+    Set-ModeVisual $peak
+    $script:LastPeak = $peak
+    if ($script:Current -in @('idle','blink')) { Start-IdleMotion $peak }
+    if ($script:Current -eq 'sleep') { Start-SleepMotion $peak }
+  }
+  if ($now -ge $script:NextEventAt -and $script:Queue.Count -gt 0) { Start-Event ($script:Queue.Dequeue()) $now }
+  if ($now -ge $script:ActionEnd -and $script:Current -notin @('idle','blink','sleep')) {
+    $script:Current = 'idle'
+    Start-IdleMotion $peak
+  }
+  if ($now -ge $script:ActionEnd -and $script:Current -eq 'blink') { $script:Current = 'idle' }
+  $shouldSleep = ($now - $script:LastActivityAt).TotalMinutes -ge [double]$script:Prefs.sleepMinutes
+  if ($script:Current -eq 'sleep' -and -not $shouldSleep) {
+    $script:Current = 'idle'
+    Start-IdleMotion $peak
+  }
+  if ($script:Current -in @('idle','blink') -and $script:Queue.Count -eq 0 -and $shouldSleep) { Start-SleepMotion $peak }
+  if ($script:Current -eq 'idle' -and $script:Queue.Count -eq 0 -and $now -ge $script:NextIdlePulse) { Start-IdleMotion $peak }
+  if ($script:Current -eq 'idle' -and $script:Queue.Count -eq 0 -and ($now - $script:LastBlink).TotalSeconds -ge 6) {
+    $script:Current = 'blink'; $script:ActionStart = $now; $script:ActionEnd = $now.AddMilliseconds(300); $script:LastBlink = $now
+  }
+  $mode = if ($peak) { 'peak' } else { 'valley' }
+  $key = "$($script:Prefs.skin)-$mode-$($script:Current)"
+  if ($key -ne $script:LastFrameKey) {
+    if ($null -ne $script:Sprite.Source) {
+      $script:OldSprite.Source = $script:Sprite.Source
+      $fade = New-Object Windows.Media.Animation.DoubleAnimation
+      $fade.From = 1; $fade.To = 0
+      $fade.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($(if ($modeChanged) { 180 } else { 100 })))
+      $script:OldSprite.BeginAnimation([Windows.UIElement]::OpacityProperty, $fade)
+    }
+    $script:Sprite.Source = Get-Frame $script:Prefs.skin $mode $script:Current
+    $script:LastFrameKey = $key
+  }
+  if ($now -ge $script:FlashEnd) { $script:Card.BorderBrush = $script:CardBaseBorder; $script:FlashEnd = [DateTime]::MaxValue }
+  if ($now -ge $script:MarkEnd) { $script:CriticalMark.Visibility = 'Collapsed'; $script:MarkEnd = [DateTime]::MaxValue }
+  Clear-ExpiredFloats $now
+})
+
+function New-Choice([string]$label, [string]$group, [string]$value) {
+  $item = New-Object Windows.Controls.MenuItem
+  $item.Header = $label
+  $item.IsCheckable = $true
+  $item.IsChecked = $script:Prefs[$group] -eq $value
+  $item.Tag = "$group`:$value"
+  $item.Add_Click({
+    param($sender, $eventArgs)
+    $parts = ([string]$sender.Tag).Split(':')
+    $script:Prefs[$parts[0]] = $parts[1]
+    foreach ($peer in $sender.Parent.Items) {
+      if ($peer -is [Windows.Controls.MenuItem]) { $peer.IsChecked = $peer -eq $sender }
+    }
+    if ($parts[0] -eq 'size') { Set-PetSize }
+    Save-Prefs
+  })
+  return $item
+}
+
+. (Join-Path $script:ProjectRoot 'settings-window.ps1')
+$menu = New-Object Windows.Controls.ContextMenu
+$settingsItem = New-Object Windows.Controls.MenuItem; $settingsItem.Header = '设置与统计…'
+$settingsItem.Add_Click({ Show-PetSettings })
+[void]$menu.Items.Add($settingsItem)
+[void]$menu.Items.Add((New-Object Windows.Controls.Separator))
+$skinMenu = New-Object Windows.Controls.MenuItem; $skinMenu.Header = '形象'
+[void]$skinMenu.Items.Add((New-Choice '海蓝鲸鱼娘' 'skin' 'default'))
+[void]$skinMenu.Items.Add((New-Choice '夜航科技娘' 'skin' 'night'))
+[void]$menu.Items.Add($skinMenu)
+$sizeMenu = New-Object Windows.Controls.MenuItem; $sizeMenu.Header = '尺寸'
+[void]$sizeMenu.Items.Add((New-Choice '小' 'size' 'small'))
+[void]$sizeMenu.Items.Add((New-Choice '中' 'size' 'medium'))
+[void]$sizeMenu.Items.Add((New-Choice '大' 'size' 'large'))
+[void]$menu.Items.Add($sizeMenu)
+$unitMenu = New-Object Windows.Controls.MenuItem; $unitMenu.Header = '扣费飘字'
+[void]$unitMenu.Items.Add((New-Choice '人民币' 'unit' 'cny'))
+[void]$unitMenu.Items.Add((New-Choice 'Token' 'unit' 'token'))
+[void]$menu.Items.Add($unitMenu)
+[void]$menu.Items.Add((New-Object Windows.Controls.Separator))
+$exit = New-Object Windows.Controls.MenuItem; $exit.Header = '退出桌宠'
+$exit.Add_Click({ $script:Window.Close() })
+[void]$menu.Items.Add($exit)
+$script:Card.ContextMenu = $menu
+$script:SpriteLayer.ContextMenu = $menu
+
+$dragHandler = [Windows.Input.MouseButtonEventHandler]{
+  param($sender, $eventArgs)
+  if ($eventArgs.LeftButton -ne [Windows.Input.MouseButtonState]::Pressed) { return }
+  try { $script:Window.DragMove(); Save-Prefs } catch { }
+}
+$script:Card.Add_MouseLeftButtonDown($dragHandler)
+$script:SpriteLayer.Add_MouseLeftButtonDown($dragHandler)
+$script:Window.Add_Closed({ $script:Timer.Stop(); $script:SingleInstance.ReleaseMutex(); $script:SingleInstance.Dispose() })
+
+if (-not $Preview) { Read-PetState }
+if ($PreviewSettings) {
+  $script:Window.Add_Loaded({
+    Show-PetSettings
+    if ($PreviewChartYear) { $script:ChartUnit.SelectedIndex = 1; $script:ChartRange.SelectedIndex = 2 }
+  })
+}
+$script:Timer.Start()
+try { [void]$script:Window.ShowDialog() }
+catch { throw ($_.Exception.ToString()) }
