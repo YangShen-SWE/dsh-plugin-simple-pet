@@ -13,6 +13,7 @@ export const inject = ['sessions', 'credentials', 'settings', 'llm'];
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = '/api/dsh-plugin-simple-pet/state';
 const ASSETS = new Set(['default-valley', 'default-peak', 'night-valley', 'night-peak']);
+const DEEPSEEK_PROVIDERS = new Set(['deepseek-official', 'deepseek-account']);
 const MAX_EVENTS = 256;
 
 function json(res, status, body, method = 'GET') {
@@ -54,6 +55,23 @@ async function fetchOfficialBalance(ctx, signal) {
   const cny = data?.balance_infos?.find(item => item.currency === 'CNY')?.total_balance;
   const balance = Number(cny);
   if (!Number.isFinite(balance) || balance < 0) throw new Error('invalid CNY balance');
+  return { status: 'ready', balance };
+}
+
+async function fetchAccountBalance(ctx) {
+  const account = ctx.get?.('deepseekAccount');
+  if (!account) return { status: 'unavailable', balance: null };
+  const details = await account.getBalance({
+    version: process.env.DSH_CLIENT_VERSION || '0.2.0-rc.2',
+    locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+  });
+  if (details === null) return { status: 'unavailable', balance: null };
+  if (details.status !== 'ready') throw new Error('account balance unavailable');
+  const wallets = [...(details.value ?? []), ...(details.bonusWallets ?? [])].filter(item => item.currency === 'CNY');
+  if (!wallets.length) return { status: 'unavailable', balance: null };
+  const balance = wallets.reduce((sum, item) => sum + Number(item.balance), 0);
+  if (!Number.isFinite(balance) || balance < 0) throw new Error('invalid account CNY balance');
   return { status: 'ready', balance };
 }
 
@@ -103,7 +121,9 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   let events = [];
   let balance = null;
   let balanceStatus = 'loading';
-  let lastOfficialBalance = null;
+  let balanceProvider = 'deepseek-official';
+  let balanceRevision = 0;
+  let lastConfirmedBalance = null;
   let depletedShown = false;
   let cacheHitRate = null;
   let pollBusy = false;
@@ -144,15 +164,19 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   async function pollBalance() {
     if (!live || pollBusy) return;
     pollBusy = true;
+    const provider = balanceProvider;
+    const revision = balanceRevision;
     try {
-      const result = await fetchOfficialBalance(ctx, controller.signal);
-      if (!live) return;
-      if (result.status === 'ready' && lastOfficialBalance !== null && result.balance > lastOfficialBalance + 0.000001) {
+      const result = provider === 'deepseek-account'
+        ? await fetchAccountBalance(ctx)
+        : await fetchOfficialBalance(ctx, controller.signal);
+      if (!live || revision !== balanceRevision) return;
+      if (result.status === 'ready' && lastConfirmedBalance !== null && result.balance > lastConfirmedBalance + 0.000001) {
         push({ kind: 'recharge', tokens: 0, cny: null, peak: isPeak(), at: Date.now() });
       }
       balanceStatus = result.status;
       balance = result.balance;
-      lastOfficialBalance = result.balance;
+      lastConfirmedBalance = result.balance;
       if (balance > 0) depletedShown = false;
       if (balance === 0 && !depletedShown) {
         push({ kind: 'depleted', tokens: 0, cny: null, peak: isPeak(), at: Date.now() });
@@ -160,16 +184,21 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
       }
       snapshot();
     } catch {
-      if (live) balanceStatus = balance === null ? 'unavailable' : 'stale';
-      snapshot();
-    } finally { pollBusy = false; }
+      if (live && revision === balanceRevision) {
+        balanceStatus = balance === null ? 'unavailable' : 'stale';
+        snapshot();
+      }
+    } finally {
+      pollBusy = false;
+      if (live && revision !== balanceRevision) void pollBalance();
+    }
   }
 
   ctx.on('session/event', (session, event) => {
     if (!live || event.type !== 'assistant/message') return;
     if (typeof session.firstLiveSeq === 'number' && event.seq < session.firstLiveSeq) return;
     const source = event.data?.message?.source;
-    if (source?.kind !== 'model' || source.provider !== 'deepseek-official') return;
+    if (source?.kind !== 'model' || !DEEPSEEK_PROVIDERS.has(source.provider)) return;
     const key = `${session.id}:${event.seq}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -178,6 +207,15 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
     const at = Number.isFinite(new Date(event.time).getTime()) ? new Date(event.time).getTime() : Date.now();
     const priced = priceUsage(source.model, event.data?.usage, at);
     if (!priced.items.length) return;
+    if (balanceProvider !== source.provider) {
+      balanceProvider = source.provider;
+      balanceRevision++;
+      balance = null;
+      lastConfirmedBalance = null;
+      balanceStatus = 'loading';
+      depletedShown = false;
+      void pollBalance();
+    }
     cacheHitRate = priced.cacheHitRate;
     addUsage(ledger, event.data?.usage, priced, at);
     for (const item of priced.items) {
