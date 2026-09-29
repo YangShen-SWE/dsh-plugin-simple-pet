@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { isPeak, priceUsage } from './billing.js';
 import { addUsage, loadLedger, seedFromRecentEvents } from './stats.js';
 
@@ -56,7 +57,36 @@ async function fetchOfficialBalance(ctx, signal) {
   return { status: 'ready', balance };
 }
 
-export function apply(ctx) {
+export function launchPetProcess({ root = ROOT, profile = 'desktop', platform = process.platform, spawnProcess = spawn, logger } = {}) {
+  if (platform !== 'win32' || profile !== 'desktop') return () => {};
+  let stopped = false;
+  let child;
+  try {
+    child = spawnProcess('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden',
+      '-File', join(root, 'pet.ps1'), '-DshProfile', profile,
+    ], { cwd: root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (error) {
+    logger?.warn?.('simple-pet: could not start the pet window: %o', error);
+    return () => {};
+  }
+  let stderr = '';
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', chunk => { stderr = (stderr + chunk).slice(-2048); });
+  child.on('error', error => {
+    if (!stopped) logger?.warn?.('simple-pet: could not start the pet window: %o', error);
+  });
+  child.on('exit', code => {
+    if (!stopped && code !== 0) logger?.warn?.('simple-pet: pet window exited with code %s: %s', code, stderr.trim());
+  });
+  child.unref();
+  return () => {
+    stopped = true;
+    if (child.pid && child.exitCode === null && !child.killed) child.kill();
+  };
+}
+
+export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   let live = true;
   const instance = randomUUID();
   const profile = (process.env.DSH_PET_PROFILE || process.env.DSH_PROFILE || 'desktop').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -195,5 +225,6 @@ export function apply(ctx) {
   const heartbeat = setInterval(snapshot, 30_000);
   snapshot();
   pollBalance();
+  ctx.effect(() => petLauncher({ root: ROOT, profile, logger: ctx.logger }), 'deepseek-pet: window');
   ctx.effect(() => () => { live = false; clearInterval(timer); clearInterval(heartbeat); controller.abort(); }, 'deepseek-pet: lifetime');
 }

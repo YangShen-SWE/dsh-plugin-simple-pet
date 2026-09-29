@@ -20,7 +20,14 @@ test('only live official DeepSeek events enter the protected route', async () =>
     llm: { listConfigurableProviders() { return []; } },
     settings: { describe() { return []; } },
   };
-  apply(ctx);
+  let petStarted = false;
+  let petStopped = false;
+  apply(ctx, { petLauncher({ profile }) {
+    assert.equal(profile, 'desktop');
+    petStarted = true;
+    return () => { petStopped = true; };
+  } });
+  assert.equal(petStarted, true);
   const emit = listeners.get('session/event');
   const makeEvent = (seq, provider) => ({ seq, type:'assistant/message', time:'2026-09-29T01:00:00Z', data:{
     message:{ source:{ kind:'model', provider, model:'deepseek-v4-flash' } },
@@ -49,6 +56,7 @@ test('only live official DeepSeek events enter the protected route', async () =>
   const dayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
   assert.equal(payload.stats.days[dayKey].tokens, 1200);
   for (const dispose of disposers.reverse()) dispose?.();
+  assert.equal(petStopped, true);
   if (previousDataDir === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = previousDataDir;
 });

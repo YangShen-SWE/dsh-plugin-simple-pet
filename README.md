@@ -26,7 +26,9 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
    ```
 
 4. 如果以前安装过 `@local/dsh-simpledesktoppet` 或 `@local/dsh-deepseek-pet`，先在 DSH 的插件管理界面禁用／移除旧插件，避免重复处理同一事件。**完全退出并重新打开 DSH**，让新插件加载。
-5. 在解压目录双击 `start-pet.cmd`。也可以在该目录运行：
+5. 启动 DSH 并在插件管理中启用 `dsh-plugin-simple-pet`。插件启动时会自动打开 Windows 桌宠悬浮窗；停用插件时会关闭由插件启动的窗口。右键悬浮窗可进入设置。如果首次启用后没有出现，完全退出并重新打开 DSH。
+
+如需单独排查窗口，也可以在解压目录运行：
 
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfile desktop
@@ -34,7 +36,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 6. 拖动角色或卡片调整位置；右键打开「设置与统计…」、切换形象／尺寸／飘字单位，或选择「退出桌宠」。运行期间不要移动或删除已安装的源码目录。
 
-通过市场／GitHub 安装 Host 插件后，Windows 桌宠窗口仍需手动启动；默认安装位置通常是 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-plugin-simple-pet\start-pet.cmd`。其他 `DSH_HOME` 配置请在对应 profile 的 `node_modules` 中查找。
+通过市场／GitHub 安装到 Windows 的 DSH desktop profile 后，桌宠会随插件启用自动启动。`start-pet.cmd` 仅供故障排查时手动启动；默认安装位置通常是 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-plugin-simple-pet\`。桌宠为单实例，重复启用不会打开多个窗口。
 
 ### 数字怎么读
 
@@ -50,7 +52,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 | 今日总量为 0 | 确认当前调用使用 `deepseek-official`，且新插件加载后至少完成一次模型调用。历史调用可能不在统计内。 |
 | 余额显示「等待 DSH…」或无法查询 | 检查 DSH 是否运行、官方 DeepSeek API Key 是否在 DSH 中可用，以及网络是否能访问官方余额接口。 |
 | 看到约 −7000 Token | 这是该次请求报告的完整输入用量，可能包括上下文缓存。可查看命中率，并用新会话或压缩上下文减少输入。 |
-| 看不到悬浮窗 | 检查 Windows 任务管理器中是否已有 `pet.ps1` 进程；桌宠为单实例。也可再次运行 `start-pet.cmd`。 |
+| 看不到悬浮窗 | 完全退出并重新打开 DSH，确认插件已启用；检查 Windows 任务管理器中是否已有 `pet.ps1` 进程。仍无法启动时，在插件目录手动运行 `pet.ps1` 查看报错。 |
 
 ### 数据、版权和开发检查
 
@@ -81,9 +83,9 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
    ```
 
 4. Disable/remove older `@local/dsh-simpledesktoppet` or `@local/dsh-deepseek-pet` installations if present. Fully quit and relaunch DSH to load the new plugin.
-5. Double-click `start-pet.cmd` in the extracted folder, or run `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfile desktop` there. Drag the pet to move it; right-click to open settings or exit. Keep the installed folder in place while using the pet.
+5. Start DSH and enable `dsh-plugin-simple-pet`. The plugin opens the Windows pet window automatically and closes the window it started when disabled. Right-click the pet to open settings. If it does not appear after first enabling, fully quit and relaunch DSH. For troubleshooting, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfile desktop` in the installed folder. Drag the pet to move it; right-click to open settings or exit. Keep the installed folder in place while using the pet.
 
-Installing the Host bundle from a market or GitHub does not automatically open the Windows pet. Start its `start-pet.cmd` manually; with the default DSH home it is normally under `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-plugin-simple-pet\`.
+On Windows, the DSH desktop plugin starts the pet automatically when enabled. `start-pet.cmd` remains a manual troubleshooting fallback; with the default DSH home it is normally under `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-plugin-simple-pet\`. The pet allows only one instance.
 
 ### Numbers and troubleshooting
 
