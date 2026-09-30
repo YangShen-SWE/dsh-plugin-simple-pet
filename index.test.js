@@ -62,7 +62,7 @@ test('both DeepSeek provider routes enter, while unrelated providers stay out', 
   else process.env.LOCALAPPDATA = previousDataDir;
 });
 
-test('account usage reads the account wallet without deducting the API-key wallet', async () => {
+test('startup reads the account wallet before usage, then switches wallets by provider', async () => {
   const previousDataDir = process.env.LOCALAPPDATA;
   const previousFetch = globalThis.fetch;
   process.env.LOCALAPPDATA = join(import.meta.dirname, 'work', `test-account-${process.pid}`);
@@ -100,18 +100,29 @@ test('account usage reads the account wallet without deducting the API-key walle
         { writeHead() {}, end(value) { body = value; } });
       return JSON.parse(body);
     }
-    assert.equal(state().balance, 100);
-    listeners.get('session/event')({ id: 'account-session', firstLiveSeq: 1 }, {
-      seq: 1, type: 'assistant/message', time: '2026-09-29T01:00:00Z', data: {
-        message: { source: { kind: 'model', provider: 'deepseek-account', model: 'deepseek-flash' } },
-        usage: { inputTokens: 1000, outputTokens: 100 },
-      },
-    });
-    await new Promise(setImmediate);
     assert.equal(accountReads, 1);
     assert.equal(state().balance, 10);
+    assert.equal(state().seq, 0); // No model usage was needed to read the account wallet.
+    const emit = listeners.get('session/event');
+    const session = { id: 'account-session', firstLiveSeq: 1 };
+    const usage = { inputTokens: 1000, outputTokens: 100 };
+    const makeEvent = (seq, provider) => ({
+      seq, type: 'assistant/message', time: '2026-09-29T01:00:00Z', data: {
+        message: { source: { kind: 'model', provider, model: 'deepseek-flash' } }, usage,
+      },
+    });
+    emit(session, makeEvent(1, 'deepseek-account'));
+    assert.equal(accountReads, 1);
+    assert.ok(state().balance < 10 && state().balance > 9);
     assert.equal(state().stats.days['2026-09-29'].tokens, 1100);
     assert.deepEqual(state().events.map(event => event.kind), ['miss', 'output']);
+    emit(session, makeEvent(2, 'deepseek-official'));
+    await new Promise(setImmediate);
+    assert.equal(state().balance, 100); // Switching wallets never carries over the other wallet's deduction.
+    emit(session, makeEvent(3, 'deepseek-account'));
+    await new Promise(setImmediate);
+    assert.equal(accountReads, 2);
+    assert.equal(state().balance, 10);
   } finally {
     for (const dispose of disposers.reverse()) dispose?.();
     globalThis.fetch = previousFetch;

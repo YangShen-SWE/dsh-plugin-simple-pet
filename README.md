@@ -1,5 +1,7 @@
 # dsh-plugin-simple-pet
 
+**最新版本：v0.2.4。** 启动后即查询已登录 DeepSeek 账号的钱包，不必等待第一次模型调用；之后若使用 API Key 路由则切换显示对应余额。详见 [更新记录](CHANGELOG.md)。
+
 Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价格，用角色动作反馈每次调用。A small native Windows pet for DeepSeek API balance and usage in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。支持 DSH 的 `deepseek-official`（API Key）与 `deepseek-account`（账号登录）两条官方路由。This is an unofficial community project, not a DeepSeek product.
@@ -40,7 +42,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 ### 数字怎么读
 
-- **余额**按最近一次 DeepSeek 调用的路由分别读取：API Key 路由使用官方 API 余额接口，账号路由使用 DSH 的账号余额服务。调用结束后先按用量估算更新，并约每 60 秒校准。人民币扣费属于估算；未知模型只显示 Token，不猜测金额。今日统计汇总两条路由，悬浮卡只显示最近使用的路由对应的钱包。
+- **余额**启动时立即查询已登录的 DeepSeek 账号钱包，不用等待模型调用；如果后续使用 API Key 路由，则改查官方 API 余额，切回账号路由时再改查账号钱包。调用结束后先按用量估算更新，并约每 60 秒校准。人民币扣费属于估算；未知模型只显示 Token，不猜测金额。今日统计汇总两条路由，悬浮卡显示当前路由对应的钱包。若未登录账号或账号余额服务暂不可用，启动时仍会显示「未连接」，直至服务可用或切换到已配置的 API Key 路由。
 - **Token 飘字**是一轮 API 调用报告的缓存命中输入、未命中输入或输出 Token，不只是刚输入的几个字。DSH 可能把历史对话与工具内容一起发送，因此短问题也可能显示数千输入 Token。不同颜色代表同一轮请求的不同计费类别，不是重复扣费。
 - **今日总量**在右键设置里，按本机日期统计实际收到的模型用量事件。图表的「周」按天、「月」按天、「年」按月显示。安装前的旧调用不保证补全；若升级时仍保留最近事件，插件会尽力补录。
 
@@ -89,7 +91,7 @@ On Windows, the DSH desktop plugin starts the pet automatically when enabled. `s
 
 ### Numbers and troubleshooting
 
-The card shows the wallet for the most recently used DeepSeek route. The API-key route reads the official API balance; the sign-in route reads DSH's account balance service. The plugin never deducts account usage from the API-key wallet. It estimates deductions between balance checks (about every 60 seconds). Token amounts are the full usage reported for a completed call, which can include conversation history and cached context. Cache-hit and uncached-input amounts from the same call are separate billing categories. Today's totals combine both official routes, use the local date, and appear in right-click settings; pre-install calls may be incomplete.
+On startup the card queries the signed-in DeepSeek account wallet immediately, without waiting for model usage. It switches to the official API balance if an API-key call is made, and back to the account wallet after an account call. If no account is signed in or the account balance service is unavailable, the initial balance remains disconnected until that service recovers or an API-key route is used. The API-key route reads the official API balance; the sign-in route reads DSH's account balance service. The plugin never deducts account usage from the API-key wallet. It estimates deductions between balance checks (about every 60 seconds). Token amounts are the full usage reported for a completed call, which can include conversation history and cached context. Cache-hit and uncached-input amounts from the same call are separate billing categories. Today's totals combine both official routes, use the local date, and appear in right-click settings; pre-install calls may be incomplete.
 
 If settings says “waiting for DSH to load statistics,” fully restart DSH. If today's total is zero, complete an official DeepSeek model call after the new plugin loads. If the balance is unavailable, check the API key or account sign-in for the selected route and the corresponding balance service. A few thousand input tokens for a short question can be normal when prior conversation context is included.
 

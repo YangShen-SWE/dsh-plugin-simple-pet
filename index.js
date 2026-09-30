@@ -121,7 +121,8 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   let events = [];
   let balance = null;
   let balanceStatus = 'loading';
-  let balanceProvider = 'deepseek-official';
+  // Query the signed-in account wallet immediately, even before a model call.
+  let balanceProvider = 'deepseek-account';
   let balanceRevision = 0;
   let lastConfirmedBalance = null;
   let depletedShown = false;
