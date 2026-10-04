@@ -54,6 +54,41 @@ test('right-click opens settings directly instead of constructing a context menu
   assert.ok(callbackBodies(petSource, 'MouseRightButton(?:Up|Down)').some(body => /\bShow-PetSettings\b/.test(body)), 'right-button callback directly opens settings');
 });
 
+test('settings use an accessible local six-card gallery instead of a skin dropdown', () => {
+  assert.doesNotMatch(settingsSource, /\bSkinChoice\b/);
+  assert.match(settingsSource, /<UniformGrid\b[^>]*\bName="SkinGallery"[^>]*\bColumns="3"[^>]*\bRows="2"/);
+  assert.match(settingsSource, /foreach\s*\(\$skin\s+in\s+\$script:SkinCatalog\)/);
+  assert.match(settingsSource, /Name="SkinCard_\$id"\s+Tag="\$id"/);
+  assert.match(settingsSource, /\$script:SkinButtons\[\$id\]\s*=\s*\$button/);
+  assert.match(settingsSource, /AutomationProperties\.Name="\$name/);
+  assert.match(settingsSource, /Focusable="True"\s+IsTabStop="True"/);
+  assert.match(settingsSource, /Get-Frame\s+\$skin\s+\$mode\s+'idle'/);
+  assert.match(settingsSource, /foreach\s*\(\$mode\s+in\s+@\('peak',\s*'valley'\)\)/);
+  assert.match(settingsSource, /\$image\.Source\s*=\s*Get-SettingsSkinPreview\s+\$id\s+\$mode/);
+  // XAML namespace identifiers are URLs, not fetches or remote image sources.
+  const withoutNamespaces = settingsSource.replace(/xmlns(?::\w+)?="[^"]+"/g, '');
+  assert.doesNotMatch(withoutNamespaces, /https?:\/\/|Invoke-(?:WebRequest|RestMethod)|Download(?:Data|File|String)/i);
+  const handlers = callbackBodies(settingsSource, 'Click');
+  const skinHandler = handlers.find(body => /\$id\s*=\s*\[string\]\$sender\.Tag/.test(body));
+  assert.ok(skinHandler, 'skin click must read the sender Tag rather than a captured loop variable');
+  assert.match(skinHandler, /if\s*\(\[string\]\$script:Prefs\.skin\s+-eq\s+\$id\)\s*\{\s*return\s*\}/);
+  assert.equal((skinHandler.match(/\bSave-Prefs\b/g) ?? []).length, 1, 'skin click owns exactly one save');
+  assert.ok(callbackBodies(settingsSource, 'PreviewKeyDown').some(body => /\[Windows\.Input\.Key\]::Enter/.test(body) && /ClickEvent/.test(body)), 'Enter activates the focused card');
+});
+
+test('settings and statistics remain reachable on smaller work areas', () => {
+  assert.match(settingsSource, /<ScrollViewer\b[^>]*Name="SettingsScroll"[^>]*VerticalScrollBarVisibility="Auto"/);
+  assert.match(settingsSource, /<ScrollViewer\b[^>]*Name="StatsScroll"[^>]*HorizontalScrollBarVisibility="Auto"/);
+  assert.match(settingsSource, /<Canvas\b[^>]*Name="ChartCanvas"[^>]*Width="600"/);
+  assert.match(settingsSource, /\$script:SettingsWindow\.Height\s*=\s*\[math\]::Min\(625,\s*\$workArea\.Height\s*-\s*20\)/);
+});
+
+test('Windows PowerShell scripts preserve UTF-8 BOM for Chinese UI text', () => {
+  for (const name of ['pet.ps1', 'skin-catalog.ps1', 'skin-assets.test.ps1', 'settings-window.ps1', 'settings-window.test.ps1']) {
+    assert.deepEqual([...readFileSync(join(root, name)).subarray(0, 3)], [0xef, 0xbb, 0xbf], `${name} must have UTF-8 BOM`);
+  }
+});
+
 test('WPF settings interactions and cleanup', { skip: process.platform !== 'win32', timeout: 60_000 }, () => {
   const result = spawnSync('powershell.exe', [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass',

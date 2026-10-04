@@ -9,6 +9,7 @@ $mutexName = if ($Preview) { 'Local\DshSimpleDesktopPetPreview' } else { 'Local\
 $script:SingleInstance = New-Object Threading.Mutex($true, $mutexName, [ref]$created)
 if (-not $created) { exit 0 }
 $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $script:ProjectRoot 'skin-catalog.ps1')
 $script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
 $script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
 $script:SettingsFile = Join-Path $script:DataDir $(if ($Preview) { 'settings-preview.json' } else { 'settings.json' })
@@ -27,7 +28,7 @@ if (Test-Path -LiteralPath $script:SettingsFile) {
     }
   } catch { }
 }
-if ($script:Prefs.skin -notin @('default', 'night')) { $script:Prefs.skin = 'default' }
+if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id })) { $script:Prefs.skin = 'default' }
 if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
 if ($script:Prefs.size -notin @('small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
 if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
@@ -136,7 +137,8 @@ Set-PetSize
 
 $script:Atlases = @{}
 $script:Frames = @{}
-foreach ($skin in @('default', 'night')) {
+foreach ($entry in $script:SkinCatalog) {
+  $skin = [string]$entry.id
   foreach ($mode in @('valley', 'peak')) {
     $path = Join-Path $script:ProjectRoot "assets\$skin-$mode.png"
     $bitmap = New-Object Windows.Media.Imaging.BitmapImage

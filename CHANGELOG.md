@@ -1,5 +1,16 @@
 # 更新记录 / Changelog
 
+## v0.2.6 — 新形象与图片预览
+
+- 新增雪绒鲸娘、薄荷茶娘、樱桃汽水娘和星砂魔法娘，保留原来的两款形象。
+- 设置里的形象选择改成图片图库，不再用下拉栏；六张卡片都有峰时／谷时预览，点击就能切换并保存。
+- 当前形象有高亮和勾选，支持 Tab 聚焦、空格／Enter 选择；预览使用本地缓存，不上传图片或余额。
+- 设置内容可滚动，小屏幕下仍能调整尺寸、飘字和睡眠时间，退出桌宠固定在底部。
+- 原来的形象 ID、设置与统计数据保留，设置拖动、右键直接进入设置及双路由钱包逻辑不变。
+- 新素材保留 AI 生成源图及来源声明，派生图集注明源图和哈希；补充美术授权和隐私说明。有限视觉检查不等于绝无相似或法律保证。
+- 22 项测试、420 项设置 WPF 断言及 454 项真实素材整合断言通过；十二张图集的加载、缓存、图库选择与接口访问校验均已回归。
+- Four new skins join the existing two. A local, keyboard-accessible six-card gallery shows peak/off-peak previews and replaces the skin dropdown. Preferences and statistics remain compatible; AI source provenance, separate artwork terms and privacy notes are retained.
+
 ## v0.2.5 — 设置与统计更新
 
 - 更新设置和统计界面，现在可以拖动顶部标题栏移动窗口。

@@ -48,6 +48,30 @@ test('both DeepSeek provider routes enter, while unrelated providers stay out', 
     return result;
   }
   assert.equal(request('').code,401);
+  // All runtime skin images use the same local connection guard as state.
+  for (const skin of ['default', 'night', 'snow', 'mint', 'cherry', 'star']) {
+    for (const mode of ['peak', 'valley']) {
+      const path = `/api/dsh-plugin-simple-pet/asset/${skin}-${mode}.png`;
+      const imageHandler = handlers.get(path);
+      assert.equal(typeof imageHandler, 'function', path);
+      const getImage = async (authorization, method = 'GET') => {
+        const result = {};
+        await imageHandler({ method, url: path, headers: { authorization } }, {
+          writeHead(code, headers) { Object.assign(result, { code, headers }); },
+          end(body) { result.body = body; },
+        });
+        return result;
+      };
+      assert.equal((await getImage('')).code, 401);
+      const image = await getImage('test');
+      assert.equal(image.code, 200);
+      assert.equal(image.headers['Content-Type'], 'image/png');
+      assert.deepEqual(image.body.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      assert.equal((await getImage('test', 'HEAD')).body, undefined);
+      assert.equal((await getImage('test', 'POST')).code, 405);
+    }
+  }
+  assert.ok(![...handlers.keys()].some(path => path.includes('source')), 'generation originals are not exposed as an API asset');
   const response = request('test');
   assert.equal(response.code,200);
   const payload = JSON.parse(response.body);

@@ -1,4 +1,4 @@
-# Run independently: powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\settings-window.test.ps1
+﻿# Run independently: powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\settings-window.test.ps1
 # Does not source pet.ps1, start DSH, touch preferences, or require a test framework.
 param([string]$CaptureDirectory = '',
       [string]$SettingsScript = (Join-Path $PSScriptRoot 'settings-window.ps1'))
@@ -16,6 +16,34 @@ $script:OwnerCloseCount = 0
 $script:Stats = $null
 $script:SettingsWindow = $null
 $script:Prefs = @{ skin = 'default'; unit = 'cny'; size = 'medium'; sleepMinutes = 10 }
+$script:SkinCatalog = @(
+  @{ id = 'default'; name = '海蓝鲸鱼娘' }, @{ id = 'night'; name = '夜航科技娘' },
+  @{ id = 'snow'; name = '雪绒鲸娘' }, @{ id = 'mint'; name = '薄荷茶娘' },
+  @{ id = 'cherry'; name = '樱桃汽水娘' }, @{ id = 'star'; name = '星砂魔法娘' }
+)
+$script:FrameCalls = New-Object Collections.ArrayList
+$script:TestFrames = @{}
+
+# Isolated local image provider: no assets, user state, network, timers, or real balances.
+# Match the production Get-Frame contract, including a frozen CroppedBitmap.
+function Get-Frame([string]$skin, [string]$mode, [string]$action) {
+  $key = "$skin/$mode/$action"
+  [void]$script:FrameCalls.Add($key)
+  $pixels = New-Object byte[] (48 * 64 * 4)
+  $palette = @{ default = 70; night = 100; snow = 130; mint = 160; cherry = 190; star = 220 }
+  for ($i = 0; $i -lt $pixels.Length; $i += 4) {
+    $pixels[$i] = $palette[$skin]
+    $pixels[$i + 1] = if ($mode -eq 'peak') { 210 } else { 110 }
+    $pixels[$i + 2] = 90
+    $pixels[$i + 3] = 255
+  }
+  $bitmap = [Windows.Media.Imaging.BitmapSource]::Create(48, 64, 96, 96, [Windows.Media.PixelFormats]::Bgra32, $null, $pixels, 192)
+  $bitmap.Freeze()
+  $frame = [Windows.Media.Imaging.CroppedBitmap]::new($bitmap, [Windows.Int32Rect]::new(0, 0, 48, 64))
+  $frame.Freeze()
+  $script:TestFrames[$key] = $frame
+  return $frame
+}
 
 function Assert-True([bool]$condition, [string]$message) {
   if (-not $condition) { throw "FAIL: $message" }
@@ -54,6 +82,32 @@ function Select-Tag($combo, [string]$tag) {
 }
 function Click-Button($button) {
   $button.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+}
+function Press-SkinKey($button, [Windows.Input.Key]$key) {
+  [void]$script:SettingsWindow.Activate()
+  [void]$button.Focus()
+  Flush-Dispatcher
+  Assert-True $button.IsKeyboardFocused 'skin button can receive keyboard focus'
+  $source = [Windows.PresentationSource]::FromVisual($button)
+  $preview = [Windows.Input.KeyEventArgs]::new([Windows.Input.Keyboard]::PrimaryDevice, $source, 0, $key)
+  $preview.RoutedEvent = [Windows.Input.Keyboard]::PreviewKeyDownEvent
+  $button.RaiseEvent($preview)
+  if (-not $preview.Handled) {
+    $down = [Windows.Input.KeyEventArgs]::new([Windows.Input.Keyboard]::PrimaryDevice, $source, 0, $key)
+    $down.RoutedEvent = [Windows.Input.Keyboard]::KeyDownEvent
+    $button.RaiseEvent($down)
+    $up = [Windows.Input.KeyEventArgs]::new([Windows.Input.Keyboard]::PrimaryDevice, $source, 0, $key)
+    $up.RoutedEvent = [Windows.Input.Keyboard]::KeyUpEvent
+    $button.RaiseEvent($up)
+  }
+}
+function Assert-SkinSelection([string]$selected) {
+  foreach ($skin in $script:SkinCatalog) {
+    $expected = if ($skin.id -eq $selected) { 'Visible' } else { 'Hidden' }
+    Assert-Equal ([string]$script:SkinSelectionLabels[$skin.id].Visibility) $expected "selection badge for $($skin.id)"
+    $status = [Windows.Automation.AutomationProperties]::GetItemStatus($script:SkinButtons[$skin.id])
+    Assert-Equal $status $(if ($skin.id -eq $selected) { '已选择' } else { '未选择' }) "accessible selection status for $($skin.id)"
+  }
 }
 function Flush-Dispatcher {
   [void][Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke(
@@ -97,7 +151,32 @@ try {
   Assert-True $script:SettingsWindow.IsVisible 'settings window opens non-modally'
   Assert-True ([object]::ReferenceEquals($script:SettingsWindow.Owner, $script:Window)) 'settings has the stub owner'
   $tabs = Get-Control 'SettingsTabs' ([Windows.Controls.TabControl])
-  $skin = Get-Control 'SkinChoice' ([Windows.Controls.ComboBox])
+  $gallery = Get-Control 'SkinGallery' ([Windows.Controls.Primitives.UniformGrid])
+  $settingsScroll = Get-Control 'SettingsScroll' ([Windows.Controls.ScrollViewer])
+  $statsScroll = Get-Control 'StatsScroll' ([Windows.Controls.ScrollViewer])
+  Assert-True ($null -eq $script:SettingsWindow.FindName('SkinChoice')) 'skin dropdown has been removed'
+  Assert-Equal $gallery.Columns 3 'gallery has three columns'
+  Assert-Equal $gallery.Rows 2 'gallery has two rows'
+  Assert-Equal $gallery.Children.Count 6 'gallery displays all six local skins'
+  Assert-Equal $script:SkinButtons.Count 6 'skin dictionary includes exactly six buttons'
+  Assert-Equal $script:FrameCalls.Count 12 'initial previews load exactly two frames per skin'
+  for ($i = 0; $i -lt $script:SkinCatalog.Count; $i++) {
+    $skin = $script:SkinCatalog[$i]
+    $button = Get-Control "SkinCard_$($skin.id)" ([Windows.Controls.Button])
+    Assert-True ([object]::ReferenceEquals($button, $gallery.Children[$i])) 'gallery preserves catalog order'
+    Assert-Equal ([string]$button.Tag) $skin.id "stable skin tag $($skin.id)"
+    Assert-True ([object]::ReferenceEquals($button, $script:SkinButtons[$skin.id])) 'named button matches dictionary'
+    Assert-True ($button.Focusable -and $button.IsTabStop) 'skin button supports keyboard tab focus'
+    Assert-True (([Windows.Automation.AutomationProperties]::GetName($button)).StartsWith($skin.name)) 'accessible name includes Chinese skin name'
+    foreach ($mode in @('peak', 'valley')) {
+      $image = Get-Control "SkinPreview_$($skin.id)_$mode" ([Windows.Controls.Image])
+      Assert-True ($null -ne $image.Source) 'preview Image.Source is non-null'
+      Assert-True ($image.Source -is [Windows.Media.Imaging.CroppedBitmap]) 'preview uses local Get-Frame CroppedBitmap'
+      Assert-True $image.Source.IsFrozen 'preview source is frozen'
+      Assert-True ([object]::ReferenceEquals($image.Source, $script:TestFrames["$($skin.id)/$mode/idle"])) "preview requests $mode idle pose for its own skin"
+      Assert-Equal @($script:FrameCalls | Where-Object { $_ -ceq "$($skin.id)/$mode/idle" }).Count 1 'each pose is fetched once'
+    }
+  }
   $size = Get-Control 'SizeChoice' ([Windows.Controls.ComboBox])
   $unit = Get-Control 'UnitChoice' ([Windows.Controls.ComboBox])
   $sleep = Get-Control 'SleepInput' ([Windows.Controls.TextBox])
@@ -107,7 +186,6 @@ try {
   $drag = Get-Control 'SettingsDragHandle' ([Windows.Controls.Grid])
   $chartUnit = Get-Control 'ChartUnit' ([Windows.Controls.ComboBox])
   $chartRange = Get-Control 'ChartRange' ([Windows.Controls.ComboBox])
-  Assert-Choices $skin @('default', 'night') 'skin'
   Assert-Choices $size @('small', 'medium', 'large') 'size'
   Assert-Choices $unit @('cny', 'token') 'floating unit'
   Assert-Equal $tabs.SelectedIndex 0 'initial tab is settings'
@@ -116,22 +194,50 @@ try {
   Assert-Equal ([string]$tabs.Items[0].Header) $settingsLabel 'native dot-source preserves the Chinese settings label'
   Assert-Equal ([string]$tabs.Items[1].Header) $statisticsLabel 'native dot-source preserves the Chinese statistics label'
   Assert-True ($script:SettingsWindow.Title.EndsWith($settingsLabel)) 'native dot-source preserves the Chinese window title'
-  Assert-Equal ([string]$skin.SelectedItem.Tag) 'default' 'initial skin is restored'
+  Assert-Equal $script:Prefs.skin 'default' 'initial skin is restored'
+  Assert-SkinSelection 'default'
   Assert-Equal ([string]$size.SelectedItem.Tag) 'medium' 'initial size is restored'
   Assert-Equal ([string]$unit.SelectedItem.Tag) 'cny' 'initial floating unit is restored'
   Assert-Equal $sleep.Text '10' 'initial sleep setting is restored'
   Assert-Equal $script:SaveCount 0 'initial render does not write preferences'
   Assert-Equal $script:SizeCount 0 'initial selections do not spuriously resize the pet'
-  Assert-True $skin.IsVisible 'custom TabControl template displays settings content'
+  Assert-True $gallery.IsVisible 'custom TabControl template displays settings content'
+  Assert-True ($settingsScroll.ScrollableHeight -gt 0) 'settings content scrolls rather than clipping the lower controls'
+  $workArea = [Windows.SystemParameters]::WorkArea
+  Assert-True ($script:SettingsWindow.Width -le $workArea.Width - 20) 'settings width fits work area'
+  Assert-True ($script:SettingsWindow.Height -le $workArea.Height - 20) 'settings height fits work area'
+  $exitPoint = $exit.TranslatePoint([Windows.Point]::new(0, 0), $script:SettingsWindow)
+  Assert-True ($exitPoint.Y + $exit.ActualHeight -le $script:SettingsWindow.ActualHeight) 'exit footer stays inside window'
+  $settingsScroll.ScrollToBottom()
+  Flush-Dispatcher
+  $sleepPoint = $sleep.TranslatePoint([Windows.Point]::new(0, 0), $settingsScroll)
+  Assert-True ($sleepPoint.Y -ge 0 -and $sleepPoint.Y + $sleep.ActualHeight -le $settingsScroll.ActualHeight) 'sleep controls are reachable at bottom of scroll view'
+  $settingsScroll.ScrollToTop()
+  Flush-Dispatcher
   Assert-True (-not $chartUnit.IsVisible) 'statistics content starts hidden'
   Save-SettingsCapture 'settings-test.png'
 
-  foreach ($tag in @('night', 'default', 'night')) {
+  foreach ($tag in @('night', 'snow', 'mint', 'cherry', 'star', 'default', 'night')) {
     $before = $script:SaveCount
-    Select-Tag $skin $tag
-    Assert-Equal $script:Prefs.skin $tag 'skin selection updates preferences'
+    Click-Button $script:SkinButtons[$tag]
+    Assert-Equal $script:Prefs.skin $tag 'skin selection updates preferences via its own Tag'
     Assert-Equal $script:SaveCount ($before + 1) 'skin selection saves exactly once'
+    Assert-SkinSelection $tag
+    Click-Button $script:SkinButtons[$tag]
+    Assert-Equal $script:SaveCount ($before + 1) 'repeat click on selected skin does not save'
   }
+  $before = $script:SaveCount
+  Press-SkinKey $script:SkinButtons['snow'] ([Windows.Input.Key]::Space)
+  Assert-Equal $script:Prefs.skin 'snow' 'Space selects a focused skin card'
+  Assert-Equal $script:SaveCount ($before + 1) 'Space saves exactly once'
+  Press-SkinKey $script:SkinButtons['mint'] ([Windows.Input.Key]::Enter)
+  Assert-Equal $script:Prefs.skin 'mint' 'Enter selects a focused skin card'
+  Assert-Equal $script:SaveCount ($before + 2) 'Enter saves exactly once'
+  Press-SkinKey $script:SkinButtons['mint'] ([Windows.Input.Key]::Enter)
+  Assert-Equal $script:SaveCount ($before + 2) 'repeat Enter on selected skin does not save'
+  Click-Button $script:SkinButtons['star']
+  Assert-SkinSelection 'star'
+  Assert-Equal $script:FrameCalls.Count 12 'click and keyboard selection never reload previews'
   foreach ($tag in @('small', 'medium', 'large')) {
     $before = $script:SaveCount
     $beforeSize = $script:SizeCount
@@ -155,7 +261,9 @@ try {
   foreach ($index in @(1, 2, 0)) { $chartRange.SelectedIndex = $index }
   Flush-Dispatcher
   Assert-True $chartUnit.IsVisible 'custom TabControl template displays statistics content'
-  Assert-True (-not $skin.IsVisible) 'settings content hides when statistics is selected'
+  Assert-True (-not $gallery.IsVisible) 'settings content hides when statistics is selected'
+  Assert-Equal ($script:SettingsWindow.FindName('ChartCanvas')).Width 600 'statistics preserves its readable 600-wide canvas'
+  Assert-Equal ([string]$statsScroll.HorizontalScrollBarVisibility) 'Auto' 'statistics can scroll horizontally in small work areas'
   Assert-True (($script:SettingsWindow.FindName('ChartCanvas')).Children.Count -gt 0) 'statistics chart renders with null stats'
   Save-SettingsCapture 'statistics-test.png'
   Assert-Equal $script:Prefs.unit 'token' 'chart unit is independent of floating unit'
@@ -196,7 +304,16 @@ try {
   Flush-Dispatcher
   Assert-True (-not [object]::ReferenceEquals($script:SettingsWindow, $existing)) 'reopening creates a fresh WPF window'
   Assert-Equal ($script:SettingsWindow.FindName('SettingsTabs')).SelectedIndex 0 'reopening starts on settings'
-  Assert-Equal ([string]($script:SettingsWindow.FindName('SkinChoice')).SelectedItem.Tag) 'night' 'reopen restores skin'
+  Assert-Equal $script:Prefs.skin 'star' 'reopen restores skin'
+  Assert-SkinSelection 'star'
+  Assert-Equal $script:SkinButtons.Count 6 'reopen reconstructs all six buttons'
+  Assert-Equal $script:FrameCalls.Count 12 'reopen reuses all frozen preview frames'
+  foreach ($skin in $script:SkinCatalog) {
+    foreach ($mode in @('peak', 'valley')) {
+      $image = $script:SettingsWindow.FindName("SkinPreview_$($skin.id)_$mode")
+      Assert-True ([object]::ReferenceEquals($image.Source, $script:TestFrames["$($skin.id)/$mode/idle"])) 'reopen keeps the cached local image source'
+    }
+  }
   Assert-Equal ([string]($script:SettingsWindow.FindName('SizeChoice')).SelectedItem.Tag) 'large' 'reopen restores size'
   Assert-Equal ([string]($script:SettingsWindow.FindName('UnitChoice')).SelectedItem.Tag) 'token' 'reopen restores floating unit'
   Assert-Equal ($script:SettingsWindow.FindName('SleepInput')).Text '10' 'reopen restores sleep'

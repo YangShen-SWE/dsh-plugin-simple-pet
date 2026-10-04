@@ -12,7 +12,8 @@ export const inject = ['sessions', 'credentials', 'settings', 'llm'];
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = '/api/dsh-plugin-simple-pet/state';
-const ASSETS = new Set(['default-valley', 'default-peak', 'night-valley', 'night-peak']);
+const ASSETS = new Set(['default', 'night', 'snow', 'mint', 'cherry', 'star']
+  .flatMap(skin => ['valley', 'peak'].map(mode => `${skin}-${mode}`)));
 const DEEPSEEK_PROVIDERS = new Set(['deepseek-official', 'deepseek-account']);
 const MAX_EVENTS = 256;
 

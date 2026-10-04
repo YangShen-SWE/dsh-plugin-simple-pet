@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版本：v0.2.5。** 设置和统计现在可以拖动了，右键桌宠直接进入设置；形象、尺寸、扣费飘字和退出桌宠统一放进设置里。启动即查询账号钱包、按路由切换余额的功能保持不变。详见 [更新记录](CHANGELOG.md)。
+**最新版本：v0.2.6。** 新增雪绒鲸娘、薄荷茶娘、樱桃汽水娘和星砂魔法娘；设置改成六款形象的图片图库，每款都有峰时／谷时预览，点击卡片即可切换并保存，不再使用形象下拉栏。设置拖动、用量统计及双路由钱包功能保持不变。详见 [更新记录](CHANGELOG.md)。
 
 Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价格，用角色动作反馈每次调用。A small native Windows pet for DeepSeek API balance and usage in DeepSeek Harness (DSH).
 
@@ -10,8 +10,9 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 ### 功能与特色
 
-- **轻量悬浮窗：** 透明、可拖动、始终置顶；角色位于余额卡边缘，文字保持可读。右键直接打开设置，在设置页选择小／中／大尺寸及两套可替换形象：默认海蓝鲸鱼娘、夜航科技娘。设置与统计窗口也可拖动标题栏移动。
-- **峰谷形象：** 根据北京时间工作日 09:00–12:00、14:00–18:00 区分峰价与谷价，卡片显示相应图标；两套形象都有不同的峰谷姿态。
+- **轻量悬浮窗：** 透明、可拖动、始终置顶；角色位于余额卡边缘，文字保持可读。右键直接打开设置，可选择小／中／大尺寸。设置与统计窗口也可拖动标题栏移动。
+- **图片形象图库：** 保留默认海蓝鲸鱼娘、夜航科技娘，新增雪绒鲸娘、薄荷茶娘、樱桃汽水娘、星砂魔法娘。六张卡片同时展示每款峰时／谷时图片，点击即切换并保存，选中卡片有高亮和勾选；可用 Tab 聚焦、Space／Enter 选择。预览只加载本地素材并缓存，不上传图片或余额；小屏幕下可滚动设置内容，退出按钮固定在底部。
+- **峰谷形象：** 根据北京时间工作日 09:00–12:00、14:00–18:00 区分峰价与谷价，卡片显示相应图标；六款形象都有不同的峰谷姿态。
 - **按调用反馈：** 缓存命中轻微受伤，未命中暴击，模型返回时开心弹跳，余额充值恢复时吃白米饭；连续消费与余额耗尽也有独立反馈。扣费数字按事件顺序上飘，无气泡。
 - **打瞌睡待机：** 连续一段时间没有官方 DeepSeek 调用时进入睡眠动作；峰价站姿与谷价趴姿各有待机动作。默认 10 分钟，可在设置中调整为 1–240 分钟。
 - **余额与统计：** 卡片显示最近使用的 DeepSeek 路由对应的余额及最近一次调用的缓存命中率；API Key 与账号钱包不会混扣。右键直接打开「设置与统计」，切换到「统计」页可看今日 Token、今日整体缓存命中率、今日估算人民币消耗，并切换本周／本月／本年折线图及 Token／人民币单位。
@@ -20,7 +21,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 ### 安装（推荐：保留本地源码目录）
 
 1. 在 Windows 上安装 DSH `0.2.0-rc.1` 或 `0.2.0-rc.2`，在 DSH 中配置官方 DeepSeek API Key，或登录 DeepSeek 账号。凭据由 DSH 管理，无需填入本插件。
-2. 从本仓库下载 ZIP 并解压到**长期保留的目录**，或运行 `git clone https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git`。不要只复制 `pet.ps1`；`assets/`、`index.js`、`stats.js`、`settings-window.ps1` 和清单文件都需要保留。
+2. 从本仓库下载 ZIP 并解压到**长期保留的目录**，或运行 `git clone https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git`。不要只复制 `pet.ps1`；`assets/`、`index.js`、`stats.js`、`settings-window.ps1`、`skin-catalog.ps1` 和清单文件都需要保留。
 3. 在 PowerShell 中安装本地目录，将示例路径换成你的实际解压路径：
 
    ```powershell
@@ -61,7 +62,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 本机数据保存在 `%LOCALAPPDATA%\DshSimpleDesktopPet\`：`state-desktop.json` 保存余额与最近事件，`stats-desktop.json` 保存每日用量，`settings.json` 保存外观与位置。目录沿用旧版名称，以保留升级数据。状态文件**不保存 API Key、提问或回复正文**。完整说明见 [PRIVACY.md](PRIVACY.md)。
 
-`billing.js` 的价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对；官方改价后需更新代码。源码与文档采用 MIT 许可，四张角色图集有单独的 [美术授权说明](ARTWORK-LICENSE.md)。桌宠交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但本仓库未打包上游源码或美术文件；本项目与 DeepSeek 及上游项目无隶属关系。
+`billing.js` 的价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对；官方改价后需更新代码。源码与文档采用 MIT 许可，十二张角色图集及四张新皮肤生成源图有单独的 [美术授权说明](ARTWORK-LICENSE.md)。源图保留 AI 来源信息，派生图集注明生成来源；人工视觉检查不等于绝无相似或法律保证。桌宠交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但本仓库未打包上游源码或美术文件；本项目与 DeepSeek 及上游项目无隶属关系。
 
 开发者可运行 `npm test` 检查计费、过滤、统计及设置交互（Windows 上自动运行原生 WPF 回归）；受限沙箱中可用 `node --test --test-isolation=none` 避免测试进程的管道限制。运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 看独立的模拟动效，不会修改真实余额。加入 `-PreviewSleep` 可看峰谷打瞌睡，加入 `-PreviewSettings` 可看使用模拟数据的设置窗口。
 
@@ -69,7 +70,8 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 ### What it does
 
-- A draggable, always-on-top Windows WPF pet with two skins, three sizes, and distinct peak/off-peak poses.
+- A draggable, always-on-top Windows WPF pet with six skins, three sizes, and distinct peak/off-peak poses. Four new AI-generated characters join the two existing skins: Snow Whale, Mint Tea, Cherry Soda, and Star-Sand Mage.
+- A clickable six-card skin gallery replaces the skin dropdown. Each card shows local peak/off-peak previews; selecting it applies and saves immediately. Selection is highlighted and supports Tab plus Space/Enter. Images are cached locally; settings scroll on smaller screens while Exit Pet stays in the footer.
 - Light damage for cached input, a critical reaction for uncached input, a happy jump when a model reply arrives, and white-rice eating when an official balance increase is detected. Amounts float upward in event order without bubbles.
 - Separate dozing motions for peak and off-peak poses after 1–240 minutes of inactivity (10 minutes by default).
 - Balance for the last used official DeepSeek route, latest-call cache hit rate, a peak/off-peak indicator, and a right-click settings window with today's tokens, aggregate cache hit rate, estimated CNY spend, and week/month/year line charts. Charts and floating amounts can use CNY or tokens.
@@ -100,4 +102,4 @@ If the old UI remains after restarting the plugin, reinstall the updated local f
 
 The plugin writes balance/recent events, daily estimates, and preferences under `%LOCALAPPDATA%\DshSimpleDesktopPet\` for compatibility with earlier local versions. It does not store API keys or prompt/response text. See [PRIVACY.md](PRIVACY.md). Prices were checked against the [official DeepSeek pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) on 2026-09-29 and may change. Code and docs are MIT licensed; artwork has separate [terms](ARTWORK-LICENSE.md). This independent, unofficial project was inspired by [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) and bundles none of its files.
 
-Run `npm test` for billing/event/statistics and settings checks (native WPF interactions run on Windows). In a sandbox that blocks subprocess pipes, use `node --test --test-isolation=none`. `pet.ps1 -Preview` opens an isolated demo with synthetic events; add `-PreviewSleep` for both dozing poses or `-PreviewSettings` for demo charts. Preview mode does not change live balance data.
+Run `npm test` for billing/event/statistics, settings, source-provenance and sprite checks (native WPF interactions and actual local-image integration run on Windows without reading user state). In a sandbox that blocks subprocess pipes, use `node --test --test-isolation=none`. `pet.ps1 -Preview` opens an isolated demo with synthetic events; add `-PreviewSleep` for both dozing poses or `-PreviewSettings` for demo charts. Preview mode does not change live balance data.

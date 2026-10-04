@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-simple-pet",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A Windows desktop pet for official DeepSeek API balance and usage in DSH.",
   "repository": { "type": "git", "url": "https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git" },
   "license": "SEE LICENSE",
@@ -10,5 +10,5 @@
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" }
   },
-  "scripts": { "test": "node --test billing.test.js stats.test.js index.test.js launch.test.js ui.test.js" }
+  "scripts": { "test": "node --test billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js" }
 }

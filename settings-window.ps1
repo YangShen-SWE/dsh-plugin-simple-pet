@@ -113,6 +113,89 @@ function Update-SettingsStats {
   if ($max -eq 0) { Add-ChartText $canvas $(if ($statsReady) { '当前周期暂无记录' } else { '等待 DSH 加载统计' }) 320 95 160 }
 }
 
+function Get-SettingsSkinPreview([string]$skin, [string]$mode) {
+  # Reuse frozen local frames across settings reopen; never decode in an event handler.
+  if ($null -eq $script:SettingsSkinPreviewCache) { $script:SettingsSkinPreviewCache = @{} }
+  $key = "$skin/$mode"
+  if (-not $script:SettingsSkinPreviewCache.ContainsKey($key)) {
+    $script:SettingsSkinPreviewCache[$key] = Get-Frame $skin $mode 'idle'
+  }
+  return $script:SettingsSkinPreviewCache[$key]
+}
+
+function Update-SettingsSkinSelection {
+  foreach ($id in $script:SkinButtons.Keys) {
+    $button = $script:SkinButtons[$id]
+    $selected = [string]$script:Prefs.skin -eq [string]$id
+    $button.Background = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($selected) { '#245F79' } else { '#153B57' }))
+    $button.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($selected) { '#80E6FF' } else { '#40738E' }))
+    $button.BorderThickness = [Windows.Thickness]::new($(if ($selected) { 2 } else { 1 }))
+    $script:SkinSelectionLabels[$id].Visibility = if ($selected) { 'Visible' } else { 'Hidden' }
+    [Windows.Automation.AutomationProperties]::SetItemStatus($button, $(if ($selected) { '已选择' } else { '未选择' }))
+  }
+}
+
+function Initialize-SettingsSkinGallery {
+  $gallery = $script:SettingsWindow.FindName('SkinGallery')
+  $script:SkinButtons = @{}
+  $script:SkinSelectionLabels = @{}
+  foreach ($skin in $script:SkinCatalog) {
+    $id = [string]$skin.id
+    $name = [Security.SecurityElement]::Escape([string]$skin.name)
+    $cardXaml = @"
+<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Name="SkinCard_$id" Tag="$id" Height="153" Margin="4" Padding="9,8" Cursor="Hand"
+        Focusable="True" IsTabStop="True" Foreground="White" FontFamily="Microsoft YaHei"
+        AutomationProperties.Name="$name，峰时与谷时本地预览" ToolTip="选择$name">
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="25"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock Text="$name" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+      <TextBlock Name="SkinSelection_$id" Grid.Column="1" Text="✓" FontSize="15" FontWeight="Bold" Foreground="#9BF2D2" VerticalAlignment="Center" Margin="3,0,0,0"/>
+    </Grid>
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="19"/></Grid.RowDefinitions>
+      <Image Name="SkinPreview_${id}_peak" Margin="1,2" Stretch="Uniform" SnapsToDevicePixels="True" AutomationProperties.Name="$name 峰时预览"/>
+      <Image Name="SkinPreview_${id}_valley" Grid.Column="1" Margin="1,2" Stretch="Uniform" SnapsToDevicePixels="True" AutomationProperties.Name="$name 谷时预览"/>
+      <TextBlock Grid.Row="1" Text="峰时" FontSize="10" Foreground="#D9F5FF" HorizontalAlignment="Center" VerticalAlignment="Bottom"/>
+      <TextBlock Grid.Row="1" Grid.Column="1" Text="谷时" FontSize="10" Foreground="#ADCDE8" HorizontalAlignment="Center" VerticalAlignment="Bottom"/>
+    </Grid>
+  </Grid>
+</Button>
+"@
+    $button = [Windows.Markup.XamlReader]::Parse($cardXaml)
+    $button.Style = $script:SettingsWindow.FindResource('SkinCardStyle')
+    $script:SettingsWindow.RegisterName($button.Name, $button)
+    $script:SkinButtons[$id] = $button
+    $label = $button.FindName("SkinSelection_$id")
+    $script:SkinSelectionLabels[$id] = $label
+    foreach ($mode in @('peak', 'valley')) {
+      $image = $button.FindName("SkinPreview_${id}_$mode")
+      $image.Source = Get-SettingsSkinPreview $id $mode
+      $script:SettingsWindow.RegisterName($image.Name, $image)
+    }
+    $button.Add_Click({
+      param($sender, $eventArgs)
+      # Use the sender's stable id: loop variables are not captured by PowerShell events.
+      $id = [string]$sender.Tag
+      if ([string]$script:Prefs.skin -eq $id) { return }
+      $script:Prefs.skin = $id
+      Save-Prefs
+      Update-SettingsSkinSelection
+    })
+    $button.Add_PreviewKeyDown([Windows.Input.KeyEventHandler]{
+      param($sender, $eventArgs)
+      if ($eventArgs.Key -eq [Windows.Input.Key]::Enter) {
+        $eventArgs.Handled = $true
+        $sender.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+      }
+    })
+    [void]$gallery.Children.Add($button)
+  }
+  Update-SettingsSkinSelection
+}
+
 function Show-PetSettings {
   if ($script:SettingsWindow -and $script:SettingsWindow.IsVisible) {
     $script:SettingsWindow.FindName('SettingsTabs').SelectedIndex = 0
@@ -126,6 +209,22 @@ function Show-PetSettings {
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
         Background="Transparent" ShowInTaskbar="False" Topmost="True">
   <Window.Resources>
+    <Style x:Key="SkinCardStyle" TargetType="Button">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border Name="CardBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
+            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CardBorder" Property="BorderBrush" Value="#B6F0FF"/></Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="CardBorder" Property="BorderBrush" Value="#FFE2A7"/><Setter TargetName="CardBorder" Property="BorderThickness" Value="2"/></Trigger>
+            <Trigger Property="IsPressed" Value="True"><Setter TargetName="CardBorder" Property="Opacity" Value="0.8"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value></Setter>
+    </Style>
     <Style TargetType="TabItem">
       <Setter Property="Foreground" Value="#B9DEEE"/>
       <Setter Property="FontFamily" Value="Microsoft YaHei"/>
@@ -168,15 +267,14 @@ function Show-PetSettings {
         </ControlTemplate></TabControl.Template>
         <TabItem Header="设置">
           <Grid><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="56"/></Grid.RowDefinitions>
+            <ScrollViewer Name="SettingsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
             <StackPanel>
               <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
-                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <StackPanel><TextBlock Text="形象" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
-                    <TextBlock Text="切换桌宠外观，即时生效并保存" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
-                  <ComboBox Name="SkinChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
-                    <ComboBoxItem Content="海蓝鲸鱼娘" Tag="default"/><ComboBoxItem Content="夜航科技娘" Tag="night"/>
-                  </ComboBox>
-                </Grid>
+                <StackPanel Margin="10,10,10,8">
+                  <TextBlock Text="形象图库" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White" Margin="4,0,0,0"/>
+                  <TextBlock Text="峰时 / 谷时双预览 · 点击切换，即时保存" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="4,4,0,5"/>
+                  <UniformGrid Name="SkinGallery" Columns="3" Rows="2"/>
+                </StackPanel>
               </Border>
               <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -208,6 +306,7 @@ function Show-PetSettings {
         </Grid>
       </Border>
             </StackPanel>
+            </ScrollViewer>
             <Grid Grid.Row="1">
               <TextBlock Text="关闭设置窗口不会退出桌宠" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#A5C9DA" VerticalAlignment="Center"/>
               <Button Name="ExitPet" Content="退出桌宠" Width="110" Height="34" HorizontalAlignment="Right" VerticalAlignment="Center"
@@ -216,7 +315,8 @@ function Show-PetSettings {
           </Grid>
         </TabItem>
         <TabItem Header="统计">
-          <Grid><Grid.RowDefinitions><RowDefinition Height="118"/><RowDefinition Height="*"/><RowDefinition Height="35"/></Grid.RowDefinitions>
+          <ScrollViewer Name="StatsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+          <Grid MinWidth="630"><Grid.RowDefinitions><RowDefinition Height="118"/><RowDefinition Height="Auto"/><RowDefinition Height="35"/></Grid.RowDefinitions>
       <Grid Grid.Row="0" Margin="0,0,0,11">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Border Grid.Column="0" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
@@ -249,6 +349,7 @@ function Show-PetSettings {
       <TextBlock Name="StatsNote" Grid.Row="2" Text="人民币为用量估算；统计从本版本首次启用后开始。"
                  FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A5C9DA" VerticalAlignment="Bottom" TextWrapping="Wrap"/>
           </Grid>
+          </ScrollViewer>
         </TabItem>
       </TabControl>
     </Grid>
@@ -257,8 +358,11 @@ function Show-PetSettings {
 '@
   $script:SettingsWindow = [Windows.Markup.XamlReader]::Parse($settingsXaml)
   $script:SettingsWindow.Owner = $script:Window
-  $script:SettingsWindow.Left = [math]::Max(10, [math]::Min([Windows.SystemParameters]::WorkArea.Right - 690, $script:Window.Left - 390))
-  $script:SettingsWindow.Top = [math]::Max(10, [math]::Min([Windows.SystemParameters]::WorkArea.Bottom - 635, $script:Window.Top - 270))
+  $workArea = [Windows.SystemParameters]::WorkArea
+  $script:SettingsWindow.Width = [math]::Min(680, $workArea.Width - 20)
+  $script:SettingsWindow.Height = [math]::Min(625, $workArea.Height - 20)
+  $script:SettingsWindow.Left = [math]::Max($workArea.Left + 10, [math]::Min($workArea.Right - $script:SettingsWindow.Width - 10, $script:Window.Left - 390))
+  $script:SettingsWindow.Top = [math]::Max($workArea.Top + 10, [math]::Min($workArea.Bottom - $script:SettingsWindow.Height - 10, $script:Window.Top - 270))
   $script:SettingsTokens = $script:SettingsWindow.FindName('TodayTokens')
   $script:SettingsHitRate = $script:SettingsWindow.FindName('TodayHitRate')
   $script:SettingsCost = $script:SettingsWindow.FindName('TodayCost')
@@ -268,8 +372,9 @@ function Show-PetSettings {
   $script:ChartRange = $script:SettingsWindow.FindName('ChartRange')
   $script:SleepInput = $script:SettingsWindow.FindName('SleepInput')
   $script:SleepInput.Text = [string]$script:Prefs.sleepMinutes
+  Initialize-SettingsSkinGallery
   # Restore saved choices before subscribing so opening settings does not write preferences.
-  foreach ($choice in @(@{ name = 'SkinChoice'; group = 'skin' }, @{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' })) {
+  foreach ($choice in @(@{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' })) {
     $control = $script:SettingsWindow.FindName($choice.name)
     $control.Tag = $choice.group
     foreach ($item in $control.Items) {
