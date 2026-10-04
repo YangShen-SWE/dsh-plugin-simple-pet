@@ -1,5 +1,15 @@
 # 更新记录 / Changelog
 
+## v0.2.5 — 设置与统计更新
+
+- 更新设置和统计界面，现在可以拖动顶部标题栏移动窗口。
+- 调整右键操作，右键桌宠直接进入设置，不再弹出菜单。
+- 形象、尺寸、扣费飘字和退出桌宠都放进设置里，切换后即时生效。
+- 设置和统计分成两个页签，关闭设置不会退出桌宠。
+- 原来的外观设置和统计数据保留，飘字单位不影响统计图表。
+- 15 项测试及 124 项 WPF 断言通过；补充本地安装副本的更新提示。
+- Right-click now opens Settings directly. Skin, size, floating-amount unit and Exit Pet live in Settings; usage charts remain in Statistics. Both tabs share a draggable title bar. Existing preferences and statistics are preserved.
+
 ## v0.2.4 — 启动即查询账号钱包
 
 - 桌宠启动后立即查询已登录 DeepSeek 账号的钱包；不再先默认查询 API Key 余额，也不必等待首次模型用量事件。

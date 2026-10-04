@@ -1,4 +1,4 @@
-param([ValidateSet('desktop', 'web')][string]$DshProfile = 'desktop', [switch]$Preview,
+﻿param([ValidateSet('desktop', 'web')][string]$DshProfile = 'desktop', [switch]$Preview,
       [switch]$PreviewSleep, [switch]$PreviewSettings, [switch]$PreviewChartYear)
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
@@ -538,50 +538,13 @@ $script:Timer.Add_Tick({
   Clear-ExpiredFloats $now
 })
 
-function New-Choice([string]$label, [string]$group, [string]$value) {
-  $item = New-Object Windows.Controls.MenuItem
-  $item.Header = $label
-  $item.IsCheckable = $true
-  $item.IsChecked = $script:Prefs[$group] -eq $value
-  $item.Tag = "$group`:$value"
-  $item.Add_Click({
-    param($sender, $eventArgs)
-    $parts = ([string]$sender.Tag).Split(':')
-    $script:Prefs[$parts[0]] = $parts[1]
-    foreach ($peer in $sender.Parent.Items) {
-      if ($peer -is [Windows.Controls.MenuItem]) { $peer.IsChecked = $peer -eq $sender }
-    }
-    if ($parts[0] -eq 'size') { Set-PetSize }
-    Save-Prefs
-  })
-  return $item
-}
-
 . (Join-Path $script:ProjectRoot 'settings-window.ps1')
-$menu = New-Object Windows.Controls.ContextMenu
-$settingsItem = New-Object Windows.Controls.MenuItem; $settingsItem.Header = '设置与统计…'
-$settingsItem.Add_Click({ Show-PetSettings })
-[void]$menu.Items.Add($settingsItem)
-[void]$menu.Items.Add((New-Object Windows.Controls.Separator))
-$skinMenu = New-Object Windows.Controls.MenuItem; $skinMenu.Header = '形象'
-[void]$skinMenu.Items.Add((New-Choice '海蓝鲸鱼娘' 'skin' 'default'))
-[void]$skinMenu.Items.Add((New-Choice '夜航科技娘' 'skin' 'night'))
-[void]$menu.Items.Add($skinMenu)
-$sizeMenu = New-Object Windows.Controls.MenuItem; $sizeMenu.Header = '尺寸'
-[void]$sizeMenu.Items.Add((New-Choice '小' 'size' 'small'))
-[void]$sizeMenu.Items.Add((New-Choice '中' 'size' 'medium'))
-[void]$sizeMenu.Items.Add((New-Choice '大' 'size' 'large'))
-[void]$menu.Items.Add($sizeMenu)
-$unitMenu = New-Object Windows.Controls.MenuItem; $unitMenu.Header = '扣费飘字'
-[void]$unitMenu.Items.Add((New-Choice '人民币' 'unit' 'cny'))
-[void]$unitMenu.Items.Add((New-Choice 'Token' 'unit' 'token'))
-[void]$menu.Items.Add($unitMenu)
-[void]$menu.Items.Add((New-Object Windows.Controls.Separator))
-$exit = New-Object Windows.Controls.MenuItem; $exit.Header = '退出桌宠'
-$exit.Add_Click({ $script:Window.Close() })
-[void]$menu.Items.Add($exit)
-$script:Card.ContextMenu = $menu
-$script:SpriteLayer.ContextMenu = $menu
+$settingsHandler = [Windows.Input.MouseButtonEventHandler]{
+  param($sender, $eventArgs)
+  $eventArgs.Handled = $true
+  Show-PetSettings
+}
+$script:Window.Add_MouseRightButtonUp($settingsHandler)
 
 $dragHandler = [Windows.Input.MouseButtonEventHandler]{
   param($sender, $eventArgs)
@@ -596,7 +559,11 @@ if (-not $Preview) { Read-PetState }
 if ($PreviewSettings) {
   $script:Window.Add_Loaded({
     Show-PetSettings
-    if ($PreviewChartYear) { $script:ChartUnit.SelectedIndex = 1; $script:ChartRange.SelectedIndex = 2 }
+    if ($PreviewChartYear) {
+      $script:ChartUnit.SelectedIndex = 1
+      $script:ChartRange.SelectedIndex = 2
+      $script:SettingsWindow.FindName('SettingsTabs').SelectedIndex = 1
+    }
   })
 }
 $script:Timer.Start()

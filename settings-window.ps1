@@ -1,4 +1,4 @@
-function Get-StatDay([string]$key) {
+﻿function Get-StatDay([string]$key) {
   if ($null -eq $script:Stats -or $null -eq $script:Stats.days) { return $null }
   $property = $script:Stats.days.PSObject.Properties[$key]
   if ($null -eq $property) { return $null }
@@ -115,6 +115,7 @@ function Update-SettingsStats {
 
 function Show-PetSettings {
   if ($script:SettingsWindow -and $script:SettingsWindow.IsVisible) {
+    $script:SettingsWindow.FindName('SettingsTabs').SelectedIndex = 0
     [void]$script:SettingsWindow.Activate()
     return
   }
@@ -124,20 +125,78 @@ function Show-PetSettings {
         Title="dsh-plugin-simple-pet 设置" Width="680" Height="625"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
         Background="Transparent" ShowInTaskbar="False" Topmost="True">
+  <Window.Resources>
+    <Style TargetType="TabItem">
+      <Setter Property="Foreground" Value="#B9DEEE"/>
+      <Setter Property="FontFamily" Value="Microsoft YaHei"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="TabItem">
+          <Border Name="TabBorder" Background="#203F5D" BorderThickness="1" BorderBrush="Transparent" CornerRadius="9" Padding="25,9" Margin="0,0,10,0" Cursor="Hand">
+            <ContentPresenter ContentSource="Header"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsSelected" Value="True"><Setter TargetName="TabBorder" Property="Background" Value="#23789B"/><Setter Property="Foreground" Value="White"/></Trigger>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="TabBorder" Property="BorderBrush" Value="#77CCEA"/><Setter TargetName="TabBorder" Property="BorderThickness" Value="1"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value></Setter>
+    </Style>
+  </Window.Resources>
   <Border CornerRadius="22" BorderThickness="1" BorderBrush="#82CEEC">
     <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
       <GradientStop Color="#102F51" Offset="0"/><GradientStop Color="#1B4964" Offset="1"/>
     </LinearGradientBrush></Border.Background>
     <Border.Effect><DropShadowEffect Color="#0A2039" BlurRadius="24" ShadowDepth="8" Opacity="0.55"/></Border.Effect>
     <Grid Margin="25,20,25,23">
-      <Grid.RowDefinitions><RowDefinition Height="62"/><RowDefinition Height="83"/><RowDefinition Height="118"/><RowDefinition Height="*"/><RowDefinition Height="25"/></Grid.RowDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="68"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <Grid Grid.Row="0">
-        <StackPanel><TextBlock Text="桌宠设置" FontFamily="Microsoft YaHei" FontSize="23" FontWeight="Bold" Foreground="White"/>
-          <TextBlock Text="DEEPSEEK · SIMPLE DESKTOP PET" FontFamily="Segoe UI" FontSize="10" Foreground="#9BCFE2"/></StackPanel>
-        <Button Name="CloseSettings" Content="×" Width="32" Height="32" HorizontalAlignment="Right" VerticalAlignment="Top"
-                FontSize="21" Foreground="White" Background="#315E7A" BorderBrush="#6599B6" Cursor="Hand"/>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="42"/></Grid.ColumnDefinitions>
+        <Grid Name="SettingsDragHandle" Background="Transparent" Cursor="SizeAll" Margin="0,0,10,0" ToolTip="按住标题栏拖动窗口">
+          <StackPanel><TextBlock Text="设置与统计" FontFamily="Microsoft YaHei" FontSize="23" FontWeight="Bold" Foreground="White"/>
+            <TextBlock Text="DEEPSEEK · SIMPLE DESKTOP PET · 拖动标题栏移动" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#9BCFE2"/></StackPanel>
+        </Grid>
+        <Button Name="CloseSettings" Grid.Column="1" Content="×" Width="32" Height="32" HorizontalAlignment="Right" VerticalAlignment="Top"
+                FontSize="21" Foreground="White" Background="#315E7A" BorderBrush="#6599B6" Cursor="Hand" ToolTip="关闭设置，桌宠继续运行"/>
       </Grid>
-      <Border Grid.Row="1" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,10">
+      <TabControl Name="SettingsTabs" Grid.Row="1" SelectedIndex="0" Background="Transparent" BorderThickness="0">
+        <TabControl.Template><ControlTemplate TargetType="TabControl">
+          <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <TabPanel IsItemsHost="True"/>
+            <ContentPresenter Grid.Row="1" ContentSource="SelectedContent" Margin="0,13,0,0"/>
+          </Grid>
+        </ControlTemplate></TabControl.Template>
+        <TabItem Header="设置">
+          <Grid><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="56"/></Grid.RowDefinitions>
+            <StackPanel>
+              <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="形象" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBlock Text="切换桌宠外观，即时生效并保存" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
+                  <ComboBox Name="SkinChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
+                    <ComboBoxItem Content="海蓝鲸鱼娘" Tag="default"/><ComboBoxItem Content="夜航科技娘" Tag="night"/>
+                  </ComboBox>
+                </Grid>
+              </Border>
+              <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="尺寸" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBlock Text="调整角色与余额卡的整体大小" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
+                  <ComboBox Name="SizeChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
+                    <ComboBoxItem Content="小" Tag="small"/><ComboBoxItem Content="中" Tag="medium"/><ComboBoxItem Content="大" Tag="large"/>
+                  </ComboBox>
+                </Grid>
+              </Border>
+              <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="扣费飘字" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBlock Text="选择扣费动画的单位，不影响统计图表" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
+                  <ComboBox Name="UnitChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
+                    <ComboBoxItem Content="人民币" Tag="cny"/><ComboBoxItem Content="Token" Tag="token"/>
+                  </ComboBox>
+                </Grid>
+              </Border>
+      <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,10">
         <Grid Margin="16,10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <StackPanel VerticalAlignment="Center"><TextBlock Text="打瞌睡等待时间" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
             <TextBlock Text="官方 DeepSeek 模型无调用后开始打瞌睡" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3"/></StackPanel>
@@ -148,7 +207,17 @@ function Show-PetSettings {
           </StackPanel>
         </Grid>
       </Border>
-      <Grid Grid.Row="2" Margin="0,0,0,11">
+            </StackPanel>
+            <Grid Grid.Row="1">
+              <TextBlock Text="关闭设置窗口不会退出桌宠" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#A5C9DA" VerticalAlignment="Center"/>
+              <Button Name="ExitPet" Content="退出桌宠" Width="110" Height="34" HorizontalAlignment="Right" VerticalAlignment="Center"
+                      Foreground="White" Background="#804653" BorderBrush="#CB8897" FontFamily="Microsoft YaHei" Cursor="Hand"/>
+            </Grid>
+          </Grid>
+        </TabItem>
+        <TabItem Header="统计">
+          <Grid><Grid.RowDefinitions><RowDefinition Height="118"/><RowDefinition Height="*"/><RowDefinition Height="35"/></Grid.RowDefinitions>
+      <Grid Grid.Row="0" Margin="0,0,0,11">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Border Grid.Column="0" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
           <TextBlock Text="今日 Token 消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
@@ -163,7 +232,7 @@ function Show-PetSettings {
           <TextBlock Name="TodayCost" Text="¥0.00" Foreground="#FFE2A7" FontFamily="Segoe UI" FontSize="22" FontWeight="Bold" Margin="0,10,0,0"/>
         </StackPanel></Border>
       </Grid>
-      <Border Grid.Row="3" Background="#123653" CornerRadius="15" BorderBrush="#457A98" BorderThickness="1">
+      <Border Grid.Row="1" Background="#123653" CornerRadius="15" BorderBrush="#457A98" BorderThickness="1">
         <Grid Margin="15,12"><Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/></Grid.RowDefinitions>
           <Grid Grid.Row="0"><TextBlock Text="周期消耗趋势" FontFamily="Microsoft YaHei" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -177,8 +246,11 @@ function Show-PetSettings {
           <Canvas Name="ChartCanvas" Grid.Row="1" Width="600" Height="210" HorizontalAlignment="Center" VerticalAlignment="Top"/>
         </Grid>
       </Border>
-      <TextBlock Name="StatsNote" Grid.Row="4" Text="人民币为用量估算；统计从本版本首次启用后开始。"
-                 FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A5C9DA" VerticalAlignment="Bottom"/>
+      <TextBlock Name="StatsNote" Grid.Row="2" Text="人民币为用量估算；统计从本版本首次启用后开始。"
+                 FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A5C9DA" VerticalAlignment="Bottom" TextWrapping="Wrap"/>
+          </Grid>
+        </TabItem>
+      </TabControl>
     </Grid>
   </Border>
 </Window>
@@ -196,7 +268,35 @@ function Show-PetSettings {
   $script:ChartRange = $script:SettingsWindow.FindName('ChartRange')
   $script:SleepInput = $script:SettingsWindow.FindName('SleepInput')
   $script:SleepInput.Text = [string]$script:Prefs.sleepMinutes
+  # Restore saved choices before subscribing so opening settings does not write preferences.
+  foreach ($choice in @(@{ name = 'SkinChoice'; group = 'skin' }, @{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' })) {
+    $control = $script:SettingsWindow.FindName($choice.name)
+    $control.Tag = $choice.group
+    foreach ($item in $control.Items) {
+      if ([string]$item.Tag -eq $script:Prefs[$choice.group]) { $control.SelectedItem = $item; break }
+    }
+    $control.Add_SelectionChanged({
+      param($sender, $eventArgs)
+      if ($null -eq $sender.SelectedItem) { return }
+      $group = [string]$sender.Tag
+      $value = [string]$sender.SelectedItem.Tag
+      if ($script:Prefs[$group] -eq $value) { return }
+      $script:Prefs[$group] = $value
+      if ($group -eq 'size') { Set-PetSize } else { Save-Prefs }
+    })
+  }
+  ($script:SettingsWindow.FindName('SettingsDragHandle')).Add_MouseLeftButtonDown([Windows.Input.MouseButtonEventHandler]{
+    param($sender, $eventArgs)
+    if ($eventArgs.LeftButton -ne [Windows.Input.MouseButtonState]::Pressed) { return }
+    $eventArgs.Handled = $true
+    try { $script:SettingsWindow.DragMove() } catch [InvalidOperationException] { }
+  })
   ($script:SettingsWindow.FindName('CloseSettings')).Add_Click({ $script:SettingsWindow.Close() })
+  ($script:SettingsWindow.FindName('ExitPet')).Add_Click({ $script:Window.Close() })
+  ($script:SettingsWindow.FindName('SettingsTabs')).Add_SelectionChanged({
+    param($sender, $eventArgs)
+    if ($eventArgs.OriginalSource -eq $sender -and $sender.SelectedIndex -eq 1) { Update-SettingsStats }
+  })
   ($script:SettingsWindow.FindName('SaveSleep')).Add_Click({
     $number = 0
     if ([int]::TryParse($script:SleepInput.Text, [ref]$number) -and $number -ge 1 -and $number -le 240) {

@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版本：v0.2.4。** 启动后即查询已登录 DeepSeek 账号的钱包，不必等待第一次模型调用；之后若使用 API Key 路由则切换显示对应余额。详见 [更新记录](CHANGELOG.md)。
+**最新版本：v0.2.5。** 设置和统计现在可以拖动了，右键桌宠直接进入设置；形象、尺寸、扣费飘字和退出桌宠统一放进设置里。启动即查询账号钱包、按路由切换余额的功能保持不变。详见 [更新记录](CHANGELOG.md)。
 
 Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价格，用角色动作反馈每次调用。A small native Windows pet for DeepSeek API balance and usage in DeepSeek Harness (DSH).
 
@@ -10,11 +10,11 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 ### 功能与特色
 
-- **轻量悬浮窗：** 透明、可拖动、始终置顶；角色位于余额卡边缘，文字保持可读。右键可选小／中／大尺寸及两套可替换形象：默认海蓝鲸鱼娘、夜航科技娘。
+- **轻量悬浮窗：** 透明、可拖动、始终置顶；角色位于余额卡边缘，文字保持可读。右键直接打开设置，在设置页选择小／中／大尺寸及两套可替换形象：默认海蓝鲸鱼娘、夜航科技娘。设置与统计窗口也可拖动标题栏移动。
 - **峰谷形象：** 根据北京时间工作日 09:00–12:00、14:00–18:00 区分峰价与谷价，卡片显示相应图标；两套形象都有不同的峰谷姿态。
 - **按调用反馈：** 缓存命中轻微受伤，未命中暴击，模型返回时开心弹跳，余额充值恢复时吃白米饭；连续消费与余额耗尽也有独立反馈。扣费数字按事件顺序上飘，无气泡。
 - **打瞌睡待机：** 连续一段时间没有官方 DeepSeek 调用时进入睡眠动作；峰价站姿与谷价趴姿各有待机动作。默认 10 分钟，可在设置中调整为 1–240 分钟。
-- **余额与统计：** 卡片显示最近使用的 DeepSeek 路由对应的余额及最近一次调用的缓存命中率；API Key 与账号钱包不会混扣。右键「设置与统计…」可看今日 Token、今日整体缓存命中率、今日估算人民币消耗，并切换本周／本月／本年折线图及 Token／人民币单位。
+- **余额与统计：** 卡片显示最近使用的 DeepSeek 路由对应的余额及最近一次调用的缓存命中率；API Key 与账号钱包不会混扣。右键直接打开「设置与统计」，切换到「统计」页可看今日 Token、今日整体缓存命中率、今日估算人民币消耗，并切换本周／本月／本年折线图及 Token／人民币单位。
 - **简化范围：** 只处理 DSH 的两条官方 DeepSeek 模型路由；没有通知、其他模型计价或自定义价格规则。扣费飘字可选 Token 或人民币；今日总量集中在设置窗口。动作由 WPF 原生动画播放，状态轮询不限制动作帧率。
 
 ### 安装（推荐：保留本地源码目录）
@@ -36,7 +36,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
    powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfile desktop
    ```
 
-6. 拖动角色或卡片调整位置；右键打开「设置与统计…」、切换形象／尺寸／飘字单位，或选择「退出桌宠」。运行期间不要移动或删除已安装的源码目录。
+6. 拖动角色或卡片调整位置；右键直接打开「设置与统计」。在「设置」页切换形象／尺寸／飘字单位、调整睡眠等待时间或选择「退出桌宠」；在「统计」页查看用量。两个页签均可拖动顶部标题栏移动窗口；右上角「×」仅关闭设置，不退出桌宠。运行期间不要移动或删除已安装的源码目录。
 
 通过市场／GitHub 安装到 Windows 的 DSH desktop profile 后，桌宠会随插件启用自动启动。`start-pet.cmd` 仅供故障排查时手动启动；默认安装位置通常是 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-plugin-simple-pet\`。桌宠为单实例，重复启用不会打开多个窗口。
 
@@ -50,6 +50,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 | 现象 | 检查方法 |
 | --- | --- |
+| 更新代码后重启插件，界面还是旧版 | DSH 安装的本地插件可能是源码副本。先重新安装更新后的目录（或在市场更新插件），再停用并启用插件；只改源码、只重启旧安装不会更新副本。 |
 | 设置页显示「等待 DSH 加载统计」 | 完全退出并重启 DSH。只重启桌宠窗口不会重新加载 DSH 插件。 |
 | 今日总量为 0 | 确认当前调用使用 `deepseek-official` 或 `deepseek-account`，且新插件加载后至少完成一次模型调用。历史调用可能不在统计内。 |
 | 余额显示「等待 DSH…」或无法查询 | 检查 DSH 是否运行；API Key 路由检查 DSH 中的 Key 和官方余额接口，账号路由检查 DSH 登录状态及账号余额服务。 |
@@ -62,7 +63,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
 
 `billing.js` 的价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对；官方改价后需更新代码。源码与文档采用 MIT 许可，四张角色图集有单独的 [美术授权说明](ARTWORK-LICENSE.md)。桌宠交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但本仓库未打包上游源码或美术文件；本项目与 DeepSeek 及上游项目无隶属关系。
 
-开发者可运行 `node --test` 检查计费、过滤与统计；运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 看独立的模拟动效，不会修改真实余额。加入 `-PreviewSleep` 可看峰谷打瞌睡，加入 `-PreviewSettings` 可看使用模拟数据的设置窗口。
+开发者可运行 `npm test` 检查计费、过滤、统计及设置交互（Windows 上自动运行原生 WPF 回归）；受限沙箱中可用 `node --test --test-isolation=none` 避免测试进程的管道限制。运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 看独立的模拟动效，不会修改真实余额。加入 `-PreviewSleep` 可看峰谷打瞌睡，加入 `-PreviewSettings` 可看使用模拟数据的设置窗口。
 
 ## English guide
 
@@ -85,7 +86,7 @@ Windows 桌面上的 Q 版 DeepSeek API 桌宠：看余额、用量和峰谷价�
    ```
 
 4. Disable/remove older `@local/dsh-simpledesktoppet` or `@local/dsh-deepseek-pet` installations if present. Fully quit and relaunch DSH to load the new plugin.
-5. Start DSH and enable `dsh-plugin-simple-pet`. The plugin opens the Windows pet window automatically and closes the window it started when disabled. Right-click the pet to open settings. If it does not appear after first enabling, fully quit and relaunch DSH. For troubleshooting, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfile desktop` in the installed folder. Drag the pet to move it; right-click to open settings or exit. Keep the installed folder in place while using the pet.
+5. Start DSH and enable `dsh-plugin-simple-pet`. The plugin opens the Windows pet window automatically and closes the window it started when disabled. Right-click the pet to open settings. If it does not appear after first enabling, fully quit and relaunch DSH. For troubleshooting, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfile desktop` in the installed folder. Drag the pet to move it; right-click opens settings directly. Choose skin, size, floating-amount unit, sleep delay, or Exit Pet in the Settings tab; view usage in the Statistics tab. Drag the title bar to move either tab's window; × closes settings without quitting the pet. Keep the installed folder in place while using the pet.
 
 On Windows, the DSH desktop plugin starts the pet automatically when enabled. `start-pet.cmd` remains a manual troubleshooting fallback; with the default DSH home it is normally under `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-plugin-simple-pet\`. The pet allows only one instance.
 
@@ -93,10 +94,10 @@ On Windows, the DSH desktop plugin starts the pet automatically when enabled. `s
 
 On startup the card queries the signed-in DeepSeek account wallet immediately, without waiting for model usage. It switches to the official API balance if an API-key call is made, and back to the account wallet after an account call. If no account is signed in or the account balance service is unavailable, the initial balance remains disconnected until that service recovers or an API-key route is used. The API-key route reads the official API balance; the sign-in route reads DSH's account balance service. The plugin never deducts account usage from the API-key wallet. It estimates deductions between balance checks (about every 60 seconds). Token amounts are the full usage reported for a completed call, which can include conversation history and cached context. Cache-hit and uncached-input amounts from the same call are separate billing categories. Today's totals combine both official routes, use the local date, and appear in right-click settings; pre-install calls may be incomplete.
 
-If settings says “waiting for DSH to load statistics,” fully restart DSH. If today's total is zero, complete an official DeepSeek model call after the new plugin loads. If the balance is unavailable, check the API key or account sign-in for the selected route and the corresponding balance service. A few thousand input tokens for a short question can be normal when prior conversation context is included.
+If the old UI remains after restarting the plugin, reinstall the updated local folder (or update the market installation), then disable and re-enable the plugin. DSH can install a copy of local source, so editing the source alone does not update that installed copy. If settings says “waiting for DSH to load statistics,” fully restart DSH. If today's total is zero, complete an official DeepSeek model call after the new plugin loads. If the balance is unavailable, check the API key or account sign-in for the selected route and the corresponding balance service. A few thousand input tokens for a short question can be normal when prior conversation context is included.
 
 ### Privacy, licensing, and development
 
 The plugin writes balance/recent events, daily estimates, and preferences under `%LOCALAPPDATA%\DshSimpleDesktopPet\` for compatibility with earlier local versions. It does not store API keys or prompt/response text. See [PRIVACY.md](PRIVACY.md). Prices were checked against the [official DeepSeek pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) on 2026-09-29 and may change. Code and docs are MIT licensed; artwork has separate [terms](ARTWORK-LICENSE.md). This independent, unofficial project was inspired by [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) and bundles none of its files.
 
-Run `node --test` for billing/event/statistics checks. `pet.ps1 -Preview` opens an isolated demo with synthetic events; add `-PreviewSleep` for both dozing poses or `-PreviewSettings` for demo charts. Preview mode does not change live balance data.
+Run `npm test` for billing/event/statistics and settings checks (native WPF interactions run on Windows). In a sandbox that blocks subprocess pipes, use `node --test --test-isolation=none`. `pet.ps1 -Preview` opens an isolated demo with synthetic events; add `-PreviewSleep` for both dozing poses or `-PreviewSettings` for demo charts. Preview mode does not change live balance data.
