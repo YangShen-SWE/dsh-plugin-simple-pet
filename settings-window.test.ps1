@@ -145,6 +145,13 @@ $script:Window.Add_Closed({ $script:OwnerCloseCount++ })
 try {
   # Only load the UI functions; all persistence and pet behavior are isolated stubs.
   . $SettingsScript
+  # Isolate mode changes from the production pet queue and persistence.
+  function Refresh-BillingMode {
+    $script:Stats = if ((Get-BillingMode) -eq 'codex') { $script:LastSnapshot.codexStats } else { $script:LastSnapshot.stats }
+    Save-Prefs
+  }
+  $script:Prefs.billingMode = 'deepseek'
+  $script:Prefs.codexUnit = 'token'
   $script:Window.Show()
   Show-PetSettings
   Flush-Dispatcher
@@ -291,6 +298,45 @@ try {
     Assert-Equal $script:Prefs.sleepMinutes 10 "invalid sleep '$invalid' leaves preferences alone"
     Assert-Equal $script:SaveCount $before "invalid sleep '$invalid' does not save"
   }
+
+  # Mode selection keeps DeepSeek preferences and uses independent Codex counters.
+  $modeChoice = Get-Control 'BillingModeChoice' ([Windows.Controls.ComboBox])
+  $codexUnit = Get-Control 'CodexUnitChoice' ([Windows.Controls.ComboBox])
+  Assert-Choices $modeChoice @('deepseek', 'codex') 'billing mode'
+  Assert-Choices $codexUnit @('token', 'percent') 'Codex floating unit'
+  $script:LastSnapshot = [pscustomobject]@{
+    stats = $script:Stats
+    codexStats = [pscustomobject]@{ days = @{}; activityAt = 0 }
+    codex = [pscustomobject]@{ status = 'ready'; fiveHour = [pscustomobject]@{ remainingPercent = 0; resetAt = 1800000000000 }; weekly = [pscustomobject]@{ remainingPercent = 87.5; resetAt = 1800600000000 } }
+  }
+  $before = $script:SaveCount
+  Select-Tag $modeChoice 'codex'
+  Flush-Dispatcher
+  Assert-Equal $script:Prefs.billingMode 'codex' 'switch to Codex persists mode'
+  Assert-Equal $script:SaveCount ($before + 1) 'mode switch saves once'
+  Assert-Equal ([string]($script:SettingsWindow.FindName('DeepSeekUnitPanel')).Visibility) 'Collapsed' 'money floating choice hidden in Codex'
+  Assert-Equal ([string]($script:SettingsWindow.FindName('CodexUnitPanel')).Visibility) 'Visible' 'Codex floating choice shown'
+  Assert-True (-not $chartUnit.IsEnabled) 'Codex graph cannot switch to currency'
+  Assert-Equal $script:SettingsCost.Text '0%' 'exhausted quota is a genuine zero'
+  Assert-Equal $script:SettingsHitRate.Text '87.5%' 'weekly quota is separate from cache-hit rate'
+  foreach ($skin in $script:SkinCatalog) {
+    Assert-Equal ([string]($script:SkinButtons[$skin.id].FindName("SkinPreview_$($skin.id)_peak")).Visibility) 'Collapsed' 'peak preview hidden in Codex'
+    Assert-Equal ($script:SkinButtons[$skin.id].FindName("SkinLabelValley_$($skin.id)")).Text '形象预览' 'Codex gallery has no valley-price label'
+  }
+  Select-Tag $codexUnit 'percent'
+  Assert-Equal $script:Prefs.codexUnit 'percent' 'Codex percentage unit persists separately'
+  Assert-Equal $script:Prefs.unit 'token' 'Codex unit does not replace DeepSeek unit'
+  Save-SettingsCapture 'codex-settings-test.png'
+  $tabs.SelectedIndex = 1
+  Flush-Dispatcher
+  Save-SettingsCapture 'codex-statistics-test.png'
+  $tabs.SelectedIndex = 0
+  Select-Tag $modeChoice 'deepseek'
+  Flush-Dispatcher
+  Assert-True $chartUnit.IsEnabled 'currency chart choice restored in DeepSeek'
+  Assert-Equal ([string]($script:SettingsWindow.FindName('DeepSeekUnitPanel')).Visibility) 'Visible' 'DeepSeek controls restored'
+  Assert-Equal ($script:SkinButtons['default'].FindName('SkinLabelValley_default')).Text '谷时' 'DeepSeek gallery labels restored'
+  Assert-Equal $script:FrameCalls.Count 12 'switching mode does not reload gallery assets'
 
   $before = $script:SaveCount
   $beforeSize = $script:SizeCount

@@ -75,15 +75,74 @@ test('both DeepSeek provider routes enter, while unrelated providers stay out', 
   const response = request('test');
   assert.equal(response.code,200);
   const payload = JSON.parse(response.body);
-  assert.deepEqual(payload.events.map(e=>e.kind),['hit','miss','output','hit','miss','output','combo']);
+  assert.deepEqual(payload.events.filter(e => e.billingMode === 'deepseek').map(e=>e.kind),['hit','miss','output','hit','miss','output','combo']);
+  assert.deepEqual(payload.events.filter(e => e.billingMode === 'codex').map(e => e.kind), ['hit','miss','output']);
+  assert.ok(payload.events.filter(e => e.billingMode === 'codex').every(e => e.cny === null));
   assert.equal(payload.cacheHitRate,2/3);
   const today = new Date('2026-09-29T01:00:00Z');
   const dayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
   assert.equal(payload.stats.days[dayKey].tokens, 1200);
+  assert.equal(payload.codexStats.days[dayKey].tokens, 600);
+  assert.equal(payload.codexStats.days[dayKey].cny, 0);
   for (const dispose of disposers.reverse()) dispose?.();
   assert.equal(petStopped, true);
   if (previousDataDir === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = previousDataDir;
+});
+
+test('subscription bridge reaches guarded state DTO without changing the DeepSeek wallet', async () => {
+  const previousDataDir = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = join(import.meta.dirname, 'work', `test-codex-bridge-${process.pid}`);
+  const handlers = new Map(), listeners = new Map(), disposers = [], calls = [];
+  const now = Date.now();
+  const services = {
+    effect(fn) { disposers.push(fn()); },
+    webServer: { register({ path, handler }) { handlers.set(path, handler); return () => {}; } },
+    connection: {
+      requestRejection(req) { return req.headers.authorization === 'fixture' ? undefined : 401; },
+      createSharedFetchHandler(prefix) {
+        assert.equal(prefix, '/api');
+        return { async fetch(request) {
+          const body = await request.json(); calls.push(body);
+          assert.equal(body.type, 'client-request');
+          assert.ok(['codex-subscription/status', 'codex-subscription/usage'].includes(body.method));
+          const value = body.method.endsWith('/status')
+            ? { authenticated: true, accounts: [{ id: 'fixture-private-id', email: 'fixture-private-email', active: true }] }
+            : { fetchedAt: now, rateLimits: [{ id: 'codex', windows: [{ windowSeconds: 18000, remainingPercent: 75, resetsAt: Math.floor(now / 1000) + 3600 }] }] };
+          return Response.json({ type: 'server-response', rpcId: body.rpcId, result: { ok: true, value } });
+        } };
+      },
+    },
+  };
+  const ctx = { ...services, on(name, fn) { listeners.set(name, fn); }, inject(_names, fn) { fn(services); },
+    llm: { listConfigurableProviders() { return []; } }, settings: { describe() { return []; } } };
+  try {
+    apply(ctx, { petLauncher: () => () => {} });
+    const state = (auth = 'fixture') => {
+      let body, code;
+      handlers.get('/api/dsh-plugin-simple-pet/state')({ method: 'GET', url: '/api/dsh-plugin-simple-pet/state?since=0', headers: { authorization: auth } },
+        { writeHead(value) { code = value; }, end(value) { body = value; } });
+      return { code, payload: code === 200 ? JSON.parse(body) : body };
+    };
+    for (let i = 0; i < 50 && state().payload.codex.status === 'loading'; i++) await new Promise(setImmediate);
+    const before = state().payload;
+    assert.equal(before.codex.status, 'ready');
+    assert.equal(before.codex.fiveHour.remainingPercent, 75);
+    assert.equal(before.codex.weekly, null);
+    assert.ok(!JSON.stringify(before).includes('fixture-private'));
+    assert.equal(state('').code, 401);
+    assert.deepEqual(calls[1].payload, { force: false });
+    listeners.get('session/event')({ id: 'codex-bridge', firstLiveSeq: 1 }, { seq: 1, type: 'assistant/message', time: new Date(now).toISOString(), data: {
+      message: { source: { kind: 'model', provider: 'openai-codex', model: 'fixture-model' } }, usage: { inputTokens: 10, outputTokens: 20 },
+    } });
+    const after = state().payload;
+    assert.equal(after.balance, before.balance);
+    assert.ok(after.events.every(event => event.billingMode === 'codex' && event.cny === null));
+    assert.equal(Object.values(after.codexStats.days).reduce((sum, day) => sum + day.tokens, 0), 30);
+  } finally {
+    for (const dispose of disposers.reverse()) dispose?.();
+    if (previousDataDir === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = previousDataDir;
+  }
 });
 
 test('startup reads the account wallet before usage, then switches wallets by provider', async () => {

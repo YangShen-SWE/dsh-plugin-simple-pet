@@ -10,6 +10,7 @@ $script:SingleInstance = New-Object Threading.Mutex($true, $mutexName, [ref]$cre
 if (-not $created) { exit 0 }
 $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $script:ProjectRoot 'skin-catalog.ps1')
+. (Join-Path $script:ProjectRoot 'usage-view.ps1')
 $script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
 $script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
 $script:SettingsFile = Join-Path $script:DataDir $(if ($Preview) { 'settings-preview.json' } else { 'settings.json' })
@@ -19,17 +20,19 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; sleepMinutes = 10; left = $null; top = $null }
 if (Test-Path -LiteralPath $script:SettingsFile) {
   try {
     $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($key in @('skin', 'unit', 'size', 'sleepMinutes', 'left', 'top')) {
+    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'sleepMinutes', 'left', 'top')) {
       if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     }
   } catch { }
 }
 if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id })) { $script:Prefs.skin = 'default' }
 if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
+if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
+if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
 if ($script:Prefs.size -notin @('small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
 if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
 $script:Prefs.sleepMinutes = [math]::Max(1, [math]::Min(240, [int]$script:Prefs.sleepMinutes))
@@ -55,7 +58,8 @@ $xaml = @'
       <Border.Effect>
         <DropShadowEffect Color="#092A46" BlurRadius="15" ShadowDepth="5" Opacity="0.32"/>
       </Border.Effect>
-      <Canvas Width="260" Height="90">
+      <Canvas Width="260" Height="154">
+      <Canvas Name="DeepSeekPanel" Width="260" Height="90">
         <TextBlock Name="CardHeader" Canvas.Left="13" Canvas.Top="26" Text="DEEPSEEK · API 余额"
                    FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
         <Border Name="PriceBadge" Canvas.Left="175" Canvas.Top="24" Width="78" Height="20"
@@ -68,6 +72,19 @@ $xaml = @'
         <Border Canvas.Left="165" Canvas.Top="58" Width="1" Height="20" Background="#458BAC"/>
         <TextBlock Name="Rate" Canvas.Left="174" Canvas.Top="66" Width="80" TextAlignment="Right"
                    Text="缓存命中 —" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A8EEFF"/>
+      </Canvas>
+      <Canvas Name="CodexPanel" Width="260" Height="154" Visibility="Collapsed">
+        <TextBlock Canvas.Left="13" Canvas.Top="25" Text="CODEX · 订阅额度" FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
+        <TextBlock Name="QuotaStatus" Canvas.Left="122" Canvas.Top="26" Width="125" TextAlignment="Right" Text="等待 DSH 数据" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#ABD2E3" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Canvas.Left="13" Canvas.Top="51" Text="5 小时剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
+        <TextBlock Name="FiveHourValue" Canvas.Left="147" Canvas.Top="42" Width="100" TextAlignment="Right" Text="—" FontFamily="Segoe UI" FontSize="23" FontWeight="Bold" Foreground="#7DE9FF"/>
+        <ProgressBar Name="FiveHourBar" Canvas.Left="13" Canvas.Top="71" Width="234" Height="5" Minimum="0" Maximum="100" Value="0" Foreground="#7DE9FF" Background="#234B66" BorderThickness="0"/>
+        <TextBlock Name="FiveHourReset" Canvas.Left="13" Canvas.Top="80" Width="234" Text="重置时间未知" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#A9CEE2"/>
+        <TextBlock Canvas.Left="13" Canvas.Top="108" Text="周额度剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
+        <TextBlock Name="WeeklyValue" Canvas.Left="147" Canvas.Top="99" Width="100" TextAlignment="Right" Text="—" FontFamily="Segoe UI" FontSize="23" FontWeight="Bold" Foreground="#B7ABFF"/>
+        <ProgressBar Name="WeeklyBar" Canvas.Left="13" Canvas.Top="128" Width="234" Height="5" Minimum="0" Maximum="100" Value="0" Foreground="#B7ABFF" Background="#234B66" BorderThickness="0"/>
+        <TextBlock Name="WeeklyReset" Canvas.Left="13" Canvas.Top="137" Width="234" Text="重置时间未知" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#A9CEE2"/>
+      </Canvas>
       </Canvas>
     </Border>
     <Grid Name="SpriteLayer" Canvas.Left="17" Canvas.Top="-15" Width="238" Height="238"
@@ -101,6 +118,9 @@ $script:Balance = $script:Window.FindName('Balance')
 $script:Rate = $script:Window.FindName('Rate')
 $script:ModeLabel = $script:Window.FindName('Mode')
 $script:PriceBadge = $script:Window.FindName('PriceBadge')
+$script:DeepSeekPanel = $script:Window.FindName('DeepSeekPanel')
+$script:CodexPanel = $script:Window.FindName('CodexPanel')
+$script:QuotaStatus = $script:Window.FindName('QuotaStatus')
 $script:CriticalMark = $script:Window.FindName('CriticalMark')
 $script:SleepMark = $script:Window.FindName('SleepMark')
 foreach ($name in @('Root', 'Card', 'CardHeader', 'SpriteLayer', 'Sprite', 'OldSprite', 'Balance', 'Rate', 'ModeLabel', 'PriceBadge', 'CriticalMark', 'SleepMark')) {
@@ -122,7 +142,7 @@ $script:Sizes = @{ small = 0.85; medium = 1.0; large = 1.25 }
 function Set-PetSize {
   $scale = [double]$script:Sizes[$script:Prefs.size]
   $script:Window.Width = 272 * $scale
-  $script:Window.Height = 296 * $scale
+  $script:Window.Height = $(if ((Get-BillingMode) -eq 'codex') { 360 } else { 296 }) * $scale
   $area = [Windows.SystemParameters]::WorkArea
   if ($script:Window.Left + $script:Window.Width -gt $area.Right) { $script:Window.Left = $area.Right - $script:Window.Width }
   if ($script:Window.Top + $script:Window.Height -gt $area.Bottom) { $script:Window.Top = $area.Bottom - $script:Window.Height }
@@ -133,6 +153,7 @@ $area = [Windows.SystemParameters]::WorkArea
 $script:Window.Left = if ($null -ne $script:Prefs.left) { [double]$script:Prefs.left } else { $area.Right - 292 }
 $script:Window.Top = if ($null -ne $script:Prefs.top) { [double]$script:Prefs.top } else { $area.Bottom - 316 }
 if ($Preview -and $null -eq $script:Prefs.left) { $script:Window.Left = $area.Right - 600 }
+Update-PetUsageCard
 Set-PetSize
 
 $script:Atlases = @{}
@@ -150,7 +171,7 @@ foreach ($entry in $script:SkinCatalog) {
     $script:Atlases["$skin-$mode"] = $bitmap
   }
 }
-$script:Cells = @{ idle = 0; blink = 1; sleep = 1; hit = 2; miss = 3; output = 7; combo = 5; depleted = 6; recharge = 4 }
+$script:Cells = @{ idle = 0; blink = 1; sleep = 1; hit = 2; miss = 3; output = 7; combo = 5; depleted = 6; recharge = 4; quota = 7 }
 function Get-Frame([string]$skin, [string]$mode, [string]$action) {
   $key = "$skin-$mode-$action"
   if ($script:Frames.ContainsKey($key)) { return $script:Frames[$key] }
@@ -223,6 +244,13 @@ if ($Preview) {
 }
 
 function Format-Cost($item) {
+  if ($item.billingMode -eq 'codex') {
+    if ($item.kind -eq 'quota') {
+      $label = if ($item.window -eq 'fiveHour') { '5h' } else { '周' }
+      return ('{0} 实测 −{1:0.###}%' -f $label, [double]$item.percent)
+    }
+    return ('−{0:N0} token' -f [double]$item.tokens)
+  }
   if ($item.kind -eq 'recharge') { return '余额恢复' }
   if ($item.kind -eq 'depleted') { return '余额耗尽' }
   if ($script:Prefs.unit -eq 'token' -or $null -eq $item.cny) { return ('−{0:N0} token' -f [double]$item.tokens) }
@@ -238,11 +266,12 @@ function Read-PetState {
     if ($file.LastWriteTimeUtc.Ticks -eq $script:FileTicks) { return }
     $snapshot = [IO.File]::ReadAllText($script:StateFile) | ConvertFrom-Json
     $script:FileTicks = $file.LastWriteTimeUtc.Ticks
+    $script:LastSnapshot = $snapshot
     if ($null -ne $snapshot.updatedAt) { $script:LastUpdate = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$snapshot.updatedAt).UtcDateTime }
     if ($null -ne $snapshot.stats) {
-      $script:Stats = $snapshot.stats
-      if ($null -ne $snapshot.stats.activityAt) {
-        $script:LastActivityAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$snapshot.stats.activityAt).UtcDateTime
+      $script:Stats = if ((Get-BillingMode) -eq 'codex') { $snapshot.codexStats } else { $snapshot.stats }
+      if ($null -ne $script:Stats.activityAt) {
+        $script:LastActivityAt = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$script:Stats.activityAt).UtcDateTime
       }
       if ($script:SettingsWindow -and $script:SettingsWindow.IsVisible) { Update-SettingsStats }
     }
@@ -252,18 +281,11 @@ function Read-PetState {
       $script:Queue.Clear()
     } else {
       foreach ($item in $snapshot.events) {
-        if ([int64]$item.seq -gt $script:Cursor) { $script:Queue.Enqueue($item) }
+        if ([int64]$item.seq -gt $script:Cursor -and (Test-PetEventVisible $item)) { $script:Queue.Enqueue($item) }
       }
       $script:Cursor = [int64]$snapshot.seq
     }
-    if ($null -ne $snapshot.balance) {
-      $script:Balance.Text = '¥' + ([double]$snapshot.balance).ToString('N2')
-      $script:Balance.FontSize = if ($script:Balance.Text.Length -gt 10) { 19 } elseif ($script:Balance.Text.Length -gt 8) { 22 } else { 26 }
-    } elseif ($snapshot.balanceStatus -eq 'loading') { $script:Balance.Text = '查询中…' }
-    else { $script:Balance.Text = '未连接' }
-    if ($null -ne $snapshot.cacheHitRate) {
-      $script:Rate.Text = '缓存命中 ' + ([math]::Round([double]$snapshot.cacheHitRate * 100)).ToString() + '%'
-    } else { $script:Rate.Text = '缓存命中 —' }
+    Update-PetUsageCard
   } catch { }
 }
 
@@ -496,9 +518,11 @@ $script:Timer.Add_Tick({
     if ($script:LastUpdate -eq [DateTime]::MinValue -or ($now - $script:LastUpdate).TotalSeconds -gt 90) {
       $script:Balance.Text = '等待 DSH…'
       $script:Rate.Text = '缓存命中 —'
+      $script:QuotaStatus.Text = '等待 DSH…'
     }
   }
-  $peak = if ($Preview) { $script:PreviewPeak } else { Get-Peak }
+  $peak = if ((Get-BillingMode) -eq 'codex') { $false } elseif ($Preview) { $script:PreviewPeak } else { Get-Peak }
+  if ((Get-BillingMode) -eq 'codex') { Update-PetUsageCard; Update-SettingsCodexQuota }
   $modeChanged = $script:LastPeak -ne $peak
   if ($modeChanged) {
     Set-ModeVisual $peak
@@ -506,7 +530,10 @@ $script:Timer.Add_Tick({
     if ($script:Current -in @('idle','blink')) { Start-IdleMotion $peak }
     if ($script:Current -eq 'sleep') { Start-SleepMotion $peak }
   }
-  if ($now -ge $script:NextEventAt -and $script:Queue.Count -gt 0) { Start-Event ($script:Queue.Dequeue()) $now }
+  if ($now -ge $script:NextEventAt -and $script:Queue.Count -gt 0) {
+    $item = $script:Queue.Dequeue()
+    if ($Preview -or (Test-PetEventVisible $item)) { Start-Event $item $now }
+  }
   if ($now -ge $script:ActionEnd -and $script:Current -notin @('idle','blink','sleep')) {
     $script:Current = 'idle'
     Start-IdleMotion $peak

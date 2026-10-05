@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { normalizeCodexQuota, quotaDeltas } from './codex.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const settingsSource = readFileSync(join(root, 'settings-window.ps1'), 'utf8');
@@ -84,9 +85,19 @@ test('settings and statistics remain reachable on smaller work areas', () => {
 });
 
 test('Windows PowerShell scripts preserve UTF-8 BOM for Chinese UI text', () => {
-  for (const name of ['pet.ps1', 'skin-catalog.ps1', 'skin-assets.test.ps1', 'settings-window.ps1', 'settings-window.test.ps1']) {
+  for (const name of ['pet.ps1', 'skin-catalog.ps1', 'skin-assets.test.ps1', 'settings-window.ps1', 'settings-window.test.ps1', 'usage-view.ps1', 'usage-view.test.ps1']) {
     assert.deepEqual([...readFileSync(join(root, name)).subarray(0, 3)], [0xef, 0xbb, 0xbf], `${name} must have UTF-8 BOM`);
   }
+});
+
+test('native dual-mode quota presentation uses no real state', { skip: process.platform !== 'win32', timeout: 60_000 }, () => {
+  const now = Date.now();
+  const quota = (remainingPercent, fetchedAt) => normalizeCodexQuota({ fetchedAt, rateLimits: [{ id: 'codex', windows: [{ windowSeconds: 18000, remainingPercent, resetsAt: Math.floor(now / 1000) + 3600 }] }] }, 'fixture-a', now);
+  const [delta] = quotaDeltas(quota(80, now - 1000), quota(79, now));
+  assert.ok(delta);
+  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'usage-view.test.ps1'), '-DeltaJson', JSON.stringify(delta)], { cwd: root, stdio: 'inherit', windowsHide: true, timeout: 45_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0);
 });
 
 test('WPF settings interactions and cleanup', { skip: process.platform !== 'win32', timeout: 60_000 }, () => {

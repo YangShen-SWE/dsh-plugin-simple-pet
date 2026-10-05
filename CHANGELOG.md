@@ -1,5 +1,18 @@
 # 更新记录 / Changelog
 
+## v0.3.0 — DeepSeek / Codex 双模式（2026-10-05）
+
+- 保留六款皮肤和 DeepSeek 原有余额、人民币 / Token 飘字、峰谷形象与统计。
+- 设置新增 DeepSeek 计费模式 / Codex 订阅模式切换，只影响桌宠显示，不修改 DSH 模型或订阅插件的登录账号。
+- Codex 卡片显示 5 小时与周额度的剩余百分比、进度条及本机时间的重置日期；不显示人民币、峰价或谷价，形象使用固定预览。
+- Codex 飘字可选 Token 或额度百分比；百分比来自同账号、同重置窗口的两次新鲜报告之差，不由 Token 换算。无法可靠取得百分比时回退 Token。
+- 通过订阅插件的公开状态 / 用量接口读取额度，不读 Codex 凭据。专用插件跟随当前激活账号；多提供商插件显示其默认账号并标注「可能缓存」，不假装能识别模型池实际选用的账号。
+- DeepSeek 与 Codex Token 历史分别保存；未知、过期、切换中及未登录额度明确提示，不虚构 0% 或 100%。
+- 识别旧版后端未提供 Codex 字段的情况，提示完整重启 DSH，不再误显示「等待订阅插件」；尚未读到首份状态则提示「等待 DSH 数据」。
+- 升级需更新实际安装副本，再完整退出并重启 DSH（含后台／托盘），不能只刷新网页或重开桌宠；本机偏好与旧数据保留。
+- 34 项回归测试通过，含 459 项设置、454 项真实素材及 33 项额度展示原生断言。Codex 桥接与切号使用公开 DTO 模拟验证，不代表所有宿主／账号已完成实时额度验收。
+- Add selectable DeepSeek billing / Codex subscription modes, remaining 5-hour/week quotas and reset times, Token or observed-percent feedback, and an independent Codex Token ledger. Keep the original DeepSeek behavior and six skins. Use read-only addon RPC without Codex credentials; default-account cached reports remain explicit. Fully restart DSH after upgrading the installed copy.
+
 ## v0.2.6 — 新形象与图片预览
 
 - 新增雪绒鲸娘、薄荷茶娘、樱桃汽水娘和星砂魔法娘，保留原来的两款形象。

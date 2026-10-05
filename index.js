@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { isPeak, priceUsage } from './billing.js';
 import { addUsage, loadLedger, seedFromRecentEvents } from './stats.js';
+import { CODEX_PROVIDERS, codexTokenItems, readCodexQuota, quotaDeltas } from './codex.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -112,6 +113,17 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   const dataDir = join(process.env.LOCALAPPDATA || join(process.env.USERPROFILE || ROOT, 'AppData', 'Local'), 'DshSimpleDesktopPet');
   const stateFile = join(dataDir, `state-${profile}.json`);
   const statsFile = join(dataDir, `stats-${profile}.json`);
+  const codexStatsFile = join(dataDir, `stats-codex-${profile}.json`);
+  let storedCodexStats = null;
+  try { storedCodexStats = JSON.parse(readFileSync(codexStatsFile, 'utf8')); } catch { /* independent new ledger */ }
+  const codexLedger = loadLedger(storedCodexStats);
+  let codex = { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
+  let codexBridge = null;
+  let codexBusy = false;
+  let codexProvider = 'openai-codex';
+  let codexRevision = 0;
+  let bridgeRevision = 0;
+  let quotaRefreshTimer = null;
   let storedStats = null;
   try { storedStats = JSON.parse(readFileSync(statsFile, 'utf8')); } catch { /* first launch */ }
   const ledger = loadLedger(storedStats);
@@ -144,7 +156,10 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
       await mkdir(dataDir, { recursive: true });
       while (writeRequested && live) {
         writeRequested = false;
-        const body = JSON.stringify({ instance, seq: sequence, events, balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, updatedAt: Date.now() });
+        const body = JSON.stringify({ instance, seq: sequence, events, balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, updatedAt: Date.now() });
+        const codexTemporary = `${codexStatsFile}.${instance}.tmp`;
+        await writeFile(codexTemporary, JSON.stringify(codexLedger), { mode: 0o600 });
+        await rename(codexTemporary, codexStatsFile);
         const temporary = `${stateFile}.${instance}.tmp`;
         const statsTemporary = `${statsFile}.${instance}.tmp`;
         await writeFile(statsTemporary, JSON.stringify(ledger), { mode: 0o600 });
@@ -158,7 +173,7 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   function snapshot() { writeRequested = true; void writeSnapshot(); }
 
   function push(event) {
-    events.push({ ...event, seq: ++sequence });
+    events.push({ billingMode: 'deepseek', ...event, seq: ++sequence });
     if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
     snapshot();
   }
@@ -196,17 +211,73 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
     }
   }
 
+  async function pollCodex() {
+    if (!live || codexBusy || !codexBridge) return;
+    codexBusy = true;
+    const revision = codexRevision, bridgeGeneration = bridgeRevision;
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
+      const current = await readCodexQuota(codexBridge, signal, Date.now(), codexProvider);
+      if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
+      for (const delta of quotaDeltas(codex, current)) push(delta);
+      codex = current;
+    } catch {
+      if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
+      codex = { ...codex, status: codex.fiveHour || codex.weekly ? 'stale' : 'unavailable' };
+    } finally {
+      codexBusy = false;
+      if (live) snapshot();
+      if (live && (revision !== codexRevision || bridgeGeneration !== bridgeRevision)) void pollCodex();
+    }
+  }
+  ctx.inject(['connection'], quotaCtx => {
+    if (typeof quotaCtx.connection.createSharedFetchHandler !== 'function') return;
+    const bridge = quotaCtx.connection.createSharedFetchHandler('/api');
+    bridgeRevision++;
+    codexBridge = bridge;
+    codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
+    void pollCodex();
+    const quotaTimer = setInterval(pollCodex, 60_000);
+    quotaCtx.effect(() => () => {
+      clearInterval(quotaTimer);
+      if (codexBridge === bridge) {
+        bridgeRevision++;
+        codexBridge = null;
+        codex = { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
+        snapshot();
+      }
+    }, 'simple-pet: read-only subscription bridge');
+  });
+
   ctx.on('session/event', (session, event) => {
     if (!live || event.type !== 'assistant/message') return;
     if (typeof session.firstLiveSeq === 'number' && event.seq < session.firstLiveSeq) return;
     const source = event.data?.message?.source;
-    if (source?.kind !== 'model' || !DEEPSEEK_PROVIDERS.has(source.provider)) return;
+    if (source?.kind !== 'model' || (!DEEPSEEK_PROVIDERS.has(source.provider) && !CODEX_PROVIDERS.has(source.provider))) return;
     const key = `${session.id}:${event.seq}`;
     if (seen.has(key)) return;
     seen.add(key);
     seenQueue.push(key);
     if (seenQueue.length > 512) seen.delete(seenQueue.shift());
     const at = Number.isFinite(new Date(event.time).getTime()) ? new Date(event.time).getTime() : Date.now();
+    if (CODEX_PROVIDERS.has(source.provider)) {
+      if (codexProvider !== source.provider) {
+        codexProvider = source.provider;
+        codexRevision++;
+        codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
+        void pollCodex();
+      }
+      const items = codexTokenItems(event.data?.usage);
+      if (!items.length) return;
+      addUsage(codexLedger, event.data?.usage, { items: [] }, at);
+      for (const item of items) push({ ...item, model: source.model, at });
+      if (quotaRefreshTimer === null) quotaRefreshTimer = setTimeout(() => {
+        quotaRefreshTimer = null;
+        void pollCodex();
+      }, 2000);
+      snapshot();
+      return;
+    }
     const priced = priceUsage(source.model, event.data?.usage, at);
     if (!priced.items.length) return;
     if (balanceProvider !== source.provider) {
@@ -244,7 +315,7 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
       if (raw !== null && !/^(0|[1-9]\d*)$/.test(raw)) return json(res, 400, { error: 'invalid since' }, method);
       const since = raw === null ? sequence : Number(raw);
       if (!Number.isSafeInteger(since)) return json(res, 400, { error: 'invalid since' }, method);
-      json(res, 200, { seq: sequence, events: events.filter(e => e.seq > since), balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger }, method);
+      json(res, 200, { seq: sequence, events: events.filter(e => e.seq > since), balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger }, method);
     } }), 'deepseek-pet: state route');
     for (const asset of ASSETS) {
       const path = `/api/dsh-plugin-simple-pet/asset/${asset}.png`;
@@ -266,5 +337,5 @@ export function apply(ctx, { petLauncher = launchPetProcess } = {}) {
   snapshot();
   pollBalance();
   ctx.effect(() => petLauncher({ root: ROOT, profile, logger: ctx.logger }), 'deepseek-pet: window');
-  ctx.effect(() => () => { live = false; clearInterval(timer); clearInterval(heartbeat); controller.abort(); }, 'deepseek-pet: lifetime');
+  ctx.effect(() => () => { live = false; clearInterval(timer); clearInterval(heartbeat); clearTimeout(quotaRefreshTimer); controller.abort(); }, 'deepseek-pet: lifetime');
 }

@@ -1,4 +1,6 @@
-﻿function Get-StatDay([string]$key) {
+﻿. (Join-Path $PSScriptRoot 'usage-view.ps1')
+
+function Get-StatDay([string]$key) {
   if ($null -eq $script:Stats -or $null -eq $script:Stats.days) { return $null }
   $property = $script:Stats.days.PSObject.Properties[$key]
   if ($null -eq $property) { return $null }
@@ -42,7 +44,8 @@ function Update-SettingsStats {
     '已补录升级时保存的最近事件；更早的历史可能缺失。人民币为用量估算。'
   } else { '人民币为用量估算；统计从本版本首次启用后开始。' }
 
-  $unit = if ($script:ChartUnit.SelectedIndex -eq 1) { 'tokens' } else { 'cny' }
+  Update-SettingsCodexQuota
+  $unit = if ((Get-BillingMode) -eq 'codex' -or $script:ChartUnit.SelectedIndex -eq 1) { 'tokens' } else { 'cny' }
   $range = $script:ChartRange.SelectedIndex
   $buckets = New-Object System.Collections.ArrayList
   if ($range -eq 0) {
@@ -158,8 +161,8 @@ function Initialize-SettingsSkinGallery {
       <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="19"/></Grid.RowDefinitions>
       <Image Name="SkinPreview_${id}_peak" Margin="1,2" Stretch="Uniform" SnapsToDevicePixels="True" AutomationProperties.Name="$name 峰时预览"/>
       <Image Name="SkinPreview_${id}_valley" Grid.Column="1" Margin="1,2" Stretch="Uniform" SnapsToDevicePixels="True" AutomationProperties.Name="$name 谷时预览"/>
-      <TextBlock Grid.Row="1" Text="峰时" FontSize="10" Foreground="#D9F5FF" HorizontalAlignment="Center" VerticalAlignment="Bottom"/>
-      <TextBlock Grid.Row="1" Grid.Column="1" Text="谷时" FontSize="10" Foreground="#ADCDE8" HorizontalAlignment="Center" VerticalAlignment="Bottom"/>
+      <TextBlock Name="SkinLabelPeak_$id" Grid.Row="1" Text="峰时" FontSize="10" Foreground="#D9F5FF" HorizontalAlignment="Center" VerticalAlignment="Bottom"/>
+      <TextBlock Name="SkinLabelValley_$id" Grid.Row="1" Grid.Column="1" Text="谷时" FontSize="10" Foreground="#ADCDE8" HorizontalAlignment="Center" VerticalAlignment="Bottom"/>
     </Grid>
   </Grid>
 </Button>
@@ -186,7 +189,7 @@ function Initialize-SettingsSkinGallery {
     })
     $button.Add_PreviewKeyDown([Windows.Input.KeyEventHandler]{
       param($sender, $eventArgs)
-      if ($eventArgs.Key -eq [Windows.Input.Key]::Enter) {
+      if ($eventArgs.Key -in @([Windows.Input.Key]::Enter, [Windows.Input.Key]::Space)) {
         $eventArgs.Handled = $true
         $sender.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
       }
@@ -253,7 +256,7 @@ function Show-PetSettings {
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="42"/></Grid.ColumnDefinitions>
         <Grid Name="SettingsDragHandle" Background="Transparent" Cursor="SizeAll" Margin="0,0,10,0" ToolTip="按住标题栏拖动窗口">
           <StackPanel><TextBlock Text="设置与统计" FontFamily="Microsoft YaHei" FontSize="23" FontWeight="Bold" Foreground="White"/>
-            <TextBlock Text="DEEPSEEK · SIMPLE DESKTOP PET · 拖动标题栏移动" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#9BCFE2"/></StackPanel>
+            <TextBlock Text="SIMPLE DESKTOP PET · 拖动标题栏移动" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#9BCFE2"/></StackPanel>
         </Grid>
         <Button Name="CloseSettings" Grid.Column="1" Content="×" Width="32" Height="32" HorizontalAlignment="Right" VerticalAlignment="Top"
                 FontSize="21" Foreground="White" Background="#315E7A" BorderBrush="#6599B6" Cursor="Hand" ToolTip="关闭设置，桌宠继续运行"/>
@@ -270,9 +273,18 @@ function Show-PetSettings {
             <ScrollViewer Name="SettingsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
             <StackPanel>
               <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="计费模式" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBlock Text="仅切换桌宠显示，不改变 DSH 模型或登录账号" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
+                  <ComboBox Name="BillingModeChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
+                    <ComboBoxItem Content="DeepSeek 计费模式" Tag="deepseek"/><ComboBoxItem Content="Codex 订阅模式" Tag="codex"/>
+                  </ComboBox>
+                </Grid>
+              </Border>
+              <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <StackPanel Margin="10,10,10,8">
                   <TextBlock Text="形象图库" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White" Margin="4,0,0,0"/>
-                  <TextBlock Text="峰时 / 谷时双预览 · 点击切换，即时保存" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="4,4,0,5"/>
+                  <TextBlock Name="GalleryHint" Text="峰时 / 谷时双预览 · 点击切换，即时保存" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="4,4,0,5"/>
                   <UniformGrid Name="SkinGallery" Columns="3" Rows="2"/>
                 </StackPanel>
               </Border>
@@ -285,7 +297,7 @@ function Show-PetSettings {
                   </ComboBox>
                 </Grid>
               </Border>
-              <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+              <Border Name="DeepSeekUnitPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <StackPanel><TextBlock Text="扣费飘字" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
                     <TextBlock Text="选择扣费动画的单位，不影响统计图表" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
@@ -293,11 +305,19 @@ function Show-PetSettings {
                     <ComboBoxItem Content="人民币" Tag="cny"/><ComboBoxItem Content="Token" Tag="token"/>
                   </ComboBox>
                 </Grid>
+              </Border>              <Border Name="CodexUnitPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12" Visibility="Collapsed">
+                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="Codex 用量飘字" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBlock Text="百分比为两次报告的实测变化；未取得时回退 Token" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
+                  <ComboBox Name="CodexUnitChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
+                    <ComboBoxItem Content="Token" Tag="token"/><ComboBoxItem Content="额度百分比" Tag="percent"/>
+                  </ComboBox>
+                </Grid>
               </Border>
-      <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,10">
+       <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,10">
         <Grid Margin="16,10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <StackPanel VerticalAlignment="Center"><TextBlock Text="打瞌睡等待时间" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
-            <TextBlock Text="官方 DeepSeek 模型无调用后开始打瞌睡" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3"/></StackPanel>
+            <TextBlock Text="当前计费模式无调用后开始打瞌睡" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3"/></StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
             <TextBox Name="SleepInput" Width="55" Height="31" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" BorderThickness="1" VerticalContentAlignment="Center"/>
             <TextBlock Text="分钟" Foreground="#C5E6F3" FontFamily="Microsoft YaHei" VerticalAlignment="Center" Margin="7,0,12,0"/>
@@ -316,7 +336,7 @@ function Show-PetSettings {
         </TabItem>
         <TabItem Header="统计">
           <ScrollViewer Name="StatsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-          <Grid MinWidth="630"><Grid.RowDefinitions><RowDefinition Height="118"/><RowDefinition Height="Auto"/><RowDefinition Height="35"/></Grid.RowDefinitions>
+          <Grid MinWidth="630"><Grid.RowDefinitions><RowDefinition Height="118"/><RowDefinition Height="Auto"/><RowDefinition Height="70"/></Grid.RowDefinitions>
       <Grid Grid.Row="0" Margin="0,0,0,11">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Border Grid.Column="0" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
@@ -324,11 +344,11 @@ function Show-PetSettings {
           <TextBlock Name="TodayTokens" Text="0" Foreground="White" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" Margin="0,7,0,0"/>
         </StackPanel></Border>
         <Border Grid.Column="2" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
-          <TextBlock Text="今日缓存命中率" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+          <TextBlock Name="TodaySecondaryTitle" Text="今日缓存命中率" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
           <TextBlock Name="TodayHitRate" Text="—" Foreground="#7DE9FF" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" Margin="0,7,0,0"/>
         </StackPanel></Border>
         <Border Grid.Column="4" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
-          <TextBlock Text="今日人民币消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+          <TextBlock Name="TodayCostTitle" Text="今日人民币消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
           <TextBlock Name="TodayCost" Text="¥0.00" Foreground="#FFE2A7" FontFamily="Segoe UI" FontSize="22" FontWeight="Bold" Margin="0,10,0,0"/>
         </StackPanel></Border>
       </Grid>
@@ -374,7 +394,7 @@ function Show-PetSettings {
   $script:SleepInput.Text = [string]$script:Prefs.sleepMinutes
   Initialize-SettingsSkinGallery
   # Restore saved choices before subscribing so opening settings does not write preferences.
-  foreach ($choice in @(@{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' })) {
+  foreach ($choice in @(@{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' }, @{ name = 'BillingModeChoice'; group = 'billingMode' }, @{ name = 'CodexUnitChoice'; group = 'codexUnit' })) {
     $control = $script:SettingsWindow.FindName($choice.name)
     $control.Tag = $choice.group
     foreach ($item in $control.Items) {
@@ -387,7 +407,12 @@ function Show-PetSettings {
       $value = [string]$sender.SelectedItem.Tag
       if ($script:Prefs[$group] -eq $value) { return }
       $script:Prefs[$group] = $value
-      if ($group -eq 'size') { Set-PetSize } else { Save-Prefs }
+      if ($group -eq 'size') { Set-PetSize }
+      elseif ($group -eq 'billingMode') {
+        if (Get-Command Refresh-BillingMode -ErrorAction SilentlyContinue) { Refresh-BillingMode } else { Save-Prefs }
+        Update-SettingsBillingMode
+        Update-SettingsStats
+      } else { Save-Prefs }
     })
   }
   ($script:SettingsWindow.FindName('SettingsDragHandle')).Add_MouseLeftButtonDown([Windows.Input.MouseButtonEventHandler]{
@@ -413,6 +438,7 @@ function Show-PetSettings {
   $script:ChartUnit.Add_SelectionChanged({ Update-SettingsStats })
   $script:ChartRange.Add_SelectionChanged({ Update-SettingsStats })
   $script:SettingsWindow.Add_Closed({ $script:SettingsWindow = $null })
+  Update-SettingsBillingMode
   $script:SettingsWindow.Show()
   Update-SettingsStats
 }
