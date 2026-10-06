@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { CodexWarmupScheduler, warmupPreferences, localSchedule, loadWarmupJournal } from './warmup.js';
+import { CodexWarmupScheduler, warmupPreferences, localSchedule, loadWarmupJournal, WARMUP_RETRY_DELAY, WARMUP_TIMEOUT } from './warmup.js';
 import { runCodexWarmup, chooseWarmupModel } from './warmup-call.js';
 import { readCodexQuota } from './codex.js';
 
@@ -21,14 +21,14 @@ function fixture(options = {}) {
     getQuota: async args => { reports.push(args.force); return options.getQuota ? options.getQuota(args, now) : fresh(now); },
     save: async journal => { saves.push(structuredClone(journal)); if (options.failSave) throw new Error('private failure'); },
     run: async args => { calls.push(args); if (options.run) return options.run(args); return { model: 'gpt-test' }; },
-    signal: options.signal,
+    signal: options.signal, wait: options.wait ?? (async () => {}),
   });
   return { scheduler, calls, saves, reports, async tick(at, raw = prefs) { now = at; await scheduler.tick(raw, at); } };
 }
 
 test('warm-up defaults are strict, independent and reject invalid HH:mm', () => {
-  assert.deepEqual(warmupPreferences(null), { daily: false, time: '09:30', reset: false });
-  assert.deepEqual(warmupPreferences({ codexWarmupDaily: 'true', codexWarmupReset: 1 }), { daily: false, time: '09:30', reset: false });
+  assert.deepEqual(warmupPreferences(null), { daily: false, time: '09:30', reset: false, startup: false });
+  assert.deepEqual(warmupPreferences({ codexWarmupDaily: 'true', codexWarmupReset: 1 }), { daily: false, time: '09:30', reset: false, startup: false });
   for (const time of ['9:30', '24:00', '09:60', '09:30\n', '', ' 09:30', '09:30x']) {
     assert.equal(warmupPreferences({ ...prefs, codexWarmupTime: time }).daily, false, time);
   }
@@ -175,6 +175,159 @@ test('journal whitelists data and bounds retention', () => {
   const loaded = loadWarmupJournal({ keys: ['email@example.org', 'daily:2026-10-06', `reset:${ACCOUNT}:${due}`],
     armed: { accountKey: ACCOUNT, resetAt: due, email: 'secret' }, response: 'secret', token: 'secret' });
   assert.equal(loaded.keys.length, 2); assert.ok(!JSON.stringify(loaded).includes('secret'));
+});
+
+const startupPrefs = { codexWarmupStartup: true };
+const unused = now => fresh(now, { fiveHour: { remainingPercent: 100, resetAt: due + 18_000_000 } });
+
+test('startup is opt-in, requires fresh 100% 5h, and persists window dedup across reboot', async () => {
+  const f = fixture({ getQuota: (_args, now) => unused(now) });
+  await f.tick(base, startupPrefs);
+  assert.equal(f.calls.length, 1); assert.equal(f.scheduler.view.lastReason, 'startup');
+  assert.deepEqual(f.reports, [true, true]);
+  assert.ok(f.scheduler.journal.keys.includes(`window:${ACCOUNT}:${due + 18_000_000}`));
+  await f.tick(base + 5000, startupPrefs); assert.equal(f.calls.length, 1);
+  const reboot = fixture({ journal: f.scheduler.journal, getQuota: (_args, now) => unused(now) });
+  await reboot.tick(base + 10_000, startupPrefs); assert.equal(reboot.calls.length, 0);
+  for (const patch of [{ fiveHour: { remainingPercent: 99, resetAt: due + 18_000_000 } },
+    { fiveHour: { remainingPercent: 100, resetAt: due - 20_000 } }, { observedAt: base - 121_000 },
+    { weekly: null }, { weekly: { remainingPercent: 0, resetAt: due + 18_000_000 } }]) {
+    const bad = fixture({ getQuota: (_args, now) => ({ ...unused(now), ...patch }) });
+    await bad.tick(base, startupPrefs); assert.equal(bad.calls.length, 0, JSON.stringify(patch));
+  }
+});
+
+test('startup/daily/reset share one window claim and never duplicate a same-window request', async () => {
+  const f = fixture({ getQuota: (_args, now) => unused(now) });
+  const all = { ...prefs, codexWarmupStartup: true, codexWarmupReset: true };
+  await f.tick(base, all); await f.tick(due, all);
+  assert.equal(f.calls.length, 1); assert.ok(f.scheduler.journal.keys.includes('daily:2026-10-06'));
+  const daily = fixture({ getQuota: (_args, now) => unused(now) }); await daily.tick(due);
+  const reboot = fixture({ journal: daily.scheduler.journal, getQuota: (_args, now) => unused(now) });
+  await reboot.tick(due + 5000, startupPrefs); assert.equal(reboot.calls.length, 0);
+});
+
+test('single deadline wake allows hours-long intentional gap but late/sleep wake is suppressed', async () => {
+  const early = base - 8 * 3_600_000;
+  const f = fixture(); await f.tick(early);
+  assert.equal(f.scheduler.nextWakeAt(early), due);
+  assert.equal(f.scheduler.nextDelay(early), due - early);
+  await f.tick(due + 1000); assert.equal(f.calls.length, 1);
+  assert.ok(f.scheduler.nextWakeAt(due + 1000) > due + 23 * 3_600_000);
+  const late = fixture(); await late.tick(early); late.scheduler.nextWakeAt(early);
+  await late.tick(due + 60_000); await late.tick(due + 65_000); assert.equal(late.calls.length, 0);
+  const reset = fixture({ getQuota: (_args, now) => fresh(now, { fiveHour: { remainingPercent: 30, resetAt: due } }) });
+  const resetPrefs = { codexWarmupReset: true };
+  await reset.tick(early, resetPrefs); assert.equal(reset.scheduler.nextWakeAt(early), due);
+  await reset.tick(due + 1000, resetPrefs); assert.equal(reset.calls.length, 1);
+  const disabled = fixture(); await disabled.tick(base, null);
+  assert.equal(disabled.scheduler.nextDelay(base), null); await f.scheduler.stop();
+  assert.equal(f.scheduler.nextWakeAt(due), null);
+});
+
+test('only proven unsent run failures retry, at most 3 attempts with 5 second delays', async () => {
+  let count = 0; const waits = [];
+  const f = fixture({ wait: async ms => waits.push(ms), run: () => {
+    if (++count < 3) throw Object.assign(new Error('secret'), { requestNotSent: true });
+    return { model: 'gpt-test' };
+  } });
+  await f.tick(due); assert.equal(f.calls.length, 3);
+  assert.deepEqual(waits, [WARMUP_RETRY_DELAY, WARMUP_RETRY_DELAY]);
+  assert.equal(f.scheduler.view.status, 'succeeded');
+  const terminal = fixture({ run: () => { throw Object.assign(new Error('secret'), { requestNotSent: true }); } });
+  await terminal.tick(due); await terminal.tick(due + 5000);
+  assert.equal(terminal.calls.length, 3); assert.equal(terminal.scheduler.view.status, 'failed');
+  assert.ok(terminal.scheduler.view.alertId); assert.ok(terminal.scheduler.view.safetyHint);
+  assert.ok(!JSON.stringify(terminal.scheduler.view).includes('secret'));
+  const unknown = fixture({ run: () => { throw new Error('secret'); } });
+  await unknown.tick(due); assert.equal(unknown.calls.length, 1);
+  assert.match(unknown.scheduler.view.safetyHint, /结果未知/);
+});
+
+test('precheck errors retry safely and terminal daily claims cannot replay', async () => {
+  let forced = 0;
+  const f = fixture({ getQuota: ({ force }, now) => {
+    if (force && ++forced < 3) throw new Error('quota transport'); return fresh(now);
+  } });
+  await f.tick(due); assert.equal(forced, 3); assert.equal(f.calls.length, 1);
+  let reads = 0;
+  const terminal = fixture({ getQuota: () => { reads++; throw new Error('quota unavailable'); } });
+  await terminal.tick(due); assert.equal(reads, 3); assert.ok(terminal.scheduler.view.alertId);
+  await terminal.tick(due + 5000); assert.equal(terminal.calls.length, 0);
+  assert.equal(reads, 4, 'next tick may refresh quota but must not re-run the claimed occurrence');
+});
+
+test('account switch on proven-unsent failure skips rather than retrying', async () => {
+  const f = fixture({ run: () => { throw Object.assign(new Error('account'), { requestNotSent: true, accountChanged: true }); } });
+  await f.tick(due); assert.equal(f.calls.length, 1); assert.equal(f.scheduler.view.status, 'skipped');
+  assert.equal(f.scheduler.view.alertId, null);
+});
+
+test('retry waits and uncooperative external waits are cancellable', async () => {
+  let waiting; const started = new Promise(resolve => { waiting = resolve; });
+  const f = fixture({ run: () => { throw Object.assign(new Error('preflight'), { requestNotSent: true }); },
+    wait: () => { waiting(); return new Promise(() => {}); } });
+  const task = f.tick(due); await started;
+  await f.tick(due + 1000, null); await task;
+  assert.equal(f.calls.length, 1); await f.tick(due + 2000, null);
+  assert.equal(f.scheduler.view.status, 'disabled');
+  const blocked = fixture({ getQuota: () => new Promise(() => {}) });
+  const pending = blocked.tick(due); await new Promise(resolve => setImmediate(resolve));
+  await blocked.scheduler.stop(); await pending; assert.equal(blocked.calls.length, 0);
+});
+
+test('expired idle deadlines cannot permanently suppress future daily warmup', async () => {
+  const idle = fixture({ getQuota: (_args, now) => fresh(now, { fiveHour: { remainingPercent: 100, resetAt: due - 1000 } }) });
+  await idle.tick(due);
+  assert.equal(idle.calls.length, 1); assert.equal(idle.scheduler.journal.unresolvedWindow.accountKey, ACCOUNT);
+  assert.ok(!idle.scheduler.journal.keys.includes(`window:${ACCOUNT}:${due - 1000}`));
+  const tomorrow = due + 86_400_000;
+  await idle.tick(tomorrow - 10_000); await idle.tick(tomorrow);
+  assert.equal(idle.calls.length, 2);
+  const reboot = fixture({ journal: idle.scheduler.journal, getQuota: (_args, now) => fresh(now,
+    { fiveHour: { remainingPercent: 100, resetAt: tomorrow + 18_000_000 } }) });
+  await reboot.tick(tomorrow + 5000, { codexWarmupStartup: true }); assert.equal(reboot.calls.length, 0);
+});
+
+test('post-call quota refresh records a real newly started window for reboot dedup', async () => {
+  let sent = false;
+  const f = fixture({ getQuota: (_args, now) => fresh(now, {
+    fiveHour: { remainingPercent: 100, resetAt: sent ? due + 18_000_000 : due - 1000 },
+  }), run: () => { sent = true; return { model: 'gpt-test' }; } });
+  await f.tick(due); assert.equal(f.calls.length, 1);
+  assert.ok(f.scheduler.journal.keys.includes(`window:${ACCOUNT}:${due + 18_000_000}`));
+  assert.equal(f.scheduler.journal.unresolvedWindow, null);
+  const reboot = fixture({ journal: f.scheduler.journal, getQuota: (_args, now) => unused(now) });
+  await reboot.tick(due + 5000, startupPrefs); assert.equal(reboot.calls.length, 0);
+});
+
+test('stream timeout is unknown and never retries even if adapter ignores cancellation', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let startedResolve; const started = new Promise(resolve => { startedResolve = resolve; });
+  const f = fixture({ run: () => { startedResolve(); return new Promise(() => {}); } });
+  const task = f.tick(due); await started;
+  context.mock.timers.tick(WARMUP_TIMEOUT); await task;
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].signal.aborted, true);
+  assert.equal(f.scheduler.view.status, 'failed'); assert.ok(f.scheduler.view.alertId);
+  assert.match(f.scheduler.view.safetyHint, /结果未知/);
+  await f.tick(due + 1000); assert.equal(f.calls.length, 1);
+});
+
+test('precheck timeouts can retry, but still stop at 3 total attempts', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let forced = 0, announce;
+  const reports = () => new Promise(resolve => { announce = resolve; });
+  let started = reports();
+  const f = fixture({ getQuota: ({ force }, now) => {
+    if (!force) return fresh(now);
+    forced++; announce(); return new Promise(() => {});
+  } });
+  const task = f.tick(due);
+  for (let i = 0; i < 3; i++) {
+    await started; started = reports(); context.mock.timers.tick(WARMUP_TIMEOUT);
+  }
+  await task; assert.equal(forced, 3); assert.equal(f.calls.length, 0);
+  assert.ok(f.scheduler.view.alertId); assert.match(f.scheduler.view.safetyHint, /未调用模型/);
 });
 
 function callFixture({ accountAfter = 'account-A', chunks, defaultProvider = 'deepseek-official' } = {}) {

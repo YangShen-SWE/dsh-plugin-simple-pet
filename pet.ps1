@@ -20,13 +20,13 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
 $savedWarmupTimeValid = $false
 if (Test-Path -LiteralPath $script:SettingsFile) {
   try {
     $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
-    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset', 'sleepMinutes', 'left', 'top')) {
+    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset', 'codexWarmupStartup', 'sleepMinutes', 'left', 'top')) {
       if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     }
   } catch { }
@@ -37,6 +37,7 @@ if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.bil
 if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
 if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid) { $script:Prefs.codexWarmupDaily = $false }
 if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }
+if ($script:Prefs.codexWarmupStartup -isnot [bool]) { $script:Prefs.codexWarmupStartup = $false }
 if ($script:Prefs.codexWarmupTime -isnot [string] -or $script:Prefs.codexWarmupTime -cnotmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z') { $script:Prefs.codexWarmupTime = '09:30' }
 if ($script:Prefs.size -notin @('small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
 if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
@@ -45,7 +46,17 @@ $script:Prefs.sleepMinutes = [math]::Max(1, [math]::Min(240, [int]$script:Prefs.
 function Save-Prefs {
   $script:Prefs.left = [math]::Round($script:Window.Left, 0)
   $script:Prefs.top = [math]::Round($script:Window.Top, 0)
-  $script:Prefs | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+  $temporary = $script:SettingsFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    $script:Prefs | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
+    if (Test-Path -LiteralPath $script:SettingsFile) {
+      [System.IO.File]::Replace($temporary, $script:SettingsFile, $null)
+    } else {
+      [System.IO.File]::Move($temporary, $script:SettingsFile)
+    }
+  } finally {
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+  }
 }
 
 $xaml = @'
@@ -499,6 +510,7 @@ function Clear-ExpiredFloats([DateTime]$now) {
   }
 }
 
+$script:LastWarmupAlert = $null
 $script:IdleMotionActive = $false
 $script:NextIdlePulse = [DateTime]::UtcNow
 $script:FlashEnd = [DateTime]::MinValue
@@ -529,6 +541,11 @@ $script:Timer.Add_Tick({
   $peak = if ((Get-BillingMode) -eq 'codex') { $false } elseif ($Preview) { $script:PreviewPeak } else { Get-Peak }
   if ((Get-BillingMode) -eq 'codex') { Update-PetUsageCard; Update-SettingsCodexQuota }
   Update-SettingsCodexWarmup
+  $warmupAlert = $script:LastSnapshot.codexWarmup
+  if (-not $Preview -and $warmupAlert.status -eq 'failed' -and $warmupAlert.alertId -is [string] -and $warmupAlert.alertId -and $warmupAlert.alertId -ne $script:LastWarmupAlert) {
+    $script:LastWarmupAlert = $warmupAlert.alertId
+    [Windows.MessageBox]::Show('自动预热已停止。' + "`n" + [string]$warmupAlert.detail + "`n请检查 Codex 登录、网络和额度；发送后结果不明时不会自动重试。", 'Codex 自动预热', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Warning) | Out-Null
+  }
   $modeChanged = $script:LastPeak -ne $peak
   if ($modeChanged) {
     Set-ModeVisual $peak

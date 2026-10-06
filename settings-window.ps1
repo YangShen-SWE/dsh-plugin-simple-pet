@@ -285,7 +285,7 @@ function Show-PetSettings {
               <Border Name="CodexWarmupPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <StackPanel Margin="16,14" TextBlock.FontFamily="Microsoft YaHei">
                   <TextBlock Text="Codex 自动预热" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
-                  <TextBlock Name="CodexWarmupExplanation" Text="适用于 dsh-codex-subscription 当前活动账号与可用 Codex 模型（优先 Codex 默认项，否则目录首项）；预热会消耗订阅额度。两个开关默认关闭，互相独立。" FontSize="11" Foreground="#ABD2E3" TextWrapping="Wrap" Margin="0,5,0,9"/>
+                  <TextBlock Name="CodexWarmupExplanation" Text="适用于 dsh-codex-subscription 当前活动账号与可用 Codex 模型（优先 Codex 默认项，否则目录首项）；预热会消耗订阅额度。三个开关默认关闭，互相独立。100% 是报告显示值，不保证此前完全没有调用。" FontSize="11" Foreground="#ABD2E3" TextWrapping="Wrap" Margin="0,5,0,9"/>
                   <CheckBox Name="CodexWarmupDaily" Content="每天按电脑本地时间自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
                   <StackPanel Orientation="Horizontal">
                     <TextBlock Text="每日时间" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -295,9 +295,11 @@ function Show-PetSettings {
                   </StackPanel>
                   <TextBlock Name="CodexWarmupTimeValidation" Foreground="#FFE2A7" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,7"/>
                   <CheckBox Name="CodexWarmupReset" Content="5h 额度窗口重置后立即自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
+                  <CheckBox Name="CodexWarmupStartup" Content="启动 DSH 时，5h 额度为 100% 则预热一次" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
+                  <TextBlock Text="适合非 24 小时开机；开启后也会检查一次当前额度。同一已知窗口不会重复预热。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"/>
                   <TextBlock Name="CodexWarmupTimezone" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap"/>
                   <TextBlock Name="CodexWarmupScheduleNote" Text="保存后数秒内由后端读取，无需重启。切换显示模式不会停止已启用任务；关闭或退出桌宠窗口也不会停止后端计划。DSH 或插件停止时不会唤醒电脑，也不会补执行错过的每日任务。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
-                  <TextBlock Name="CodexWarmupSafetyNote" Text="重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。桌宠不自动重试，但底层传输可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                  <TextBlock Name="CodexWarmupSafetyNote" Text="重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。仅确认请求未发送时重试，最多尝试 3 次、间隔 5 秒；发送后结果不明则停止并提示。连续失败停止本次预热；底层传输仍可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
                   <TextBlock Name="CodexWarmupStatus" Foreground="#D9F5FF" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
                 </StackPanel>
               </Border>
@@ -416,8 +418,8 @@ function Show-PetSettings {
   $script:SettingsWindow.FindName('CodexWarmupTimezone').Text = '电脑本地时区：' + [TimeZoneInfo]::Local.DisplayName
   $script:SettingsWindow.FindName('CodexWarmupTime').Text = [string]$script:Prefs.codexWarmupTime
   # Restore before subscribing: opening settings must never enable or persist a task.
-  foreach ($key in @('codexWarmupDaily', 'codexWarmupReset')) {
-    $name = if ($key -eq 'codexWarmupDaily') { 'CodexWarmupDaily' } else { 'CodexWarmupReset' }
+  foreach ($key in @('codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup')) {
+    $name = switch ($key) { 'codexWarmupDaily' { 'CodexWarmupDaily' }; 'codexWarmupReset' { 'CodexWarmupReset' }; 'codexWarmupStartup' { 'CodexWarmupStartup' } }
     $check = $script:SettingsWindow.FindName($name)
     $check.Tag = $key
     $check.IsChecked = $script:Prefs[$key] -is [bool] -and $script:Prefs[$key]

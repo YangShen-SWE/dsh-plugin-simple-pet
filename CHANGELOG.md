@@ -1,5 +1,16 @@
 # 更新记录 / Changelog
 
+## v0.5.0 — 启动预热、定时调度与安全重试（2026-10-07）
+
+- 新增独立、默认关闭的「启动满额度预热」：启动或首次启用时，仅新鲜活动账号的 5h 额度为 100%、周额度可用且重置时间有效才尝试。保留现有每日／重置开关偏好；首次安装三个开关均关闭。
+- 用下一每日／可靠重置目标的单次定时器替代常驻 5 秒检查；监听设置变更并复用约 60 秒额度刷新兜底，保留休眠、重启和时区保护，不补发错过的任务。
+- 仅已证实未调用模型的错误可安全重试，总计最多 3 次、间隔 5 秒；开始调用后的失败、超时或结果不明不重试。取消可打断预检与等待；最终失败弹窗提示。
+- 启动、每日与重置共享持久窗口去重；真实请求仍只有固定短提示，不附会话／工具，不修改账号或全局模型。预热会消耗订阅额度，不能保证窗口从请求时刻开始。
+- 修复过期上游截止时间长期压制每日任务；调用后刷新新窗口用于重启去重。驱动锁覆盖设置读取与调度，忙时合并待办，设置关闭及时取消；设置文件改为原子替换，保留 Windows PowerShell 中文 BOM。
+- 源码与解包安装包通过 72 项回归测试及 1096 项原生断言（设置 609、素材 454、额度 33）；使用模拟模型与账号，不发送真实 Codex 请求，不代表所有宿主／账号已完成实时预热验收。
+- 安装包仍为 `dsh-plugin-simple-pet.tgz`，市场沿用 latest stable URL。升级须完整退出并重启 DSH；已有市场 PR #6267 的收录仍待维护者审核。
+- Add opt-in startup warm-up at fresh 100% five-hour quota, single-deadline scheduling and bounded retries only for proven-unsent failures. Preserve durable cross-trigger deduplication, cancellation and account/model preferences; use atomic settings writes. Both source and extracted package pass 72 tests and 1096 native assertions without live Codex calls. Fully restart DSH after upgrading.
+
 ## v0.4.0 — Codex 自动预热（2026-10-06）
 
 - 新增每日本机时间 `HH:mm` 与可靠观察的 5h 重置后自动预热，两项独立、默认关闭，没有手动按钮。

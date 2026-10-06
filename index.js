@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, watch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -125,7 +125,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     storedWarmup = JSON.parse(readFileSync(warmupFile, 'utf8'));
     warmupJournalReadable = storedWarmup?.version === 1 && Array.isArray(storedWarmup.keys)
       && storedWarmup.keys.every(key => typeof key === 'string' && !/[\r\n]/.test(key)
-        && /^(?:daily:\d{4}-\d{2}-\d{2}|reset:[a-f0-9]{16}:\d{10,16})$/.test(key));
+        && /^(?:daily:\d{4}-\d{2}-\d{2}|(?:reset|window):[a-f0-9]{16}:\d{10,16})$/.test(key));
   } catch (error) { warmupJournalReadable = error.code === 'ENOENT'; }
   let storedCodexStats = null;
   try { storedCodexStats = JSON.parse(readFileSync(codexStatsFile, 'utf8')); } catch { /* independent new ledger */ }
@@ -214,17 +214,39 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     },
   });
   let prefsReading = false;
-  async function pollWarmup() {
-    if (!live || prefsReading || profile !== 'desktop' || process.platform !== 'win32') return;
+  let warmupTimer = null;
+  let prefsWatcher = null;
+  let prefsChangeTimer = null;
+  let warmupRefreshPending = false;
+  function scheduleWarmup() {
+    clearTimeout(warmupTimer);
+    if (!live || profile !== 'desktop' || process.platform !== 'win32') return;
+    const delay = warmup.nextDelay(warmupClock());
+    if (Number.isFinite(delay)) warmupTimer = setTimeout(pollWarmup, Math.max(1, Math.min(delay, 2_147_483_647)));
+  }
+  async function pollWarmup({ preferencesChanged = false } = {}) {
+    if (!live || profile !== 'desktop' || process.platform !== 'win32') return;
+    if (prefsReading) {
+      warmupRefreshPending = true;
+      if (preferencesChanged) warmup.active?.abort();
+      return;
+    }
     prefsReading = true;
-    let raw;
-    try { raw = JSON.parse((await readFile(prefsFile, 'utf8')).replace(/^\uFEFF/, '')); }
-    catch { raw = null; }
-    finally { prefsReading = false; }
-    if (!live) return;
-    const before = JSON.stringify(warmup.view);
-    try { await warmup.tick(raw); } catch { /* scheduler never escalates an automatic request */ }
-    if (live && before !== JSON.stringify(warmup.view)) snapshot();
+    try {
+      let raw;
+      try { raw = JSON.parse((await readFile(prefsFile, 'utf8')).replace(/^\uFEFF/, '')); }
+      catch { raw = null; }
+      if (!live) return;
+      const before = JSON.stringify(warmup.view);
+      try { await warmup.tick(raw); } catch { /* scheduler never escalates an automatic request */ }
+      if (live && before !== JSON.stringify(warmup.view)) snapshot();
+    } finally {
+      prefsReading = false;
+      if (live && warmupRefreshPending) {
+        warmupRefreshPending = false;
+        void pollWarmup();
+      } else scheduleWarmup();
+    }
   }
 
   async function writeSnapshot() {
@@ -304,7 +326,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       codex = { ...codex, status: codex.fiveHour || codex.weekly ? 'stale' : 'unavailable' };
     } finally {
       codexBusy = false;
-      if (live) snapshot();
+      if (live) { snapshot(); void pollWarmup(); }
       if (live && (revision !== codexRevision || bridgeGeneration !== bridgeRevision)) void pollCodex();
     }
   }
@@ -414,13 +436,25 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
 
   const timer = setInterval(pollBalance, 60_000);
   const heartbeat = setInterval(snapshot, 30_000);
-  const warmupTimer = setInterval(pollWarmup, 5000);
+  // Settings changes wake the scheduler; quota refresh remains a low-frequency safety net.
+  if (profile === 'desktop' && process.platform === 'win32') {
+    void mkdir(dataDir, { recursive: true }).then(() => {
+      if (!live) return;
+      prefsWatcher = watch(dataDir, (_event, filename) => {
+        if (!filename || String(filename) === 'settings.json') {
+          clearTimeout(prefsChangeTimer);
+          prefsChangeTimer = setTimeout(() => void pollWarmup({ preferencesChanged: true }), 150);
+        }
+      });
+      prefsWatcher.on('error', () => { prefsWatcher?.close(); prefsWatcher = null; });
+    }).catch(() => { /* minute quota refresh also reads settings */ });
+  }
   void pollWarmup();
   snapshot();
   pollBalance();
   ctx.effect(() => petLauncher({ root: ROOT, profile, logger: ctx.logger }), 'deepseek-pet: window');
   ctx.effect(() => async () => {
-    live = false; clearInterval(timer); clearInterval(heartbeat); clearInterval(warmupTimer);
+    live = false; clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
     clearTimeout(quotaRefreshTimer); controller.abort(); await warmup.stop(); await snapshotTask;
     if (warmupUsageDirty) {
       try {

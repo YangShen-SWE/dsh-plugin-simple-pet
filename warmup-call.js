@@ -33,9 +33,18 @@ export async function chooseWarmupModel(llm, bridge, signal) {
 // One direct logical call: no session, conversation history, agent loop or tool execution.
 // Existing provider middleware/transport may still retry internally; maxTokens is not an enforceable Codex cap.
 export async function runCodexWarmup({ llm, bridge, quota, signal, onUsage = () => {} }) {
-  const config = await chooseWarmupModel(llm, bridge, signal);
-  if (await currentCodexAccountKey(bridge, signal) !== quota.accountKey) throw new Error('active account changed');
-  signal.throwIfAborted();
+  let config;
+  try {
+    config = await chooseWarmupModel(llm, bridge, signal);
+    if (await currentCodexAccountKey(bridge, signal) !== quota.accountKey) {
+      const error = new Error('active account changed'); error.accountChanged = true; throw error;
+    }
+    signal.throwIfAborted();
+  } catch (cause) {
+    const error = new Error('warm-up preflight failed', { cause });
+    error.requestNotSent = true; error.accountChanged = cause?.accountChanged === true;
+    throw error;
+  }
   let usage = null, finish = null, hasText = false;
   try {
     for await (const chunk of llm.stream({ provider: PROVIDER, ...config,
@@ -50,8 +59,20 @@ export async function runCodexWarmup({ llm, bridge, quota, signal, onUsage = () 
     if (await currentCodexAccountKey(bridge, signal) !== quota.accountKey) throw new Error('active account changed');
     signal.throwIfAborted();
     return { model: config.model };
+  } catch (cause) {
+    // Crossing llm.stream is the irreversible boundary, even for a synchronous throw.
+    // Do not trust a transport error's own retry hint after that boundary.
+    const error = new Error(cause?.message || 'warm-up request failed', { cause });
+    error.requestNotSent = false;
+    throw error;
   } finally {
     // Terminal failure may still report billed usage. Count the final cumulative DTO once; never save response text.
-    if (usage) onUsage(usage, config.model);
+    if (usage) {
+      try { onUsage(usage, config.model); }
+      catch (cause) {
+        const error = new Error('warm-up usage accounting failed', { cause });
+        error.requestNotSent = false; throw error;
+      }
+    }
   }
 }

@@ -154,6 +154,11 @@ Initialize-TestPrefs $null
 Assert-True ($script:Prefs.codexWarmupDaily -is [bool] -and -not $script:Prefs.codexWarmupDaily) 'daily warm-up defaults strictly false'
 Assert-True ($script:Prefs.codexWarmupReset -is [bool] -and -not $script:Prefs.codexWarmupReset) 'reset warm-up defaults strictly false'
 Assert-Equal $script:Prefs.codexWarmupTime '09:30' 'default daily time is 09:30'
+Assert-True ($script:Prefs.codexWarmupStartup -is [bool] -and -not $script:Prefs.codexWarmupStartup) 'startup warm-up defaults strictly false'
+Initialize-TestPrefs @{ codexWarmupStartup = $true }
+Assert-True $script:Prefs.codexWarmupStartup 'startup preference restores independently'
+Initialize-TestPrefs @{ codexWarmupStartup = 'true' }
+Assert-True (-not $script:Prefs.codexWarmupStartup) 'startup preference rejects nonboolean values'
 Initialize-TestPrefs @{ skin = 'mint'; unit = 'token'; size = 'large'; sleepMinutes = 23; billingMode = 'codex'; codexUnit = 'percent'; left = 55; top = 66; codexWarmupDaily = $true; codexWarmupReset = $true; codexWarmupTime = '23:59' }
 foreach ($entry in @(@('skin', 'mint'), @('unit', 'token'), @('size', 'large'), @('sleepMinutes', 23), @('billingMode', 'codex'), @('codexUnit', 'percent'), @('left', 55), @('top', 66), @('codexWarmupTime', '23:59'))) {
   Assert-Equal $script:Prefs[$entry[0]] $entry[1] "existing preference $($entry[0]) is restored"
@@ -271,6 +276,8 @@ try {
 
   $daily = Get-Control 'CodexWarmupDaily' ([Windows.Controls.CheckBox])
   $reset = Get-Control 'CodexWarmupReset' ([Windows.Controls.CheckBox])
+  $startup = Get-Control 'CodexWarmupStartup' ([Windows.Controls.CheckBox])
+  Assert-True (-not $startup.IsChecked) 'startup control initially off'
   $warmupTime = Get-Control 'CodexWarmupTime' ([Windows.Controls.TextBox])
   $saveTime = Get-Control 'SaveCodexWarmupTime' ([Windows.Controls.Button])
   $warmupStatus = Get-Control 'CodexWarmupStatus' ([Windows.Controls.TextBlock])
@@ -293,6 +300,12 @@ try {
   $settingsScroll.ScrollToTop()
   Flush-Dispatcher
   Assert-True ($warmupStatus.Text.Contains('已关闭') -and -not $warmupStatus.Text.Contains('重启')) 'old backend with disabled preferences does not advise restart'
+  $startup.IsChecked = $true
+  Click-Button $startup
+  Assert-True ($script:Prefs.codexWarmupStartup -and -not $script:Prefs.codexWarmupDaily -and -not $script:Prefs.codexWarmupReset) 'startup switch enables independently'
+  Assert-True ($warmupStatus.Text.Contains('重启 DSH')) 'startup switch on old backend gives restart hint'
+  $startup.IsChecked = $false
+  Click-Button $startup
   $before = $script:SaveCount
   $daily.IsChecked = $true
   Click-Button $daily
