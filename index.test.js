@@ -1,7 +1,106 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { join } from 'node:path';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { apply } from './index.js';
+
+for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate']) test(`automatic warm-up integration: ${scenario}`, async () => {
+  const damaged = scenario === 'corrupt';
+  const previous = process.env.LOCALAPPDATA, previousProfile = process.env.DSH_PET_PROFILE;
+  process.env.DSH_PET_PROFILE = scenario === 'web' ? 'web' : 'desktop';
+  const root = join(import.meta.dirname, 'work', `test-warmup-${randomUUID()}`);
+  process.env.LOCALAPPDATA = root;
+  const data = join(root, 'DshSimpleDesktopPet'); await mkdir(data, { recursive: true });
+  const date = new Date(); date.setSeconds(0, 0); const now = date.getTime();
+  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  await writeFile(join(data, 'settings.json'), '\uFEFF' + JSON.stringify({ codexWarmupDaily: true, codexWarmupTime: time, codexWarmupReset: false, billingMode: 'deepseek' }));
+  if (damaged) await writeFile(join(data, 'warmup.json'), '{broken');
+  const handlers = new Map(), disposers = [], calls = [];
+  let modelCalls = 0, streamPaused = false;
+  const services = { effect(fn) { disposers.push(fn()); },
+    webServer: { register({ path, handler }) { handlers.set(path, handler); return () => {}; } },
+    connection: { requestRejection() { return undefined; }, createSharedFetchHandler() { return { async fetch(request) {
+      const body = await request.json(); calls.push(body);
+      let value;
+      if (body.method === 'codex-subscription/status') value = { authenticated: true, accounts: [{ id: 'private-test-account', active: true, email: 'private-test-email' }] };
+      else if (body.method === 'codex-subscription/default-model/status') value = { managed: false, provider: 'deepseek-official', model: 'deepseek-flash' };
+      else if (body.method === 'codex-subscription/usage') value = { fetchedAt: now, rateLimits: [{ id: 'codex', windows: [
+        { windowSeconds: 18000, remainingPercent: 80, resetsAt: Math.floor(now / 1000) + 18000 },
+        { windowSeconds: 604800, remainingPercent: 90, resetsAt: Math.floor(now / 1000) + 604800 },
+      ] }] };
+      else throw new Error('unexpected write RPC');
+      return Response.json({ type: 'server-response', rpcId: body.rpcId, result: { ok: true, value } });
+    } }; } },
+  };
+  const ctx = { ...services, on() {}, inject(_names, fn) { fn(services); }, settings: { describe() { return []; } },
+    get(name) { if (name === 'deepseekAccount') return { async getBalance() { return { status: 'ready', value: [{ currency: 'CNY', balance: '50' }] }; } }; },
+    llm: { listConfigurableProviders() { return []; }, async listModels(provider) { return [{ provider, id: 'gpt-test' }]; },
+      async *stream(options) { modelCalls++; assert.equal(options.provider, 'openai-codex');
+        yield { type: 'text-delta', text: 'OK' }; yield { type: 'usage', usage: { inputTokens: 11, cacheReadTokens: 3, outputTokens: 2, reasoningTokens: 1 } };
+        if (scenario === 'drain') {
+          streamPaused = true;
+          await new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      },
+    },
+  };
+  try {
+    apply(ctx, { petLauncher: () => () => {}, warmupClock: () => now });
+    const state = () => { let body; handlers.get('/api/dsh-plugin-simple-pet/state')({ method: 'GET', url: '/api/dsh-plugin-simple-pet/state?since=0', headers: {} },
+      { writeHead() {}, end(value) { body = value; } }); return JSON.parse(body); };
+    for (let i = 0; i < 500; i++) {
+      if (['succeeded', 'failed', 'skipped'].includes(state().codexWarmup.status) || streamPaused
+        || (scenario === 'web' && state().codex.status === 'ready' && state().balance === 50)) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    if (scenario === 'drain') {
+      assert.equal(streamPaused, true); assert.equal(modelCalls, 1);
+      for (const dispose of disposers.splice(0).reverse()) await dispose?.();
+      const saved = JSON.parse(await readFile(join(data, 'stats-codex-desktop.json'), 'utf8'));
+      assert.equal(Object.values(saved.days).reduce((sum, day) => sum + day.tokens, 0), 16);
+      assert.equal(state().events.length, 0, 'drained usage creates no events after unload'); return;
+    }
+    if (scenario === 'web') {
+      assert.equal(state().codexWarmup.status, 'disabled'); assert.equal(modelCalls, 0);
+      assert.ok(!calls.some(call => call.payload.force === true));
+      await assert.rejects(readFile(join(data, 'warmup.json')), { code: 'ENOENT' }); return;
+    }
+    const value = state();
+    if (damaged) {
+      assert.equal(value.codexWarmup.status, 'skipped'); assert.equal(modelCalls, 0);
+      assert.equal(await readFile(join(data, 'warmup.json'), 'utf8'), '{broken'); return;
+    }
+    assert.equal(value.codexWarmup.status, 'succeeded', JSON.stringify(value.codexWarmup));
+    assert.equal(modelCalls, 1); assert.equal(value.balance, 50);
+    assert.equal(Object.values(value.stats.days).length, 0);
+    assert.equal(Object.values(value.codexStats.days).reduce((sum, day) => sum + day.tokens, 0), 16);
+    assert.ok(value.events.every(event => event.billingMode === 'codex' && event.cny === null && event.warmup === true));
+    assert.ok(!JSON.stringify(value).includes('private-test')); assert.ok(!JSON.stringify(value).includes('Reply only'));
+    assert.ok(calls.some(call => call.method.endsWith('/usage') && call.payload.force === true));
+    const journal = JSON.parse(await readFile(join(data, 'warmup.json'), 'utf8'));
+    assert.equal(journal.keys.length, 1); assert.equal(journal.lastSuccessAt, now);
+    if (scenario === 'duplicate') {
+      let duplicateBody;
+      const duplicateServices = { ...services, webServer: { register({ path, handler }) {
+        if (path.endsWith('/state')) duplicateBody = handler; return () => {};
+      } } };
+      apply({ ...ctx, inject(_names, fn) { fn(duplicateServices); } }, { petLauncher: () => () => {}, warmupClock: () => now });
+      for (let i = 0; i < 100; i++) {
+        let body; duplicateBody({ method: 'GET', url: '/api/dsh-plugin-simple-pet/state', headers: {} },
+          { writeHead() {}, end(value) { body = value; } });
+        if (JSON.parse(body).codexWarmup.status !== 'disabled') break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.equal(modelCalls, 1, 'a second mounted context cannot repeat the local daily occurrence');
+    }
+  } finally {
+    for (const dispose of disposers.reverse()) await dispose?.();
+    if (previous === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = previous;
+    if (previousProfile === undefined) delete process.env.DSH_PET_PROFILE; else process.env.DSH_PET_PROFILE = previousProfile;
+  }
+});
 
 test('both DeepSeek provider routes enter, while unrelated providers stay out', async () => {
   const previousDataDir = process.env.LOCALAPPDATA;

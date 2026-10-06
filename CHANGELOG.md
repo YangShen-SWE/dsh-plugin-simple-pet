@@ -1,5 +1,18 @@
 # 更新记录 / Changelog
 
+## v0.4.0 — Codex 自动预热（2026-10-06）
+
+- 新增每日本机时间 `HH:mm` 与可靠观察的 5h 重置后自动预热，两项独立、默认关闭，没有手动按钮。
+- 设置面板常驻可滚动内容区；严格校验时间，显示本机时区、状态、上次尝试 / 成功与下一每日时间。开关数秒内生效；第一次升级需完整重启 DSH。
+- 通过宿主公共 `llm.stream` 发送固定极短提示，无会话历史、系统提示或工具，不切换模型 / 账号或修改订阅插件设置；真实报告保护额度与账号边界。
+- 调用前原子保存尝试记录，失败不由桌宠重试；每日与重置同时命中合并，重启、长休眠、夏令时和设置变化均有保护。独立 Codex 统计包含预热实际报告的用量。
+- 复核修正启动 / 唤醒后的多次轮询补发、停用期间已报告用量丢失和共享设置误启用其他配置的问题；仅 Windows desktop 执行，日志损坏停止发送。
+- 明确公开接口限制：不能锁定调用中的账号、保证固定 Token / 精确窗口起点、禁止底层传输重试或保证认证阶段严格截止。
+- 保留 DeepSeek / Codex 双模式、六款本地预览皮肤、用量动作、独立统计与可拖动设置；升级不重置本机偏好和历史。首次安装两个预热开关默认关闭。
+- 源码与解包安装包均通过 56 项回归测试和 1088 项原生断言（设置 601、真实素材 454、额度展示 33）。调度、SDK 调用、额度、账号与后端整合使用模拟服务，不发真实模型请求；不代表所有宿主／账号已完成实时预热验收。
+- 新稳定安装包仍使用 `dsh-plugin-simple-pet.tgz`；市场最新稳定版 URL 沿用。完整更新实际安装副本并退出／重启 DSH 后台；市场收录仍需维护者审核。
+- Add opt-in local daily and observed 5h-reset warm-up, with no manual button. Preserve model/account preferences, use minimal direct requests and durable deduplication, and disclose SDK transport/token/account limitations. Retain dual billing/quota modes, six skins and statistics. Both source and extracted package pass 56 tests and 1088 native assertions using mocks, with no live model calls. Fully restart DSH after upgrading; marketplace inclusion remains subject to review.
+
 ## v0.3.0 — DeepSeek / Codex 双模式（2026-10-05）
 
 - 保留六款皮肤和 DeepSeek 原有余额、人民币 / Token 飘字、峰谷形象与统计。

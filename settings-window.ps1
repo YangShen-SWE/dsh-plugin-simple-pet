@@ -203,6 +203,7 @@ function Show-PetSettings {
   if ($script:SettingsWindow -and $script:SettingsWindow.IsVisible) {
     $script:SettingsWindow.FindName('SettingsTabs').SelectedIndex = 0
     [void]$script:SettingsWindow.Activate()
+    Update-SettingsCodexWarmup
     return
   }
   $settingsXaml = @'
@@ -280,6 +281,25 @@ function Show-PetSettings {
                     <ComboBoxItem Content="DeepSeek 计费模式" Tag="deepseek"/><ComboBoxItem Content="Codex 订阅模式" Tag="codex"/>
                   </ComboBox>
                 </Grid>
+              </Border>
+              <Border Name="CodexWarmupPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <StackPanel Margin="16,14" TextBlock.FontFamily="Microsoft YaHei">
+                  <TextBlock Text="Codex 自动预热" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                  <TextBlock Name="CodexWarmupExplanation" Text="适用于 dsh-codex-subscription 当前活动账号与可用 Codex 模型（优先 Codex 默认项，否则目录首项）；预热会消耗订阅额度。两个开关默认关闭，互相独立。" FontSize="11" Foreground="#ABD2E3" TextWrapping="Wrap" Margin="0,5,0,9"/>
+                  <CheckBox Name="CodexWarmupDaily" Content="每天按电脑本地时间自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="每日时间" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <TextBox Name="CodexWarmupTime" Width="75" Height="31" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" VerticalContentAlignment="Center" AutomationProperties.Name="每日预热时间 HH:mm"/>
+                    <Button Name="SaveCodexWarmupTime" Content="保存时间" Width="85" Height="31" Margin="10,0,0,0" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" Cursor="Hand"/>
+                    <TextBlock Text="HH:mm（24 小时制）" Foreground="#ABD2E3" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11"/>
+                  </StackPanel>
+                  <TextBlock Name="CodexWarmupTimeValidation" Foreground="#FFE2A7" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,7"/>
+                  <CheckBox Name="CodexWarmupReset" Content="5h 额度窗口重置后立即自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
+                  <TextBlock Name="CodexWarmupTimezone" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap"/>
+                  <TextBlock Name="CodexWarmupScheduleNote" Text="保存后数秒内由后端读取，无需重启。切换显示模式不会停止已启用任务；关闭或退出桌宠窗口也不会停止后端计划。DSH 或插件停止时不会唤醒电脑，也不会补执行错过的每日任务。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                  <TextBlock Name="CodexWarmupSafetyNote" Text="重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。桌宠不自动重试，但底层传输可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                  <TextBlock Name="CodexWarmupStatus" Foreground="#D9F5FF" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
+                </StackPanel>
               </Border>
               <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <StackPanel Margin="10,10,10,8">
@@ -393,6 +413,40 @@ function Show-PetSettings {
   $script:SleepInput = $script:SettingsWindow.FindName('SleepInput')
   $script:SleepInput.Text = [string]$script:Prefs.sleepMinutes
   Initialize-SettingsSkinGallery
+  $script:SettingsWindow.FindName('CodexWarmupTimezone').Text = '电脑本地时区：' + [TimeZoneInfo]::Local.DisplayName
+  $script:SettingsWindow.FindName('CodexWarmupTime').Text = [string]$script:Prefs.codexWarmupTime
+  # Restore before subscribing: opening settings must never enable or persist a task.
+  foreach ($key in @('codexWarmupDaily', 'codexWarmupReset')) {
+    $name = if ($key -eq 'codexWarmupDaily') { 'CodexWarmupDaily' } else { 'CodexWarmupReset' }
+    $check = $script:SettingsWindow.FindName($name)
+    $check.Tag = $key
+    $check.IsChecked = $script:Prefs[$key] -is [bool] -and $script:Prefs[$key]
+    $check.Add_Click({
+      param($sender, $eventArgs)
+      $key = [string]$sender.Tag
+      $value = $sender.IsChecked -eq $true
+      if ($script:Prefs[$key] -is [bool] -and $script:Prefs[$key] -eq $value) { return }
+      $script:Prefs[$key] = $value
+      Save-Prefs
+      Update-SettingsCodexWarmup
+    })
+  }
+  $script:SettingsWindow.FindName('SaveCodexWarmupTime').Add_Click({
+    $timeInput = $script:SettingsWindow.FindName('CodexWarmupTime')
+    $validation = $script:SettingsWindow.FindName('CodexWarmupTimeValidation')
+    if ($timeInput.Text -cnotmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z') {
+      $validation.Text = '请输入有效时间 HH:mm，例如 09:30（00:00–23:59）。'
+      $timeInput.BorderBrush = [Windows.Media.Brushes]::Salmon
+      return
+    }
+    if ($script:Prefs.codexWarmupTime -cne $timeInput.Text) {
+      $script:Prefs.codexWarmupTime = $timeInput.Text
+      Save-Prefs
+    }
+    $validation.Text = '时间已保存；后端将在数秒内读取。'
+    $timeInput.BorderBrush = [Windows.Media.Brushes]::PaleGreen
+    Update-SettingsCodexWarmup
+  })
   # Restore saved choices before subscribing so opening settings does not write preferences.
   foreach ($choice in @(@{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' }, @{ name = 'BillingModeChoice'; group = 'billingMode' }, @{ name = 'CodexUnitChoice'; group = 'codexUnit' })) {
     $control = $script:SettingsWindow.FindName($choice.name)
@@ -440,5 +494,6 @@ function Show-PetSettings {
   $script:SettingsWindow.Add_Closed({ $script:SettingsWindow = $null })
   Update-SettingsBillingMode
   $script:SettingsWindow.Show()
+  Update-SettingsCodexWarmup
   Update-SettingsStats
 }

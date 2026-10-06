@@ -2,9 +2,10 @@
 
 ## 中文
 
-- 插件处理 DSH 中 `deepseek-official`、`deepseek-account`、`openai-codex` 与 `codex` 路由的模型用量事件。事件包含模型名、时间、Token 类别和数量；插件不读取或保存提问、回复正文。
+- 插件处理 DSH 中 `deepseek-official`、`deepseek-account`、`openai-codex` 与 `codex` 路由的模型用量事件。事件包含模型名、时间、Token 类别和数量；插件不读取或保存用户提问、回复正文。启用自动预热时只发送固定短提示 `Reply only OK.`，瞬时检查该请求的非空回复，不保存回复文本，也不读取用户会话历史。
 - API Key 路由查询余额时，插件通过 DSH 的 credentials 机制取得 API Key，并且仅向 `https://api.deepseek.com/user/balance` 发送；账号登录路由通过 DSH 的 `deepseekAccount.getBalance` 服务查询钱包，插件不接触账号令牌。两种凭据都不写入本插件的状态、统计或设置文件。
 - Codex 额度仅通过 DSH 公共的进程内连接适配器调用订阅插件的状态 / 用量接口；不读取 Codex 凭据文件、不取得 access / refresh token、不登录或切换账号。账号邮箱与标签不转存；仅保存账号 ID 的短哈希以隔离不同账号的额度变化。订阅插件可能自行请求其官方用量接口，桌宠不会自行携带 Codex 凭据联网。
+- 自动预热两个开关默认关闭；启用后通过 DSH 公共模型服务使用现有 Codex 认证，调用前后核对活动账号，不直接取得令牌或改变账号 / 模型设置。API 无法锁定调用期间账号；认证刷新及底层传输 / 日志仍由宿主和订阅插件管理，不保证这些组件不写凭据或记录。去重日志只保存本地日期 / 短哈希与截止时间组成的键，以及尝试 / 成功时间、错过的本地每日日期和时刻；不保存原始账号、邮箱、令牌或回复。
 - 余额、订阅额度与重置时间、最近事件、分别保存的 DeepSeek / Codex 每日 Token 与估算人民币消耗、桌宠偏好只保存在本机 `%LOCALAPPDATA%\DshSimpleDesktopPet\`。该目录沿用早期版本名称，以保留升级前的数据。
 - 插件没有遥测、广告、第三方分析或云端同步。受 DSH 本地连接校验保护的状态和素材接口仅供 DSH 使用。
 - 形象图库只从安装目录读取峰时／谷时图片，预览不访问网络；切换只保存本机形象 ID，不上传图片、余额或使用记录。
@@ -13,9 +14,10 @@
 
 ## English
 
-- The plugin processes usage events from DSH's `deepseek-official`, `deepseek-account`, `openai-codex`, and `codex` routes. It uses model names, timestamps, and token categories/counts, and does not read or store prompt or response text.
+- The plugin processes usage events from DSH's `deepseek-official`, `deepseek-account`, `openai-codex`, and `codex` routes. It uses model names, timestamps, and token categories/counts, and does not read or store user prompt or response text. Opt-in automatic warm-up sends only the fixed prompt `Reply only OK.` and transiently checks its own nonblank response, without storing it or reading conversation history.
 - For the API-key route, it obtains the key through DSH credentials solely to request the official balance at `https://api.deepseek.com/user/balance`. For the sign-in route, it asks DSH's `deepseekAccount.getBalance` service for the wallet and never accesses the account token. Neither credential is written to its state, statistics, or settings files.
 - Codex quota is read through the subscription plugin's public status/usage RPC via DSH's in-process connection adapter. The pet never reads Codex credentials, obtains access/refresh tokens, or changes accounts. Emails and labels are not forwarded; only a short hash of the account identifier is stored to isolate quota changes. The subscription owner may make its own upstream quota request.
+- Both warm-up switches default off. When enabled, it uses DSH's public LLM service and existing Codex authentication, checks the active account before/after dispatch and changes no account/model preferences. The API cannot pin an account during the call. Authentication refresh, transport and logging remain host/addon responsibilities; their credential writes or logging are not controlled by the pet. The local attempt journal stores date/account-hash/deadline keys, attempt/success timestamps, and missed local daily dates/times only, not raw identities, emails, tokens or responses.
 - Balances, subscription windows and reset times, recent events, separate DeepSeek/Codex token ledgers, daily CNY estimates, and preferences stay under `%LOCALAPPDATA%\DshSimpleDesktopPet\`. The directory keeps its earlier name so upgrades retain local data.
 - There is no telemetry, advertising, third-party analytics, or cloud sync. State and asset endpoints are guarded by DSH's local connection check.
 - The gallery reads peak/off-peak images from the installed directory without network requests. Selection saves only a local skin ID and does not upload images, balances, or usage.

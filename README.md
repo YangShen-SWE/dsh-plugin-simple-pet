@@ -1,14 +1,21 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.3.0 · DeepSeek / Codex 双模式](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.3.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.4.0 · Codex 自动预热](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.4.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
+> **v0.4.0 新增：** Codex 每日本机时间与可靠 5h 重置自动预热，两项独立、默认关闭。首次升级不会自动开启；主动开启会发送真实模型请求并消耗额度。完整重启 DSH 后加载新版后端。
+
 ## 中文使用说明
 
-### v0.3.0 更新重点
+### v0.4.0 更新重点
+
+- 新增 **每日本机时间 `HH:mm`** 与 **可靠观察的 5h 重置后自动预热**，独立默认关闭，没有手动按钮；可在任一计费显示模式下设置。
+- 新增时区、预热状态、上次尝试／成功和下一每日时间；只发送固定短提示，不传会话内容，不修改全局模型或账号。
+- 持久去重、额度与账号检查、取消和休眠／重启保护；失败不由桌宠重试，不补发已错过的任务。服务器报告决定窗口重置，不能保证 09:30 → 14:30。
+- 原有 DeepSeek / Codex 双模式及下表功能继续保留；设置、位置、六款皮肤和用量历史兼容。
 
 | 模式 | 悬浮卡片 | 用量飘字与统计 |
 | --- | --- | --- |
@@ -30,10 +37,10 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.3.0 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.3.0) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.4.0 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.4.0) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.3.0 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.4.0 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -65,6 +72,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 - **刷新与升级：** 新后台加载后立即查询，约每 60 秒刷新。提示「请重启 DSH 更新桌宠」表示读到缺少 Codex 字段的旧后端状态，不代表订阅插件未登录；「等待 DSH 数据」表示尚未读到首份状态。
 - **统计边界：** Codex 不显示人民币／峰价／谷价；统计页显示今日 Codex Token 和 5h／周额度，折线图仅统计 DSH Token。其他客户端的消耗可能影响账户额度，但不会被编造成本插件的 Token 历史。只有 OAuth 模型、没有受支持的用量接口时，不虚构额度。
 
+### Codex 自动预热（v0.4.0）
+
+右键 → 设置 → **Codex 自动预热**，在任一计费显示模式下均可设置。**没有手动预热按钮**；两个开关独立，默认都关闭：
+
+- **每日预热：** 设置严格的 24 小时制 `HH:mm`，例如 `09:30`，保存时间并启用每日开关。按运行 DSH 的电脑本地时区执行，不固定为北京时间或哥本哈根时间；约每 5 秒读取设置。只在持续运行、及时观察到指定时刻后，于该分钟内最多尝试一次；启动或恢复运行时已错过时刻不会补发。修改时间、失败、重启不会重试当天已记录的尝试。
+- **5h 重置预热：** 仅依据 `dsh-codex-subscription` 当前活动账号的新鲜 5h 报告，先观察未来截止时间，再在截止后及时核对新报告。每个已观察窗口最多尝试一次；新窗口已有调用时跳过。周额度重置、旧缓存或多提供商插件的默认账号报告不会触发。两个条件同时命中合并为一次调用。
+- **后台生命周期：** 仅 Windows 的 `desktop` 配置执行，其他配置不会因共享设置被自动启用。DSH 与插件必须运行；不会唤醒电脑，不补执行长时间休眠、离线期间错过的任务。夏令时不存在的时间跳过，重复时间不重复执行。关闭设置、退出桌宠窗口或切换显示模式不会停用任务；要停止自动请求，请关闭开关或禁用插件。修改相关设置会取消正在进行的请求，已发送部分可能计入额度。
+- **真实请求：** 通过现有宿主 `llm.stream`，显式指定 `openai-codex` 与可用目录内模型；优先当前默认的 Codex 模型，否则使用 Codex 目录首项，并选择已报告支持的最低推理档。只发送固定短提示 `Reply only OK.`，不附带聊天历史、系统提示、会话 ID 或工具，不创建聊天或运行工具；不改动全局模型、账号或订阅插件设置。
+- **安全与消耗：** 调用前强制查询当前账号的 5h / 周额度，未登录、报告不新鲜、账号变化、额度耗尽或去重记录无法保存时不发送。调用前后再次核对活动账号，但公开接口**不能锁定调用期间账号**。用量计入独立 Codex Token 统计，失败若仍报告用量也计入；不由 Token 推测额度或重置时间。
+- **限制：** 桌宠每次只发起一个逻辑调用，不自行失败重试；现有订阅插件的 WebSocket / middleware 等底层传输仍可能重试或回退。短提示不保证固定 Token 消耗；Codex 不执行这里可用的 `maxTokens` 上限。约 60 秒发出取消信号，认证或清理阶段可能等待更久；未结束时不会并发启动下一次。测试只用模拟服务，不会自动发起真实付费调用。
+
+例如本机 `09:30` 请求，**只有在服务器确实从该请求开启新 5h 窗口时**，才可能在 `14:30` 重置；已有窗口不会因此重新锚定。成功、跳过、失败、上次尝试和下一每日时间在设置中显示；服务器额度报告始终是依据。第一次升级需完整重启 DSH 加载新版后端；之后更改设置不需重启。
+
 ### 数字怎么读
 
 - **DeepSeek 余额：** 启动时查询已登录的账号钱包，不必等待模型调用；随后按实际使用路由切换到 API Key 余额或账号钱包。调用结束后估算更新，约每 60 秒校准。未知模型只显示 Token，不猜人民币。未登录或余额服务不可用时显示未连接／不可用。
@@ -86,19 +106,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 
 ### 数据、版权和开发检查
 
-本机数据位于 `%LOCALAPPDATA%\DshSimpleDesktopPet\`：`state-desktop.json` 保存余额、额度与最近事件，`stats-desktop.json` 保存 DeepSeek 用量，`stats-codex-desktop.json` 单独保存 Codex Token，`settings.json` 保存偏好与位置。旧目录与数据保留；状态不保存 API Key、Codex 令牌或对话正文。Codex 只调用订阅插件公共只读接口，账号标识仅保存短哈希；完整说明见 [隐私说明](PRIVACY.md)。
+本机数据位于 `%LOCALAPPDATA%\DshSimpleDesktopPet\`：`state-desktop.json` 保存余额、额度与最近事件，`stats-desktop.json` 保存 DeepSeek 用量，`stats-codex-desktop.json` 单独保存 Codex Token，`settings.json` 保存偏好与位置，`warmup.json` 保存自动预热的尝试键、时间及错过的每日时刻，防止重启后重复；已有日志损坏或无法读取时停止发送，不静默重建。旧目录与数据保留；状态不保存 API Key、Codex 令牌或对话正文。额度查询走订阅插件公共只读接口；启用预热才通过宿主模型接口发送固定极短提示，账号标识仅保存短哈希；完整说明见 [隐私说明](PRIVACY.md)。
 
 价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对，官方改价后需更新代码。源码与文档为 MIT 许可；十二张角色图集及四张生成源图另见 [美术授权](ARTWORK-LICENSE.md)。保留 AI 来源信息，人工视觉检查不等于绝无相似或法律保证。本项目交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但未打包其源码或素材，与 DeepSeek 及上游无隶属关系。
 
-运行 `npm test` 检查计费、路由、额度、统计和 UI；受限沙箱可用 `node --test --test-isolation=none`。v0.3.0 的回归包括 34 项测试及 946 项原生断言（设置 459、真实素材 454、额度展示 33）。Codex 接口与切号行为使用公开 DTO 的模拟回归；这些测试不读取真实账号数据，也不等于所有宿主／账号已完成实时额度验收。
+运行 `npm test` 检查计费、路由、额度、统计和 UI；受限沙箱可用 `node --test --test-isolation=none`。v0.4.0 的源码与解包安装包回归均包括 56 项测试及 1088 项原生断言（设置 601、真实素材 454、额度展示 33）。Codex 接口与切号行为使用公开 DTO 的模拟回归；这些测试不读取真实账号数据，也不等于所有宿主／账号已完成实时额度验收。
 
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 可查看独立模拟动效；加 `-PreviewSleep` 看睡眠、`-PreviewSettings` 看模拟统计，不修改真实余额。
 
 ## English guide
 
-### What's new in v0.3.0
+### What's new in v0.4.0
 
-- **Two display modes:** keep DeepSeek balance, CNY/Token feedback, peak/off-peak poses and existing statistics; add Codex remaining 5-hour/week quotas, reset times and a separate Token ledger.
+- **Automatic Codex warm-up:** independent, default-off daily computer-local `HH:mm` and reliably observed 5-hour-reset switches, with no manual button. Settings shows time zone, status, last attempt/success and next daily time.
+- Sends only a fixed short prompt through existing Codex authentication, with no conversation history or tools and no global model/account changes. Durable deduplication, quota checks and cancellation prevent pet-level retries, overlap and missed-time catch-up. Real requests consume quota; server reports determine reset times.
+- **Existing two display modes remain:** DeepSeek balance, CNY/Token feedback, peak/off-peak poses and statistics; Codex remaining 5-hour/week quotas, reset times and a separate Token ledger.
 - Switch under right-click **Settings → Billing mode**. This only changes the pet, not DSH's model, provider or account. Codex shows no CNY or peak/off-peak pricing.
 - Six local, keyboard-accessible skin cards, three sizes, draggable settings/statistics, direct right-click entry, and saved preferences remain available. DeepSeek previews both poses; Codex shows a single preview.
 - Cached-input damage, uncached-input reactions and reply jumps use the selected mode's events. Sleep follows that mode's activity, after 1–240 minutes (10 by default). WPF animates between state polls.
@@ -106,7 +128,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.3.0](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.3.0), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.4.0](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.4.0), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"
@@ -126,10 +148,18 @@ Unknown quota is `—`, not 0% or 100%. Reset times use your local time zone. Qu
 
 “请重启 DSH 更新桌宠” means an old backend snapshot lacks Codex fields: update the installed copy and fully restart DSH, not the subscription login. “等待 DSH 数据” means no initial snapshot yet. Other statuses distinguish signed-out, unsupported, switching and stale data. Codex Token charts count DSH-reported usage only; account quota may also reflect other clients.
 
+### Automatic Codex warm-up (v0.4.0)
+
+Settings has independent, default-off **daily local HH:mm** and **observed 5-hour reset** switches, with no manual request button. Only the Windows desktop profile executes the shared local schedule; other profiles do not opt in. The backend checks preferences about every 5 seconds. A target already missed at startup/wake is suppressed, including subsequent ticks and restarts; the computer is never woken. Closing the pet or changing display mode does not disable the backend schedule; turn off the switches or disable the plugin to stop it.
+
+A fresh, forced active-account quota check and durable attempt claim precede a direct `openai-codex` stream. It uses an available Codex model (current Codex default if available, otherwise the first catalog entry) and the lowest advertised supported reasoning effort. Only `Reply only OK.` is sent: no session, history, system prompt or tools. Model/account/addon preferences are not changed. A daily date or observed reset deadline is attempted at most once; simultaneous triggers coalesce. Unknown/stale/exhausted quotas or account changes skip dispatch. Reported usage, including failed-call usage, enters the separate Codex ledger.
+
+The public API cannot pin an account during dispatch, impose an enforceable Codex token cap, or forbid every existing transport retry. The pet itself does not retry, but addon WebSocket/middleware behavior may. A 60-second cancellation signal does not guarantee an authentication/cleanup deadline. Reset reports, not success or token counts, determine window timing: 09:30 does not guarantee a 14:30 reset. Tests use mocks only; no live billable verification was performed. This feature is included in v0.4.0 and defaults off on first upgrade. Fully restart DSH once after updating the installed backend.
+
 ### DeepSeek numbers, privacy and verification
 
 The DeepSeek card queries the signed-in account wallet at startup and switches wallets according to actual official `deepseek-account` / `deepseek-official` calls. It estimates deductions between official balance checks; unknown prices stay unpriced. Token amounts include reported context/cache, not only your last prompt. Today's totals use local dates; old history may be incomplete.
 
-Data and preferences stay under `%LOCALAPPDATA%\DshSimpleDesktopPet\`, with separate DeepSeek/Codex ledgers. No prompt/response bodies or credentials are stored. Codex uses public read-only addon RPC and hashes account identifiers. See [PRIVACY.md](PRIVACY.md), [artwork terms](ARTWORK-LICENSE.md), and [CHANGELOG.md](CHANGELOG.md). There is no telemetry or cloud sync.
+Data and preferences stay under `%LOCALAPPDATA%\DshSimpleDesktopPet\`, with separate DeepSeek/Codex ledgers. No prompt/response bodies or credentials are stored. Codex quota uses public read-only addon RPC and hashes account identifiers; opt-in warm-up sends only a fixed short prompt through the host LLM service and stores attempt timestamps/keys, not response bodies. See [PRIVACY.md](PRIVACY.md), [artwork terms](ARTWORK-LICENSE.md), and [CHANGELOG.md](CHANGELOG.md). There is no telemetry or cloud sync.
 
-Run `npm test` (or `node --test --test-isolation=none` in restricted sandboxes). The v0.3.0 regression suite includes 34 tests and 946 native assertions. Codex/account-switch tests use synthetic public DTOs, not live credentials; passing them is not a claim of live quota verification on every host/account. Isolated preview mode uses synthetic events and does not change live balance data.
+Run `npm test` (or `node --test --test-isolation=none` in restricted sandboxes). Both the v0.4.0 source and extracted installation package pass 56 tests and 1088 native assertions (601 settings, 454 actual-asset and 33 quota-presentation assertions). Codex/account-switch tests use synthetic public DTOs, not live credentials; passing them is not a claim of live quota verification on every host/account. Isolated preview mode uses synthetic events and does not change live balance data.

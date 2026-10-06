@@ -130,6 +130,51 @@ function Save-SettingsCapture([string]$name) {
   Write-Host "Captured $path"
 }
 
+# Read/parse scripts only. Execute ONLY the bounded preference initialization block,
+# with in-memory path/content stubs; never dot-source pet.ps1 or access user settings.
+$petPath = Join-Path $PSScriptRoot 'pet.ps1'
+foreach ($path in @($petPath, $SettingsScript, (Join-Path $PSScriptRoot 'usage-view.ps1'), $PSCommandPath)) {
+  $bytes = [IO.File]::ReadAllBytes($path)
+  Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) "$path retains UTF-8 BOM for native PS5.1"
+  $parseTokens = $null; $parseErrors = $null
+  [void][Management.Automation.Language.Parser]::ParseFile($path, [ref]$parseTokens, [ref]$parseErrors)
+  Assert-Equal @($parseErrors).Count 0 "$path parses in native Windows PowerShell"
+}
+$petSource = [IO.File]::ReadAllText($petPath)
+$prefMatch = [regex]::Match($petSource, '(?ms)^\$script:Prefs = \[ordered\]@\{.*?(?=^function Save-Prefs)')
+Assert-True $prefMatch.Success 'preference initializer has a bounded standalone block'
+$prefBlock = [scriptblock]::Create($prefMatch.Value)
+function Initialize-TestPrefs($savedPrefs) {
+  $json = if ($null -ne $savedPrefs) { $savedPrefs | ConvertTo-Json -Compress } else { $null }
+  function Test-Path { param($LiteralPath) return $null -ne $json }
+  function Get-Content { param($LiteralPath, [switch]$Raw, $Encoding) return $json }
+  & $prefBlock
+}
+Initialize-TestPrefs $null
+Assert-True ($script:Prefs.codexWarmupDaily -is [bool] -and -not $script:Prefs.codexWarmupDaily) 'daily warm-up defaults strictly false'
+Assert-True ($script:Prefs.codexWarmupReset -is [bool] -and -not $script:Prefs.codexWarmupReset) 'reset warm-up defaults strictly false'
+Assert-Equal $script:Prefs.codexWarmupTime '09:30' 'default daily time is 09:30'
+Initialize-TestPrefs @{ skin = 'mint'; unit = 'token'; size = 'large'; sleepMinutes = 23; billingMode = 'codex'; codexUnit = 'percent'; left = 55; top = 66; codexWarmupDaily = $true; codexWarmupReset = $true; codexWarmupTime = '23:59' }
+foreach ($entry in @(@('skin', 'mint'), @('unit', 'token'), @('size', 'large'), @('sleepMinutes', 23), @('billingMode', 'codex'), @('codexUnit', 'percent'), @('left', 55), @('top', 66), @('codexWarmupTime', '23:59'))) {
+  Assert-Equal $script:Prefs[$entry[0]] $entry[1] "existing preference $($entry[0]) is restored"
+}
+Assert-True ($script:Prefs.codexWarmupDaily -and $script:Prefs.codexWarmupReset) 'saved independent boolean switches restore'
+foreach ($invalidBool in @('true', 'false', 1, 0, @(), @{ value = $true })) {
+  Initialize-TestPrefs @{ codexWarmupDaily = $invalidBool; codexWarmupReset = $invalidBool }
+  Assert-True ($script:Prefs.codexWarmupDaily -is [bool] -and -not $script:Prefs.codexWarmupDaily) 'nonboolean daily preference resets safely'
+  Assert-True ($script:Prefs.codexWarmupReset -is [bool] -and -not $script:Prefs.codexWarmupReset) 'nonboolean reset preference resets safely'
+}
+foreach ($invalidTime in @('', '9:30', '24:00', '12:60', "09:30`n", ' 09:30', 930, $null)) {
+  Initialize-TestPrefs @{ codexWarmupTime = $invalidTime; codexWarmupDaily = $true; codexWarmupReset = $true }
+  Assert-Equal $script:Prefs.codexWarmupTime '09:30' 'invalid persisted time gets safe display default'
+  Assert-True (-not $script:Prefs.codexWarmupDaily) 'invalid saved time cannot enable daily via unrelated preference saves'
+  Assert-True $script:Prefs.codexWarmupReset 'invalid daily time leaves independent reset switch unchanged'
+}
+Initialize-TestPrefs @{ codexWarmupDaily = $true; codexWarmupReset = $true }
+Assert-True (-not $script:Prefs.codexWarmupDaily) 'missing saved time disables daily execution'
+Assert-True $script:Prefs.codexWarmupReset 'missing daily time does not disable reset execution'
+Initialize-TestPrefs $null
+
 $script:Window = New-Object Windows.Window
 $script:Window.Title = 'Desktop pet regression test owner'
 $script:Window.WindowStyle = 'None'
@@ -224,6 +269,96 @@ try {
   Assert-True (-not $chartUnit.IsVisible) 'statistics content starts hidden'
   Save-SettingsCapture 'settings-test.png'
 
+  $daily = Get-Control 'CodexWarmupDaily' ([Windows.Controls.CheckBox])
+  $reset = Get-Control 'CodexWarmupReset' ([Windows.Controls.CheckBox])
+  $warmupTime = Get-Control 'CodexWarmupTime' ([Windows.Controls.TextBox])
+  $saveTime = Get-Control 'SaveCodexWarmupTime' ([Windows.Controls.Button])
+  $warmupStatus = Get-Control 'CodexWarmupStatus' ([Windows.Controls.TextBlock])
+  $warmupPanel = Get-Control 'CodexWarmupPanel' ([Windows.Controls.Border])
+  Assert-True (-not $daily.IsChecked -and -not $reset.IsChecked) 'both automatic controls are initially off'
+  Assert-Equal $warmupTime.Text '09:30' 'time input restores default'
+  Assert-Equal ([string]$saveTime.Content) '保存时间' 'only action button saves time, never warms up'
+  $panelButtons = @($warmupPanel.Child.Children | Where-Object { $_ -is [Windows.Controls.StackPanel] } | ForEach-Object { $_.Children } | Where-Object { $_ -is [Windows.Controls.Button] })
+  Assert-Equal $panelButtons.Count 1 'warm-up panel contains only one button'
+  Assert-True ([object]::ReferenceEquals($panelButtons[0], $saveTime)) 'no manual warm-up button exists'
+  Assert-True (($script:SettingsWindow.FindName('CodexWarmupTimezone')).Text.Contains([TimeZoneInfo]::Local.DisplayName)) 'timezone uses readable PC local DisplayName'
+  $explanation = ($script:SettingsWindow.FindName('CodexWarmupExplanation')).Text
+  Assert-True ($explanation.Contains('dsh-codex-subscription') -and $explanation.Contains('当前活动账号') -and $explanation.Contains('可用 Codex 模型') -and $explanation.Contains('否则目录首项') -and $explanation.Contains('消耗订阅额度') -and $explanation.Contains('默认关闭')) 'scope, account/model, quota cost and opt-in are explicit'
+  $scheduleNote = ($script:SettingsWindow.FindName('CodexWarmupScheduleNote')).Text
+  Assert-True ($scheduleNote.Contains('无需重启') -and $scheduleNote.Contains('切换显示模式不会停止') -and $scheduleNote.Contains('桌宠窗口也不会停止') -and $scheduleNote.Contains('不会唤醒电脑') -and $scheduleNote.Contains('不会补执行')) 'backend lifecycle and no wake/catch-up limitations are explicit'
+  $warmupTime.BringIntoView()
+  Flush-Dispatcher
+  $warmupPoint = $warmupTime.TranslatePoint([Windows.Point]::new(0, 0), $settingsScroll)
+  Assert-True ($warmupPoint.Y -ge 0 -and $warmupPoint.Y + $warmupTime.ActualHeight -le $settingsScroll.ActualHeight) 'warm-up controls remain reachable through SettingsScroll'
+  $settingsScroll.ScrollToTop()
+  Flush-Dispatcher
+  Assert-True ($warmupStatus.Text.Contains('已关闭') -and -not $warmupStatus.Text.Contains('重启')) 'old backend with disabled preferences does not advise restart'
+  $before = $script:SaveCount
+  $daily.IsChecked = $true
+  Click-Button $daily
+  Assert-True ($script:Prefs.codexWarmupDaily -is [bool] -and $script:Prefs.codexWarmupDaily) 'daily switch saves strict boolean true'
+  Assert-True (-not $script:Prefs.codexWarmupReset) 'daily switch never changes reset switch'
+  Assert-Equal $script:SaveCount ($before + 1) 'daily switch saves exactly once'
+  Click-Button $daily
+  Assert-Equal $script:SaveCount ($before + 1) 'unchanged switch does not save again'
+  Assert-True ($warmupStatus.Text.Contains('完全退出并重启 DSH')) 'enabled preferences on old backend advise full DSH restart'
+  $reset.IsChecked = $true
+  Click-Button $reset
+  Assert-Equal $script:SaveCount ($before + 2) 'reset switch saves exactly once independently'
+  $daily.IsChecked = $false
+  Click-Button $daily
+  Assert-True (-not $script:Prefs.codexWarmupDaily -and $script:Prefs.codexWarmupReset) 'reset stays enabled when daily is disabled'
+  Assert-Equal $script:SaveCount ($before + 3) 'daily disable saves once'
+  $reset.IsChecked = $false
+  Click-Button $reset
+  Assert-Equal $script:SaveCount ($before + 4) 'reset disable saves once'
+  foreach ($invalidTime in @('', '9:30', '24:00', '12:60', 'aa:bb', '09:300', "09:30`n", ' 9:30')) {
+    $before = $script:SaveCount
+    $warmupTime.Text = $invalidTime
+    Click-Button $saveTime
+    Assert-Equal $script:Prefs.codexWarmupTime '09:30' 'invalid time leaves saved preference intact'
+    Assert-Equal $script:SaveCount $before 'invalid time never saves'
+    Assert-True (($script:SettingsWindow.FindName('CodexWarmupTimeValidation')).Text.Contains('请输入有效时间')) 'invalid time gets inline validation'
+  }
+  foreach ($validTime in @('00:00', '23:59', '07:05')) {
+    $before = $script:SaveCount
+    $warmupTime.Text = $validTime
+    Click-Button $saveTime
+    Assert-Equal $script:Prefs.codexWarmupTime $validTime 'valid HH:mm saves'
+    Assert-Equal $script:SaveCount ($before + 1) 'changed valid time saves exactly once'
+    Click-Button $saveTime
+    Assert-Equal $script:SaveCount ($before + 1) 'unchanged valid time does not save again'
+    Assert-True (-not $script:Prefs.codexWarmupDaily -and -not $script:Prefs.codexWarmupReset) 'saving time does not enable schedules'
+  }
+  $sampleTime = 1800000000000L
+  $script:LastSnapshot = [pscustomobject]@{ codexWarmup = [pscustomobject]@{ status = 'succeeded'; detail = '自动预热已完成'; lastAttemptAt = $sampleTime; lastSuccessAt = $sampleTime; lastReason = 'reset'; nextDailyAt = $sampleTime + 86400000L; timezone = 'test'; model = 'gpt-test'; rawError = 'SECRET-MUST-NOT-APPEAR' } }
+  Update-SettingsCodexWarmup
+  $expectedLocal = [DateTimeOffset]::FromUnixTimeMilliseconds($sampleTime).LocalDateTime.ToString('yyyy-MM-dd HH:mm')
+  Assert-True ($warmupStatus.Text.Contains('预热成功') -and $warmupStatus.Text.Contains('自动预热已完成')) 'backend status and safe detail render'
+  Assert-True ($warmupStatus.Text.Contains($expectedLocal) -and $warmupStatus.Text.Contains('上次成功（本地）') -and $warmupStatus.Text.Contains('下次每日预热（本地）')) 'last and next epoch timestamps render in local time'
+  Assert-True ($warmupStatus.Text.Contains('5h 额度窗口重置') -and $warmupStatus.Text.Contains('gpt-test')) 'reason and model render'
+  Assert-True (-not $warmupStatus.Text.Contains('SECRET')) 'raw backend errors never render'
+  foreach ($entry in @(@('disabled', '已关闭'), @('idle', '等待计划'), @('running', '正在预热'), @('failed', '预热失败'), @('skipped', '已跳过'))) {
+    $script:LastSnapshot.codexWarmup.status = $entry[0]
+    Update-SettingsCodexWarmup
+    Assert-True ($warmupStatus.Text.Contains($entry[1])) "status $($entry[0]) renders"
+  }
+  $realSettings = $script:SettingsWindow
+  try {
+    $script:SettingsWindow = [pscustomobject]@{ IsVisible = $false }
+    Update-SettingsCodexWarmup
+    $script:SettingsWindow = New-Object Windows.Window
+    $script:SettingsWindow.ShowInTaskbar = $false
+    $script:SettingsWindow.Left = -10000
+    $script:SettingsWindow.Show()
+    Update-SettingsCodexWarmup # Visible window without the status control safely no-ops.
+    $script:SettingsWindow.Close()
+    $script:SettingsWindow = $null
+    Update-SettingsCodexWarmup
+  } finally { $script:SettingsWindow = $realSettings }
+  $script:LastSnapshot = $null
+  Update-SettingsCodexWarmup
+
   foreach ($tag in @('night', 'snow', 'mint', 'cherry', 'star', 'default', 'night')) {
     $before = $script:SaveCount
     Click-Button $script:SkinButtons[$tag]
@@ -316,6 +451,8 @@ try {
   Assert-Equal $script:SaveCount ($before + 1) 'mode switch saves once'
   Assert-Equal ([string]($script:SettingsWindow.FindName('DeepSeekUnitPanel')).Visibility) 'Collapsed' 'money floating choice hidden in Codex'
   Assert-Equal ([string]($script:SettingsWindow.FindName('CodexUnitPanel')).Visibility) 'Visible' 'Codex floating choice shown'
+  Assert-Equal ([string]$warmupPanel.Visibility) 'Visible' 'warm-up panel remains available in Codex display mode'
+  Assert-Equal $script:Prefs.codexWarmupTime '07:05' 'display mode does not change schedule preferences'
   Assert-True (-not $chartUnit.IsEnabled) 'Codex graph cannot switch to currency'
   Assert-Equal $script:SettingsCost.Text '0%' 'exhausted quota is a genuine zero'
   Assert-Equal $script:SettingsHitRate.Text '87.5%' 'weekly quota is separate from cache-hit rate'
@@ -338,6 +475,11 @@ try {
   Assert-Equal ($script:SkinButtons['default'].FindName('SkinLabelValley_default')).Text '谷时' 'DeepSeek gallery labels restored'
   Assert-Equal $script:FrameCalls.Count 12 'switching mode does not reload gallery assets'
 
+  Assert-Equal ([string]$warmupPanel.Visibility) 'Visible' 'warm-up panel remains available in DeepSeek display mode'
+  $daily.IsChecked = $true
+  Click-Button $daily
+  $reset.IsChecked = $true
+  Click-Button $reset
   $before = $script:SaveCount
   $beforeSize = $script:SizeCount
   Click-Button $close
@@ -363,6 +505,9 @@ try {
   Assert-Equal ([string]($script:SettingsWindow.FindName('SizeChoice')).SelectedItem.Tag) 'large' 'reopen restores size'
   Assert-Equal ([string]($script:SettingsWindow.FindName('UnitChoice')).SelectedItem.Tag) 'token' 'reopen restores floating unit'
   Assert-Equal ($script:SettingsWindow.FindName('SleepInput')).Text '10' 'reopen restores sleep'
+  Assert-True ($script:SettingsWindow.FindName('CodexWarmupDaily').IsChecked -and $script:SettingsWindow.FindName('CodexWarmupReset').IsChecked) 'reopen restores preexisting enabled switches without saving'
+  Assert-Equal ($script:SettingsWindow.FindName('CodexWarmupTime')).Text '07:05' 'reopen restores saved custom time'
+  Assert-True ($script:SettingsWindow.FindName('CodexWarmupStatus').Text.Contains('重启 DSH')) 'reopen refreshes old-backend hint'
   Assert-Equal $script:SaveCount $before 'reopening does not save preferences'
   Assert-Equal $script:SizeCount $beforeSize 'reopening does not trigger size handlers'
 

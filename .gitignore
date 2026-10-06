@@ -6,5 +6,6 @@ node_modules/
 state-*.json
 stats-*.json
 settings*.json
+warmup*.json
 .credentials.*
 .DS_Store

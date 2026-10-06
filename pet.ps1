@@ -20,11 +20,13 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; sleepMinutes = 10; left = $null; top = $null }
+$savedWarmupTimeValid = $false
 if (Test-Path -LiteralPath $script:SettingsFile) {
   try {
     $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'sleepMinutes', 'left', 'top')) {
+    $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
+    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset', 'sleepMinutes', 'left', 'top')) {
       if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     }
   } catch { }
@@ -33,6 +35,9 @@ if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id }))
 if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
 if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
 if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
+if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid) { $script:Prefs.codexWarmupDaily = $false }
+if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }
+if ($script:Prefs.codexWarmupTime -isnot [string] -or $script:Prefs.codexWarmupTime -cnotmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z') { $script:Prefs.codexWarmupTime = '09:30' }
 if ($script:Prefs.size -notin @('small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
 if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
 $script:Prefs.sleepMinutes = [math]::Max(1, [math]::Min(240, [int]$script:Prefs.sleepMinutes))
@@ -523,6 +528,7 @@ $script:Timer.Add_Tick({
   }
   $peak = if ((Get-BillingMode) -eq 'codex') { $false } elseif ($Preview) { $script:PreviewPeak } else { Get-Peak }
   if ((Get-BillingMode) -eq 'codex') { Update-PetUsageCard; Update-SettingsCodexQuota }
+  Update-SettingsCodexWarmup
   $modeChanged = $script:LastPeak -ne $peak
   if ($modeChanged) {
     Set-ModeVisual $peak

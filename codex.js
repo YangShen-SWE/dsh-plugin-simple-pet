@@ -5,7 +5,7 @@ const WINDOWS = { fiveHour: 18_000, weekly: 604_800 };
 const FRESH_MS = 120_000;
 
 // Read only the subscription owner's public DTO, never its credential storage.
-async function rpc(bridge, method, payload, signal) {
+export async function subscriptionRpc(bridge, method, payload, signal) {
   const rpcId = randomUUID();
   const response = await bridge.fetch(new Request(`http://localhost/api/${method}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
@@ -38,9 +38,9 @@ export function normalizeCodexQuota(usage, accountKey, now = Date.now()) {
   return result;
 }
 
-export async function readCodexQuota(bridge, signal, now = Date.now(), provider = 'openai-codex') {
+export async function readCodexQuota(bridge, signal, now = Date.now(), provider = 'openai-codex', { force = false } = {}) {
   if (provider === 'codex') return readSubscriptionsQuota(bridge, signal, now);
-  const before = await rpc(bridge, 'codex-subscription/status', {}, signal);
+  const before = await subscriptionRpc(bridge, 'codex-subscription/status', {}, signal);
   if (before === null) return readSubscriptionsQuota(bridge, signal, now);
   if (!before.authenticated) return { status: 'signed-out', fiveHour: null, weekly: null, observedAt: null };
   const identity = status => {
@@ -48,8 +48,8 @@ export async function readCodexQuota(bridge, signal, now = Date.now(), provider 
     return selected?.id ?? 'current-account';
   };
   const accountKey = createHash('sha256').update(String(identity(before))).digest('hex').slice(0, 16);
-  const usage = await rpc(bridge, 'codex-subscription/usage', { force: false }, signal);
-  const after = await rpc(bridge, 'codex-subscription/status', {}, signal);
+  const usage = await subscriptionRpc(bridge, 'codex-subscription/usage', { force: force === true }, signal);
+  const after = await subscriptionRpc(bridge, 'codex-subscription/status', {}, signal);
   if (!after?.authenticated || identity(before) !== identity(after)) {
     return { status: 'switching', fiveHour: null, weekly: null, observedAt: null };
   }
@@ -57,13 +57,13 @@ export async function readCodexQuota(bridge, signal, now = Date.now(), provider 
 }
 
 async function readSubscriptionsQuota(bridge, signal, now) {
-  const before = await rpc(bridge, 'subscriptions-auth.status', {}, signal);
+  const before = await subscriptionRpc(bridge, 'subscriptions-auth.status', {}, signal);
   if (before === null) return { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
   const select = status => status?.providers?.codex?.accounts?.find(account => account.isDefault === true)?.key;
   const key = select(before);
   if (!key) return { status: 'signed-out', fiveHour: null, weekly: null, observedAt: null };
-  const usage = await rpc(bridge, 'subscriptions-auth.usage', { provider: 'codex', account: key, force: false }, signal);
-  const after = await rpc(bridge, 'subscriptions-auth.status', {}, signal);
+  const usage = await subscriptionRpc(bridge, 'subscriptions-auth.usage', { provider: 'codex', account: key, force: false }, signal);
+  const after = await subscriptionRpc(bridge, 'subscriptions-auth.status', {}, signal);
   if (select(after) !== key) return { status: 'switching', fiveHour: null, weekly: null, observedAt: null };
   const result = { status: 'reported', provider: 'codex', selection: 'default', receivedAt: now, observedAt: null,
     accountKey: createHash('sha256').update(key).digest('hex').slice(0, 16),

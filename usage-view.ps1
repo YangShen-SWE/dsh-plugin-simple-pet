@@ -100,6 +100,46 @@ function Test-PetEventVisible($item) {
   }
   return $script:Prefs.codexUnit -ne 'percent' -or -not (Test-QuotaFresh $script:LastSnapshot.codex)
 }
+# Pure presentation: backend alone owns scheduling and model calls.
+function Get-CodexWarmupStatusText($snapshot = $script:LastSnapshot, $prefs = $script:Prefs) {
+  $enabled = ($prefs.codexWarmupDaily -is [bool] -and $prefs.codexWarmupDaily) -or ($prefs.codexWarmupReset -is [bool] -and $prefs.codexWarmupReset)
+  $warmup = $snapshot.codexWarmup
+  if ($null -eq $warmup) {
+    if ($enabled) { return '自动预热已启用；当前后端尚未提供状态，请完全退出并重启 DSH 以加载新版插件。' }
+    return '自动预热已关闭（两个开关默认关闭）。'
+  }
+  $label = switch ([string]$warmup.status) {
+    'disabled' { '已关闭' }
+    'idle' { '等待计划' }
+    'running' { '正在预热' }
+    'succeeded' { '预热成功' }
+    'failed' { '预热失败' }
+    'skipped' { '已跳过' }
+    default { '等待状态更新' }
+  }
+  $lines = New-Object Collections.Generic.List[string]
+  $lines.Add('自动预热：' + $label)
+  # detail is the backend's short, safe Chinese summary, never a raw error field.
+  if ($warmup.detail -is [string] -and $warmup.detail.Length -gt 0) { $lines.Add($warmup.detail) }
+  foreach ($field in @('lastAttemptAt', 'lastSuccessAt', 'nextDailyAt')) {
+    $value = $warmup.$field
+    if ($null -eq $value) { continue }
+    try {
+      $time = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$value).LocalDateTime.ToString('yyyy-MM-dd HH:mm')
+      $prefix = switch ($field) { 'lastAttemptAt' { '上次尝试' }; 'lastSuccessAt' { '上次成功' }; 'nextDailyAt' { '下次每日预热' } }
+      $lines.Add($prefix + '（本地）：' + $time)
+    } catch { }
+  }
+  if ($warmup.lastReason -in @('daily', 'reset')) { $lines.Add('上次触发：' + $(if ($warmup.lastReason -eq 'daily') { '每日定时' } else { '5h 额度窗口重置' })) }
+  if ($warmup.model -is [string] -and $warmup.model.Length -gt 0) { $lines.Add('模型：' + $warmup.model) }
+  return $lines -join "`n"
+}
+function Update-SettingsCodexWarmup {
+  if ($null -eq $script:SettingsWindow -or -not $script:SettingsWindow.IsVisible) { return }
+  $control = $script:SettingsWindow.FindName('CodexWarmupStatus')
+  if ($null -eq $control) { return }
+  $control.Text = Get-CodexWarmupStatusText
+}
 function Update-SettingsCodexQuota {
   if ($null -eq $script:SettingsWindow -or -not $script:SettingsWindow.IsVisible -or (Get-BillingMode) -ne 'codex') { return }
   $quota = $script:LastSnapshot.codex
