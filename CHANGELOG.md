@@ -1,5 +1,14 @@
 # 更新记录 / Changelog
 
+## v0.5.2 — 修复重启后桌宠消失（2026-10-07）
+
+- 修复 Windows PowerShell 5.1 在已有设置文件时的启动崩溃：普通 `$null` 备份路径被绑定为空字符串，导致 `File.Replace` 报「The path is not of a legal form.」。改用 `NullString.Value` 传递真正的 null，保留原子替换，不删除旧配置再写入。
+- 修复覆盖启动尺寸初始化、拖动和设置保存；保留皮肤、尺寸、位置、统计与原有预热开关，不因更新启用预热。默认 5 秒／可自定义额度刷新及已有预热安全保护不变。
+- 补充直接执行生产 `Save-Prefs` 的真实磁盘回归，不再只验证模拟保存：覆盖首次创建、已有文件替换、重复保存、中文与字段类型、坐标取整、写入失败后的旧文件保留与临时文件清理。测试只写隔离临时目录，不访问用户设置。
+- 源码与解包安装包均通过 79 项测试及 1283 条原生断言（设置 796、素材 454、额度 33）；完整 WPF 窗口在隔离的已有配置环境连续启动两次。Codex／账号测试使用模拟服务，未发送真实模型请求。
+- 安装包沿用 `dsh-plugin-simple-pet.tgz` 与市场 latest stable URL。更新实际安装副本后完整退出并重启 DSH；现有市场 PR #6267 同步新版说明，收录仍需维护者审核。
+- Fix pet disappearance after restart on Windows PowerShell 5.1: pass `NullString.Value` to `File.Replace` instead of an empty backup path caused by ordinary `$null` binding. Keep atomic writes and existing preferences. Add real isolated-disk persistence regressions, including failure cleanup. Source and extracted package pass 79 tests / 1283 native assertions; two full WPF startups with existing isolated settings are verified. No live model requests are sent. Fully restart DSH after updating the installed copy.
+
 ## v0.5.1 — 可自定义额度检测与满额预热修复（2026-10-07）
 
 - 修复启动检查在订阅接口尚未就绪、报告过期或账号不可确认时被提前消耗：等待后续额度刷新取得可靠报告后再判断。

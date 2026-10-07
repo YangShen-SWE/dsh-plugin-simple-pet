@@ -1,16 +1,22 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.5.1 · 可自定义额度检测与预热修复](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.1)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.5.2 · 修复重启后桌宠消失](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.2)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
-> **v0.5.1 更新：** 额度默认每 5 秒刷新，设置可自定义 1–3600 秒；修复启动接口尚未就绪、提前恢复满额及空闲过期窗口的预热判断。保留三个独立、默认关闭的预热开关和已有偏好，不绕过持久去重。主动开启会发送真实请求并消耗额度；升级后请完整重启 DSH。
+> **v0.5.2 更新：** 修复 Windows PowerShell 5.1 在已有设置文件时保存失败、导致重启后桌宠不显示的问题，保留原子保存与原有设置。默认 5 秒／可自定义额度刷新、三个独立且默认关闭的预热开关和持久去重不变；更新实际安装副本后请完整重启 DSH。主动启用预热会发送真实请求并消耗额度。
 
 ## 中文使用说明
 
-### v0.5.1 更新重点
+### v0.5.2 更新重点
+
+- **修复重启后窗口消失：** Windows PowerShell 5.1 将 `File.Replace` 的普通 `$null` 备份路径绑定成空字符串；改为传入真正的 null，已有配置下可正常启动并原子保存。
+- **真实写盘回归：** 在隔离临时目录直接执行生产保存函数，验证首次创建、已有文件替换、重复保存、中文和字段类型，以及失败时旧配置保留与临时文件清理。源码与解包安装包均通过 79 项测试、1283 条原生断言；完整窗口已在隔离的已有配置环境连续启动两次。
+- **设置不重置：** 皮肤、尺寸、位置、历史与预热开关兼容；升级不启用预热，Codex 测试仍使用模拟服务、不发送真实请求。
+
+### v0.5.1 功能继续保留
 
 - **可自定义额度检测：** 默认每 5 秒强制刷新；设置支持 1–3600 秒整数，保存后直接重排定时器，不会启用预热开关。查询忙碌时不并发积压，上游限流与报告新鲜度仍受接口约束。
 - **启动就绪等待：** 接口尚未加载、报告过期或账号未确认时不提前消耗启动检查；取得可靠报告后再判断。
@@ -38,10 +44,10 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.5.1 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.1) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.5.2 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.2) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.5.1 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.5.2 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -114,13 +120,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 
 价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对，官方改价后需更新代码。源码与文档为 MIT 许可；十二张角色图集及四张生成源图另见 [美术授权](ARTWORK-LICENSE.md)。保留 AI 来源信息，人工视觉检查不等于绝无相似或法律保证。本项目交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但未打包其源码或素材，与 DeepSeek 及上游无隶属关系。
 
-运行 `npm test` 检查计费、路由、额度、统计和 UI；受限沙箱可用 `node --test --test-isolation=none`。v0.5.1 的源码与解包安装包回归均包括 79 项测试及 1153 项原生断言（设置 666、真实素材 454、额度展示 33）。Codex 接口与切号行为使用公开 DTO 的模拟回归；这些测试不读取真实账号数据，也不等于所有宿主／账号已完成实时额度验收。
+运行 `npm test` 检查计费、路由、额度、统计和 UI；受限沙箱可用 `node --test --test-isolation=none`。v0.5.2 的源码与解包安装包回归均包括 79 项测试及 1283 项原生断言（设置 796、真实素材 454、额度展示 33）。Codex 接口与切号行为使用公开 DTO 的模拟回归；这些测试不读取真实账号数据，也不等于所有宿主／账号已完成实时额度验收。
 
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 可查看独立模拟动效；加 `-PreviewSleep` 看睡眠、`-PreviewSettings` 看模拟统计，不修改真实余额。
 
 ## English guide
 
-### What's new in v0.5.1
+### What's new in v0.5.2
+
+- Fix the pet disappearing after restart on Windows PowerShell 5.1: use a true null backup path for `File.Replace`, preserving atomic saves and existing preferences.
+- Exercise the production save function against isolated real files: creation, replacement, repeated saves, Unicode/types, and failure preservation/cleanup. Source and extracted package pass 79 tests / 1283 native assertions. Two full WPF startups with existing isolated settings are verified.
+- Keep the configurable five-second quota default and opt-in warm-up safeguards. No preference reset or automatic enabling; Codex tests use mocks and send no live model requests.
+
+### Retained v0.5.1 features
 
 - **Configurable quota checks:** force-refresh every 5 seconds by default; Settings accepts integer intervals of 1–3600 seconds and rearms immediately without enabling warm-up. Busy queries do not overlap and upstream limits still apply.
 - **Startup readiness:** wait for a usable active-account quota report rather than consuming the startup check while the addon is loading or reports are stale.
@@ -135,7 +147,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.5.1](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.1), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.5.2](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.2), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"
@@ -171,4 +183,4 @@ The DeepSeek card queries the signed-in account wallet at startup and switches w
 
 Data and preferences stay under `%LOCALAPPDATA%\DshSimpleDesktopPet\`, with separate DeepSeek/Codex ledgers. No prompt/response bodies or credentials are stored. Codex quota uses public read-only addon RPC and hashes account identifiers; opt-in warm-up sends only a fixed short prompt through the host LLM service and stores attempt timestamps/keys, not response bodies. See [PRIVACY.md](PRIVACY.md), [artwork terms](ARTWORK-LICENSE.md), and [CHANGELOG.md](CHANGELOG.md). There is no telemetry or cloud sync.
 
-Run `npm test` (or `node --test --test-isolation=none` in restricted sandboxes). Both the v0.5.1 source and extracted installation package pass 79 tests and 1153 native assertions (666 settings, 454 actual-asset and 33 quota-presentation assertions). Codex/account-switch tests use synthetic public DTOs, not live credentials; passing them is not a claim of live quota verification on every host/account. Isolated preview mode uses synthetic events and does not change live balance data.
+Run `npm test` (or `node --test --test-isolation=none` in restricted sandboxes). Both the v0.5.2 source and extracted installation package pass 79 tests and 1283 native assertions (796 settings, 454 actual-asset and 33 quota-presentation assertions). Codex/account-switch tests use synthetic public DTOs, not live credentials; passing them is not a claim of live quota verification on every host/account. Isolated preview mode uses synthetic events and does not change live balance data.

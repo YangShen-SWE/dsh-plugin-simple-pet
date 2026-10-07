@@ -1,5 +1,6 @@
 ﻿# Run independently: powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\settings-window.test.ps1
-# Does not source pet.ps1, start DSH, touch preferences, or require a test framework.
+# Does not source pet.ps1, start DSH, touch user preferences, or require a test framework.
+# Runs the real Save-Prefs function only against an isolated temporary directory.
 param([string]$CaptureDirectory = '',
       [string]$SettingsScript = (Join-Path $PSScriptRoot 'settings-window.ps1'))
 
@@ -141,6 +142,74 @@ foreach ($path in @($petPath, $SettingsScript, (Join-Path $PSScriptRoot 'usage-v
   Assert-Equal @($parseErrors).Count 0 "$path parses in native Windows PowerShell"
 }
 $petSource = [IO.File]::ReadAllText($petPath)
+
+# The UI tests stub Save-Prefs, so separately exercise the actual production
+# persistence function. In PS5.1 an ordinary $null string argument can become
+# an empty path; an existing settings file must be tested, not just first save.
+function Test-RealPrefsPersistence {
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseInput($petSource, [ref]$tokens, [ref]$errors)
+  $saveFunctions = @($ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Save-Prefs'
+  }, $false))
+  Assert-Equal $saveFunctions.Count 1 'production Save-Prefs is extracted without starting the pet'
+  . ([scriptblock]::Create($saveFunctions[0].Extent.Text))
+  $originalPrefs = $script:Prefs
+  $originalWindow = $script:Window
+  $originalSettingsFile = $script:SettingsFile
+  $directory = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('dsh-pet-prefs-' + [guid]::NewGuid().ToString('N'))))
+  [void](New-Item -ItemType Directory -Path $directory)
+  try {
+    $script:SettingsFile = Join-Path $directory 'settings-test.json'
+    $script:Window = [pscustomobject]@{ Left = 123.4; Top = 56.6 }
+    $script:Prefs = [ordered]@{
+      skin = 'mint'; unit = 'token'; size = 'small'; billingMode = 'codex'; codexUnit = 'percent'
+      codexQuotaRefreshSeconds = 5; codexWarmupDaily = $true; codexWarmupTime = '09:30'
+      codexWarmupReset = $false; codexWarmupStartup = $true; sleepMinutes = 23
+      left = $null; top = $null; unicodeProbe = '中文 "引号" \\路径'
+    }
+    foreach ($interval in @(1, 17, 3600)) {
+      foreach ($flag in @($true, $false)) {
+        $script:Prefs.codexQuotaRefreshSeconds = $interval
+        $script:Prefs.codexWarmupDaily = $flag
+        $script:Prefs.codexWarmupReset = -not $flag
+        $script:Prefs.codexWarmupStartup = $flag
+        Save-Prefs # First iteration creates; every later call atomically replaces.
+        Save-Prefs # Repeated save must also work with an existing destination.
+        $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($key in $script:Prefs.Keys) {
+          Assert-Equal $saved.$key $script:Prefs[$key] "real persistence preserves $key"
+        }
+        foreach ($key in @('codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup')) {
+          Assert-True ($saved.$key -is [bool]) "real persistence preserves Boolean $key"
+        }
+        Assert-True ($saved.codexQuotaRefreshSeconds -is [int] -or $saved.codexQuotaRefreshSeconds -is [long]) 'real persistence preserves integer interval'
+        Assert-Equal $saved.left 123 'real persistence rounds left coordinate'
+        Assert-Equal $saved.top 57 'real persistence rounds top coordinate'
+        Assert-Equal @(Get-ChildItem -LiteralPath $directory -Force).Count 1 'successful saves leave no temporary or backup file'
+      }
+    }
+    $before = (Get-FileHash -LiteralPath $script:SettingsFile).Hash
+    $lock = [IO.File]::Open($script:SettingsFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $failed = $false
+    try {
+      $script:Prefs.unicodeProbe = '不得写入'
+      try { Save-Prefs } catch { $failed = $true }
+    } finally { $lock.Dispose() }
+    Assert-True $failed 'locked replacement reports failure'
+    Assert-Equal (Get-FileHash -LiteralPath $script:SettingsFile).Hash $before 'failed replacement preserves existing settings'
+    Assert-Equal @(Get-ChildItem -LiteralPath $directory -Force).Count 1 'failed replacement cleans up its temporary file'
+  } finally {
+    $script:Prefs = $originalPrefs
+    $script:Window = $originalWindow
+    $script:SettingsFile = $originalSettingsFile
+    $resolved = (Resolve-Path -LiteralPath $directory).ProviderPath
+    if ($resolved -ne $directory -or (Split-Path -Leaf $resolved) -notmatch '\Adsh-pet-prefs-[0-9a-f]{32}\z') { throw 'Unexpected regression cleanup path' }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+  }
+}
+Test-RealPrefsPersistence
 $prefMatch = [regex]::Match($petSource, '(?ms)^\$script:Prefs = \[ordered\]@\{.*?(?=^function Save-Prefs)')
 Assert-True $prefMatch.Success 'preference initializer has a bounded standalone block'
 $prefBlock = [scriptblock]::Create($prefMatch.Value)

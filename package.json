@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-simple-pet",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A Windows desktop pet for DeepSeek billing and Codex subscription quotas in DSH.",
   "repository": { "type": "git", "url": "https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git" },
   "license": "SEE LICENSE",

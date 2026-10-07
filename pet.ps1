@@ -51,7 +51,9 @@ function Save-Prefs {
   try {
     $script:Prefs | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
     if (Test-Path -LiteralPath $script:SettingsFile) {
-      [System.IO.File]::Replace($temporary, $script:SettingsFile, $null)
+      # PS5.1 binds ordinary $null to an empty string here, which is an invalid
+      # backup path. NullString passes a real null while keeping atomic replace.
+      [System.IO.File]::Replace($temporary, $script:SettingsFile, [System.Management.Automation.Language.NullString]::Value)
     } else {
       [System.IO.File]::Move($temporary, $script:SettingsFile)
     }
