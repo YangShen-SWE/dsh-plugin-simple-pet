@@ -40,7 +40,7 @@ if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid)
 if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }
 if ($script:Prefs.codexWarmupStartup -isnot [bool]) { $script:Prefs.codexWarmupStartup = $false }
 if ($script:Prefs.codexWarmupTime -isnot [string] -or $script:Prefs.codexWarmupTime -cnotmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z') { $script:Prefs.codexWarmupTime = '09:30' }
-if ($script:Prefs.size -notin @('small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
+if ($script:Prefs.size -notin @('tiny', 'small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
 if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
 $script:Prefs.sleepMinutes = [math]::Max(1, [math]::Min(240, [int]$script:Prefs.sleepMinutes))
 
@@ -157,14 +157,16 @@ $script:SpriteLayer.RenderTransform = $script:SpriteTransform
 $script:BalanceScale = New-Object Windows.Media.ScaleTransform
 $script:Balance.RenderTransformOrigin = [Windows.Point]::new(0, 0.5)
 $script:Balance.RenderTransform = $script:BalanceScale
-$script:Sizes = @{ small = 0.85; medium = 1.0; large = 1.25 }
+# Tiny is 73.5% of small; the shared Viewbox scales sprites, cards, and floats together.
+$script:Sizes = @{ tiny = 0.625; small = 0.85; medium = 1.0; large = 1.25 }
 function Set-PetSize {
   $scale = [double]$script:Sizes[$script:Prefs.size]
   $script:Window.Width = 272 * $scale
   $script:Window.Height = $(if ((Get-BillingMode) -eq 'codex') { 360 } else { 296 }) * $scale
   $area = [Windows.SystemParameters]::WorkArea
-  if ($script:Window.Left + $script:Window.Width -gt $area.Right) { $script:Window.Left = $area.Right - $script:Window.Width }
-  if ($script:Window.Top + $script:Window.Height -gt $area.Bottom) { $script:Window.Top = $area.Bottom - $script:Window.Height }
+  # Keep restored or resized windows in the work area, including its left/top edges.
+  $script:Window.Left = [math]::Max($area.Left, [math]::Min($area.Right - $script:Window.Width, $script:Window.Left))
+  $script:Window.Top = [math]::Max($area.Top, [math]::Min($area.Bottom - $script:Window.Height, $script:Window.Top))
   Save-Prefs
 }
 

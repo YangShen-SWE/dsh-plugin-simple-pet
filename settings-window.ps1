@@ -78,10 +78,26 @@ function Update-SettingsStats {
 
   $canvas = $script:ChartCanvas
   $canvas.Children.Clear()
-  $left = 61.0; $top = 18.0; $width = 515.0; $height = 158.0
+  $canvasWidth = $canvas.ActualWidth
+  if ($canvasWidth -le 0) { return } # Wait for layout, never invent a fixed-width canvas.
+  $top = 18.0; $height = 158.0
   $max = 0.0
   foreach ($bucket in $buckets) { $max = [math]::Max($max, [double]$bucket.value) }
   $axisMax = if ($max -gt 0) { $max * 1.18 } else { 1.0 }
+  $ticks = @()
+  $axisLabelWidth = 36.0
+  for ($line = 0; $line -le 3; $line++) {
+    $tick = $axisMax * (1 - $line / 3)
+    $tickText = if ($unit -eq 'tokens') { [math]::Round($tick).ToString('N0') } else { if ($tick -lt .01) { $tick.ToString('0.####') } else { $tick.ToString('0.##') } }
+    $ticks += $tickText
+    $measure = New-Object Windows.Controls.TextBlock
+    $measure.Text = $tickText; $measure.FontSize = 10
+    $measure.FontFamily = New-Object Windows.Media.FontFamily('Microsoft YaHei')
+    $measure.Measure([Windows.Size]::new([double]::PositiveInfinity, [double]::PositiveInfinity))
+    $axisLabelWidth = [math]::Max($axisLabelWidth, [math]::Ceiling($measure.DesiredSize.Width))
+  }
+  $left = $axisLabelWidth + 14
+  $width = [math]::Max(1, $canvasWidth - $left - 16)
   for ($line = 0; $line -le 3; $line++) {
     $y = $top + $height * $line / 3
     $grid = New-Object Windows.Shapes.Line
@@ -89,9 +105,7 @@ function Update-SettingsStats {
     $grid.Stroke = [Windows.Media.BrushConverter]::new().ConvertFromString('#345F78')
     $grid.StrokeThickness = 1
     [void]$canvas.Children.Add($grid)
-    $tick = $axisMax * (1 - $line / 3)
-    $tickText = if ($unit -eq 'tokens') { [math]::Round($tick).ToString('N0') } else { if ($tick -lt .01) { $tick.ToString('0.####') } else { $tick.ToString('0.##') } }
-    Add-ChartText $canvas $tickText 24 ($y - 7) 49
+    Add-ChartText $canvas $ticks[$line] ($axisLabelWidth / 2) ($y - 7) $axisLabelWidth
   }
   $path = New-Object Windows.Shapes.Polyline
   $path.Stroke = [Windows.Media.BrushConverter]::new().ConvertFromString('#6BE3FF')
@@ -109,11 +123,51 @@ function Update-SettingsStats {
       [Windows.Controls.Canvas]::SetTop($dot, $y - 3.5)
       [void]$canvas.Children.Add($dot)
     }
-    $showLabel = $range -ne 1 -or $i -eq 0 -or $i -eq ($buckets.Count - 1) -or ($i + 1) % 7 -eq 0
-    if ($showLabel) { Add-ChartText $canvas $buckets[$i].label $x 184 28 }
+    $labelStep = [math]::Max(1, [math]::Ceiling(($buckets.Count - 1) * 30 / $width))
+    if ($range -eq 1) { $labelStep = [math]::Max(7, $labelStep) }
+    $showLabel = $i -eq 0 -or $i -eq ($buckets.Count - 1) -or $i % $labelStep -eq 0
+    # Reserve room for the final tick rather than letting adjacent labels collide.
+    if ($showLabel -and ($i -eq ($buckets.Count - 1) -or ($buckets.Count - 1 - $i) * $width / [math]::Max(1, $buckets.Count - 1) -ge 28)) {
+      Add-ChartText $canvas $buckets[$i].label $x 184 28
+    }
   }
   [void]$canvas.Children.Insert(4, $path)
-  if ($max -eq 0) { Add-ChartText $canvas $(if ($statsReady) { '当前周期暂无记录' } else { '等待 DSH 加载统计' }) 320 95 160 }
+  if ($max -eq 0) { Add-ChartText $canvas $(if ($statsReady) { '当前周期暂无记录' } else { '等待 DSH 加载统计' }) ($left + $width / 2) 95 ([math]::Min(160, $width)) }
+}
+
+function Update-SettingsLayout {
+  if ($null -eq $script:SettingsWindow) { return }
+  $settingsScroll = $script:SettingsWindow.FindName('SettingsScroll')
+  $available = $settingsScroll.ViewportWidth
+  if ($available -le 0) { $available = $settingsScroll.ActualWidth - 22 }
+  $gallery = $script:SettingsWindow.FindName('SkinGallery')
+  $gallery.Rows = 0
+  $gallery.Columns = [math]::Max(1, [math]::Min(3, [math]::Floor(($available - 28) / 160)))
+  # Grid star sizing supplies flex-shrink; narrow rows stack label and input.
+  foreach ($name in @('BillingModeChoice', 'SizeChoice', 'UnitChoice', 'CodexUnitChoice', 'SleepInput')) {
+    $control = $script:SettingsWindow.FindName($name)
+    $form = $control.Parent
+    while ($form -and -not ($form -is [Windows.Controls.Grid])) { $form = $form.Parent }
+    if ($null -eq $form -or $form.ColumnDefinitions.Count -ne 2) { continue }
+    if ($form.RowDefinitions.Count -eq 0) {
+      for ($i = 0; $i -lt 2; $i++) {
+        $row = New-Object Windows.Controls.RowDefinition
+        $row.Height = [Windows.GridLength]::Auto
+        [void]$form.RowDefinitions.Add($row)
+      }
+    }
+    $input = $form.Children[1]
+    $narrow = $available -lt 460
+    $form.ColumnDefinitions[1].Width = if ($narrow) { [Windows.GridLength]::new(0) } else { [Windows.GridLength]::Auto }
+    [Windows.Controls.Grid]::SetColumn($input, $(if ($narrow) { 0 } else { 1 }))
+    [Windows.Controls.Grid]::SetRow($input, $(if ($narrow) { 1 } else { 0 }))
+    $input.Margin = [Windows.Thickness]::new(0, $(if ($narrow) { 10 } else { 0 }), 0, 0)
+    $input.HorizontalAlignment = if ($narrow) { 'Left' } else { 'Stretch' }
+  }
+  $statsScroll = $script:SettingsWindow.FindName('StatsScroll')
+  $statsWidth = $statsScroll.ViewportWidth
+  if ($statsWidth -le 0) { $statsWidth = $statsScroll.ActualWidth - 22 }
+  $script:SettingsWindow.FindName('StatsCards').Columns = if ($statsWidth -ge 540) { 3 } else { 1 }
 }
 
 function Get-SettingsSkinPreview([string]$skin, [string]$mode) {
@@ -210,9 +264,43 @@ function Show-PetSettings {
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="dsh-plugin-simple-pet 设置" Width="680" Height="625"
-        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        WindowStyle="None" ResizeMode="CanResizeWithGrip" MinWidth="380" MinHeight="300" AllowsTransparency="True"
         Background="Transparent" ShowInTaskbar="False" Topmost="True">
   <Window.Resources>
+    <Style TargetType="ScrollBar">
+      <Setter Property="Width" Value="14"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="ScrollBar">
+          <Grid Background="Transparent" Margin="2,4">
+            <Border Width="8" HorizontalAlignment="Center" Background="#102F49" CornerRadius="4"/>
+            <Track Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True" Width="10"
+                   Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                   Value="{TemplateBinding Value}" ViewportSize="{TemplateBinding ViewportSize}">
+              <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Focusable="False">
+                <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></RepeatButton.Template>
+              </RepeatButton></Track.DecreaseRepeatButton>
+              <Track.Thumb><Thumb MinHeight="30" Cursor="Hand" AutomationProperties.Name="滚动内容">
+                <Thumb.Style><Style TargetType="Thumb">
+                  <Setter Property="Background" Value="#46819B"/>
+                  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Thumb">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="4" Margin="1,0"/>
+                  </ControlTemplate></Setter.Value></Setter>
+                  <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#71DDF1"/></Trigger>
+                    <Trigger Property="IsDragging" Value="True"><Setter Property="Background" Value="#B0F6FF"/></Trigger>
+                  </Style.Triggers>
+                </Style></Thumb.Style>
+              </Thumb></Track.Thumb>
+              <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Focusable="False">
+                <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></RepeatButton.Template>
+              </RepeatButton></Track.IncreaseRepeatButton>
+            </Track>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value></Setter>
+    </Style>
+    <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
     <Style x:Key="SkinCardStyle" TargetType="Button">
       <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
       <Setter Property="VerticalContentAlignment" Value="Stretch"/>
@@ -285,11 +373,11 @@ function Show-PetSettings {
               <Border Name="CodexQuotaRefreshPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <StackPanel Margin="16,14" TextBlock.FontFamily="Microsoft YaHei">
                   <TextBlock Text="Codex 额度检测" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
-                  <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
-                    <TextBlock Text="额度检测间隔（秒）" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <TextBox Name="CodexQuotaRefreshSeconds" Width="75" Height="31" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" VerticalContentAlignment="Center" AutomationProperties.Name="Codex 额度检测间隔（秒）"/>
-                    <Button Name="SaveCodexQuotaRefreshSeconds" Content="保存间隔" Width="85" Height="31" Margin="10,0,0,0" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" Cursor="Hand"/>
-                  </StackPanel>
+                  <WrapPanel Margin="0,9,0,0">
+                    <TextBlock Text="额度检测间隔（秒）" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,6"/>
+                    <TextBox Name="CodexQuotaRefreshSeconds" Width="75" Height="31" Margin="0,0,10,6" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" VerticalContentAlignment="Center" AutomationProperties.Name="Codex 额度检测间隔（秒）"/>
+                    <Button Name="SaveCodexQuotaRefreshSeconds" Content="保存间隔" Width="85" Height="31" Margin="0,0,0,6" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" Cursor="Hand"/>
+                  </WrapPanel>
                   <TextBlock Text="默认 5 秒，可设为 1–3600 秒整数；保存后直接生效。用于刷新额度及检查已启用的预热条件，不会自动打开预热开关。更短间隔会增加上游查询频率，实际报告仍受订阅接口限制。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
                   <TextBlock Name="CodexQuotaRefreshValidation" Foreground="#FFE2A7" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/>
                 </StackPanel>
@@ -299,15 +387,15 @@ function Show-PetSettings {
                   <TextBlock Text="Codex 自动预热" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
                   <TextBlock Name="CodexWarmupExplanation" Text="适用于 dsh-codex-subscription 当前活动账号与可用 Codex 模型（优先 Codex 默认项，否则目录首项）；预热会消耗订阅额度。三个开关默认关闭，互相独立。100% 是报告显示值，不保证此前完全没有调用。" FontSize="11" Foreground="#ABD2E3" TextWrapping="Wrap" Margin="0,5,0,9"/>
                   <CheckBox Name="CodexWarmupDaily" Content="每天按电脑本地时间自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
-                  <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="每日时间" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <TextBox Name="CodexWarmupTime" Width="75" Height="31" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" VerticalContentAlignment="Center" AutomationProperties.Name="每日预热时间 HH:mm"/>
-                    <Button Name="SaveCodexWarmupTime" Content="保存时间" Width="85" Height="31" Margin="10,0,0,0" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" Cursor="Hand"/>
-                    <TextBlock Text="HH:mm（24 小时制）" Foreground="#ABD2E3" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11"/>
-                  </StackPanel>
+                  <WrapPanel>
+                    <TextBlock Text="每日时间" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,6"/>
+                    <TextBox Name="CodexWarmupTime" Width="75" Height="31" Margin="0,0,10,6" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" VerticalContentAlignment="Center" AutomationProperties.Name="每日预热时间 HH:mm"/>
+                    <Button Name="SaveCodexWarmupTime" Content="保存时间" Width="85" Height="31" Margin="0,0,10,6" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" Cursor="Hand"/>
+                    <TextBlock Text="HH:mm（24 小时制）" Foreground="#ABD2E3" VerticalAlignment="Center" Margin="0,0,0,6" FontSize="11"/>
+                  </WrapPanel>
                   <TextBlock Name="CodexWarmupTimeValidation" Foreground="#FFE2A7" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,7"/>
-                  <CheckBox Name="CodexWarmupReset" Content="5h 重置 / 按检测间隔检查满额新窗口并自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
-                  <CheckBox Name="CodexWarmupStartup" Content="启动 DSH 时，5h 额度为 100% 则预热一次" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
+                  <CheckBox Name="CodexWarmupReset" Foreground="White" FontSize="12" Margin="0,0,0,8"><TextBlock Text="5h 重置 / 按检测间隔检查满额新窗口并自动预热" TextWrapping="Wrap"/></CheckBox>
+                  <CheckBox Name="CodexWarmupStartup" Foreground="White" FontSize="12" Margin="0,0,0,8"><TextBlock Text="启动 DSH 时，5h 额度为 100% 则预热一次" TextWrapping="Wrap"/></CheckBox>
                   <TextBlock Text="适合非 24 小时开机；开启后也会检查一次当前额度。同一已知窗口不会重复预热。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"/>
                   <TextBlock Name="CodexWarmupTimezone" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap"/>
                   <TextBlock Name="CodexWarmupScheduleNote" Text="保存后数秒内由后端读取，无需重启。切换显示模式不会停止已启用任务；关闭或退出桌宠窗口也不会停止后端计划。DSH 或插件停止时不会唤醒电脑，也不会补执行错过的每日任务。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
@@ -319,7 +407,7 @@ function Show-PetSettings {
                 <StackPanel Margin="10,10,10,8">
                   <TextBlock Text="形象图库" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White" Margin="4,0,0,0"/>
                   <TextBlock Name="GalleryHint" Text="峰时 / 谷时双预览 · 点击切换，即时保存" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="4,4,0,5"/>
-                  <UniformGrid Name="SkinGallery" Columns="3" Rows="2"/>
+                  <UniformGrid Name="SkinGallery" Columns="3"/>
                 </StackPanel>
               </Border>
               <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
@@ -327,7 +415,7 @@ function Show-PetSettings {
                   <StackPanel><TextBlock Text="尺寸" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
                     <TextBlock Text="调整角色与余额卡的整体大小" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
                   <ComboBox Name="SizeChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White">
-                    <ComboBoxItem Content="小" Tag="small"/><ComboBoxItem Content="中" Tag="medium"/><ComboBoxItem Content="大" Tag="large"/>
+                    <ComboBoxItem Content="超小" Tag="tiny"/><ComboBoxItem Content="小" Tag="small"/><ComboBoxItem Content="中" Tag="medium"/><ComboBoxItem Content="大" Tag="large"/>
                   </ComboBox>
                 </Grid>
               </Border>
@@ -361,48 +449,45 @@ function Show-PetSettings {
       </Border>
             </StackPanel>
             </ScrollViewer>
-            <Grid Grid.Row="1">
-              <TextBlock Text="关闭设置窗口不会退出桌宠" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#A5C9DA" VerticalAlignment="Center"/>
-              <Button Name="ExitPet" Content="退出桌宠" Width="110" Height="34" HorizontalAlignment="Right" VerticalAlignment="Center"
+            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <TextBlock Text="关闭设置窗口不会退出桌宠" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#A5C9DA" VerticalAlignment="Center" Margin="0,0,12,0"/>
+              <Button Name="ExitPet" Grid.Column="1" Content="退出桌宠" Width="110" Height="34" HorizontalAlignment="Right" VerticalAlignment="Center"
                       Foreground="White" Background="#804653" BorderBrush="#CB8897" FontFamily="Microsoft YaHei" Cursor="Hand"/>
             </Grid>
           </Grid>
         </TabItem>
         <TabItem Header="统计">
-          <ScrollViewer Name="StatsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-          <Grid MinWidth="630"><Grid.RowDefinitions><RowDefinition Height="118"/><RowDefinition Height="Auto"/><RowDefinition Height="70"/></Grid.RowDefinitions>
-      <Grid Grid.Row="0" Margin="0,0,0,11">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/><ColumnDefinition Width="11"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-        <Border Grid.Column="0" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
-          <TextBlock Text="今日 Token 消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
-          <TextBlock Name="TodayTokens" Text="0" Foreground="White" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" Margin="0,7,0,0"/>
-        </StackPanel></Border>
-        <Border Grid.Column="2" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
-          <TextBlock Name="TodaySecondaryTitle" Text="今日缓存命中率" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
-          <TextBlock Name="TodayHitRate" Text="—" Foreground="#7DE9FF" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" Margin="0,7,0,0"/>
-        </StackPanel></Border>
-        <Border Grid.Column="4" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
-          <TextBlock Name="TodayCostTitle" Text="今日人民币消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
-          <TextBlock Name="TodayCost" Text="¥0.00" Foreground="#FFE2A7" FontFamily="Segoe UI" FontSize="22" FontWeight="Bold" Margin="0,10,0,0"/>
-        </StackPanel></Border>
-      </Grid>
-      <Border Grid.Row="1" Background="#123653" CornerRadius="15" BorderBrush="#457A98" BorderThickness="1">
-        <Grid Margin="15,12"><Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-          <Grid Grid.Row="0"><TextBlock Text="周期消耗趋势" FontFamily="Microsoft YaHei" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-              <ComboBox Name="ChartUnit" Width="89" Height="27" SelectedIndex="0" Margin="0,0,8,0" Foreground="#17384F" Background="White">
-                <ComboBoxItem Content="人民币"/><ComboBoxItem Content="Token"/>
-              </ComboBox>
-              <ComboBox Name="ChartRange" Width="74" Height="27" SelectedIndex="0" Foreground="#17384F" Background="White">
-                <ComboBoxItem Content="本周"/><ComboBoxItem Content="本月"/><ComboBoxItem Content="本年"/>
-              </ComboBox>
-            </StackPanel></Grid>
-          <Canvas Name="ChartCanvas" Grid.Row="1" Width="600" Height="210" HorizontalAlignment="Center" VerticalAlignment="Top"/>
-        </Grid>
-      </Border>
-      <TextBlock Name="StatsNote" Grid.Row="2" Text="人民币为用量估算；统计从本版本首次启用后开始。"
-                 FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A5C9DA" VerticalAlignment="Bottom" TextWrapping="Wrap"/>
-          </Grid>
+          <ScrollViewer Name="StatsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+            <StackPanel>
+              <UniformGrid Name="StatsCards" Columns="3" Margin="-4,0,-4,8">
+                <Border Name="TokenStatCard" Margin="4" MinHeight="106" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
+                  <TextBlock Text="今日 Token 消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+                  <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left" Margin="0,7,0,0"><TextBlock Name="TodayTokens" Text="0" Foreground="White" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" TextWrapping="NoWrap"/></Viewbox>
+                </StackPanel></Border>
+                <Border Name="SecondaryStatCard" Margin="4" MinHeight="106" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
+                  <TextBlock Name="TodaySecondaryTitle" Text="今日缓存命中率" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+                  <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left" Margin="0,7,0,0"><TextBlock Name="TodayHitRate" Text="—" Foreground="#7DE9FF" FontFamily="Segoe UI" FontSize="27" FontWeight="Bold" TextWrapping="NoWrap"/></Viewbox>
+                </StackPanel></Border>
+                <Border Name="CostStatCard" Margin="4" MinHeight="106" Background="#153D5C" CornerRadius="13" BorderBrush="#447A99" BorderThickness="1"><StackPanel Margin="15,14">
+                  <TextBlock Name="TodayCostTitle" Text="今日人民币消耗" Foreground="#A9D7E8" FontFamily="Microsoft YaHei" FontSize="12"/>
+                  <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left" Margin="0,7,0,0"><TextBlock Name="TodayCost" Text="¥0.00" Foreground="#FFE2A7" FontFamily="Segoe UI" FontSize="22" FontWeight="Bold" TextWrapping="NoWrap"/></Viewbox>
+                </StackPanel></Border>
+              </UniformGrid>
+              <Border Background="#123653" CornerRadius="15" BorderBrush="#457A98" BorderThickness="1">
+                <Grid Margin="15,12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="210"/></Grid.RowDefinitions>
+                  <WrapPanel Grid.Row="0" Margin="0,0,0,8">
+                    <TextBlock Text="周期消耗趋势" FontFamily="Microsoft YaHei" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center" Margin="0,0,22,8"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                      <ComboBox Name="ChartUnit" Width="89" Height="27" SelectedIndex="0" Margin="0,0,8,0" Foreground="#17384F" Background="White"><ComboBoxItem Content="人民币"/><ComboBoxItem Content="Token"/></ComboBox>
+                      <ComboBox Name="ChartRange" Width="74" Height="27" SelectedIndex="0" Foreground="#17384F" Background="White"><ComboBoxItem Content="本周"/><ComboBoxItem Content="本月"/><ComboBoxItem Content="本年"/></ComboBox>
+                    </StackPanel>
+                  </WrapPanel>
+                  <Canvas Name="ChartCanvas" Grid.Row="1" Height="210" HorizontalAlignment="Stretch" ClipToBounds="True"/>
+                </Grid>
+              </Border>
+              <TextBlock Name="StatsNote" Text="人民币为用量估算；统计从本版本首次启用后开始。" Margin="0,14,0,4"
+                         FontFamily="Microsoft YaHei" FontSize="11" Foreground="#A5C9DA" TextWrapping="Wrap"/>
+            </StackPanel>
           </ScrollViewer>
         </TabItem>
       </TabControl>
@@ -524,9 +609,21 @@ function Show-PetSettings {
   })
   $script:ChartUnit.Add_SelectionChanged({ Update-SettingsStats })
   $script:ChartRange.Add_SelectionChanged({ Update-SettingsStats })
+  $script:ChartCanvas.Add_SizeChanged({ Update-SettingsStats })
+  foreach ($name in @('SettingsScroll', 'StatsScroll')) {
+    $scroll = $script:SettingsWindow.FindName($name)
+    $scroll.Add_SizeChanged({ Update-SettingsLayout })
+    # SizeChanged can arrive before the ScrollViewer has measured its new viewport.
+    $scroll.Add_ScrollChanged([Windows.Controls.ScrollChangedEventHandler]{
+      param($sender, $eventArgs)
+      if ($eventArgs.OriginalSource -eq $sender -and $eventArgs.ViewportWidthChange -ne 0) { Update-SettingsLayout }
+    })
+  }
+  $script:SettingsWindow.Add_SizeChanged({ Update-SettingsLayout })
   $script:SettingsWindow.Add_Closed({ $script:SettingsWindow = $null })
   Update-SettingsBillingMode
   $script:SettingsWindow.Show()
+  Update-SettingsLayout
   Update-SettingsCodexWarmup
   Update-SettingsStats
 }

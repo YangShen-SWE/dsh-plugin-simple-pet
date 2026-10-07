@@ -56,7 +56,7 @@ function Assert-Equal($actual, $expected, [string]$message) {
 function Save-Prefs { $script:SaveCount++ }
 function Set-PetSize {
   $script:SizeCount++
-  $dimensions = @{ small = 100; medium = 160; large = 220 }
+  $dimensions = @{ tiny = 74; small = 100; medium = 160; large = 220 }
   Assert-True ($dimensions.ContainsKey([string]$script:Prefs.size)) 'size handler updates preferences before resizing'
   $script:Window.Width = $dimensions[[string]$script:Prefs.size]
   $script:Window.Height = $dimensions[[string]$script:Prefs.size]
@@ -129,6 +129,110 @@ function Save-SettingsCapture([string]$name) {
   $stream = [IO.File]::Create($path)
   try { $encoder.Save($stream) } finally { $stream.Dispose() }
   Write-Host "Captured $path"
+}
+
+function Get-VisualControls($parent, [type]$type) {
+  for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($parent); $i++) {
+    $child = [Windows.Media.VisualTreeHelper]::GetChild($parent, $i)
+    if ($child -is $type) { $child }
+    Get-VisualControls $child $type
+  }
+}
+
+function Test-ResponsiveLayout {
+  $originalWidth = $script:SettingsWindow.Width
+  $originalHeight = $script:SettingsWindow.Height
+  $originalTab = $tabs.SelectedIndex
+  $beforeSave = $script:SaveCount
+  $beforeSize = $script:SizeCount
+  $originalStats = $script:Stats
+  $fixtureDays = [ordered]@{}
+  for ($day = 0; $day -lt 3; $day++) {
+    $fixtureDays[[DateTime]::Today.AddDays(-$day).ToString('yyyy-MM-dd')] = [pscustomobject]@{ tokens = 48056876 - $day * 11000000; cny = 1234.567; inputTokens = 1000; cacheReadTokens = 500; unpricedTokens = 0 }
+  }
+  $script:Stats = [pscustomobject]@{ days = [pscustomobject]$fixtureDays }
+  try {
+    foreach ($width in @(680, 480, 380, 820, 680)) {
+      $script:SettingsWindow.Width = $width
+      $script:SettingsWindow.Height = 480
+      foreach ($tabIndex in @(0, 1)) {
+        $tabs.SelectedIndex = $tabIndex
+        $script:SettingsWindow.UpdateLayout(); Flush-Dispatcher
+        $script:SettingsWindow.UpdateLayout(); Flush-Dispatcher
+        $scroll = if ($tabIndex -eq 0) { $settingsScroll } else { $statsScroll }
+        Assert-Equal ([string]$scroll.HorizontalScrollBarVisibility) 'Disabled' 'both pages disable horizontal scroll'
+        Assert-Equal ([string]$scroll.ComputedHorizontalScrollBarVisibility) 'Collapsed' 'no bottom scrollbar at any width'
+        Assert-True ($scroll.ScrollableWidth -le 1) "no horizontal overflow at width $width tab $tabIndex"
+        if ($tabIndex -eq 0) {
+          $form = $size.Parent
+          $expectedRow = if ($settingsScroll.ViewportWidth -lt 460) { 1 } else { 0 }
+          Assert-Equal ([Windows.Controls.Grid]::GetRow($size)) $expectedRow 'form inputs reflow below labels on narrow windows'
+          Assert-True ($gallery.Columns -ge 1 -and $gallery.Columns -le 3) 'gallery remains 1-3 responsive columns'
+          if ($width -eq 380) { Assert-Equal $gallery.Columns 1 'tiny work area uses one gallery column' }
+          if ($width -eq 680) { Assert-Equal $gallery.Columns 3 'normal window retains three gallery columns' }
+          $scroll.ScrollToBottom(); Flush-Dispatcher
+          $inputPoint = $sleep.TranslatePoint([Windows.Point]::new(0, 0), $scroll)
+          Assert-True ($inputPoint.Y -ge 0 -and $inputPoint.Y + $sleep.ActualHeight -le $scroll.ActualHeight) 'reflowed sleep input remains reachable'
+          $scroll.ScrollToTop(); Flush-Dispatcher
+          if ($width -eq 380) { Save-SettingsCapture 'responsive-narrow-settings.png' }
+        } else {
+          $canvas = $script:ChartCanvas
+          Assert-True ($canvas.ActualWidth -gt 100 -and $canvas.ActualWidth -lt $width) 'chart uses viewport width'
+          foreach ($rangeIndex in @(0, 1, 2)) {
+            $chartRange.SelectedIndex = $rangeIndex
+            Update-SettingsStats
+            foreach ($line in @($canvas.Children | Where-Object { $_ -is [Windows.Shapes.Line] })) {
+              Assert-True ($line.X1 -ge 0 -and $line.X2 -le $canvas.ActualWidth) 'grid lines stay within resized canvas'
+            }
+            foreach ($label in @($canvas.Children | Where-Object { $_ -is [Windows.Controls.TextBlock] })) {
+              $x = [Windows.Controls.Canvas]::GetLeft($label)
+              Assert-True ($x -ge -0.01 -and $x + $label.Width -le $canvas.ActualWidth + 0.01) 'axis and empty labels fit without clipping'
+            }
+          }
+          Assert-Equal ($script:SettingsWindow.FindName('StatsCards')).Columns $(if ($statsScroll.ViewportWidth -ge 540) { 3 } else { 1 }) 'stat cards reflow rather than overflowing'
+          if ($width -eq 380) { Save-SettingsCapture 'responsive-narrow-statistics.png' }
+          if ($width -eq 680) { Save-SettingsCapture 'responsive-statistics.png' }
+        }
+        $scroll.ApplyTemplate() | Out-Null
+        $bars = @(Get-VisualControls $scroll ([Windows.Controls.Primitives.ScrollBar]) | Where-Object { $_.Orientation -eq 'Vertical' })
+        Assert-True ($bars.Count -gt 0) 'themed scrollbar exists in both pages'
+        foreach ($bar in $bars) {
+          $bar.ApplyTemplate() | Out-Null
+          Assert-Equal $bar.Width 14.0 'scrollbar uses narrow transparent hit area'
+          $track = $bar.Template.FindName('PART_Track', $bar)
+          Assert-True ($track -is [Windows.Controls.Primitives.Track]) 'custom track keeps WPF native scrolling semantics'
+          Assert-Equal $track.Thumb.MinHeight 30.0 'thumb remains large enough to grab'
+          Assert-True ($null -ne $track.DecreaseRepeatButton.Command -and $null -ne $track.IncreaseRepeatButton.Command) 'track retains page up/down commands without arrow visuals'
+          if ($bar.IsVisible) {
+            $scroll.ScrollToBottom(); Flush-Dispatcher
+            Assert-True ($scroll.VerticalOffset -gt 0) 'vertical scroll remains functional'
+            Assert-True ($bar.Value -gt 0) 'native track follows scrolling'
+            $scroll.ScrollToTop(); Flush-Dispatcher
+            $track.IncreaseRepeatButton.Command.Execute($null, $bar); Flush-Dispatcher
+            Assert-True ($scroll.VerticalOffset -gt 0) 'track page-down command scrolls the viewport'
+            $track.DecreaseRepeatButton.Command.Execute($null, $bar); Flush-Dispatcher
+            Assert-True ($scroll.VerticalOffset -le 1) 'track page-up command returns to top'
+            # Exercise WPF routed drag handlers without touching the physical mouse.
+            $track.Thumb.RaiseEvent([Windows.Controls.Primitives.DragStartedEventArgs]::new(0, 0))
+            $track.Thumb.RaiseEvent([Windows.Controls.Primitives.DragDeltaEventArgs]::new(0, 24)); Flush-Dispatcher
+            Assert-True ($scroll.VerticalOffset -gt 0) 'thumb drag delta reaches the ScrollViewer'
+            $track.Thumb.RaiseEvent([Windows.Controls.Primitives.DragCompletedEventArgs]::new(0, 24, $false)); Flush-Dispatcher
+            $scroll.ScrollToTop(); Flush-Dispatcher
+          }
+        }
+      }
+    }
+  } finally {
+    $script:SettingsWindow.Width = $originalWidth
+    $script:SettingsWindow.Height = $originalHeight
+    $tabs.SelectedIndex = $originalTab
+    $chartRange.SelectedIndex = 0
+    $script:Stats = $originalStats
+    $script:SettingsWindow.UpdateLayout(); Flush-Dispatcher
+    Update-SettingsStats
+  }
+  Assert-Equal $script:SaveCount $beforeSave 'responsive layout never saves preferences'
+  Assert-Equal $script:SizeCount $beforeSize 'responsive layout never resizes pet'
 }
 
 # Read/parse scripts only. Execute ONLY the bounded preference initialization block,
@@ -291,7 +395,7 @@ try {
   $statsScroll = Get-Control 'StatsScroll' ([Windows.Controls.ScrollViewer])
   Assert-True ($null -eq $script:SettingsWindow.FindName('SkinChoice')) 'skin dropdown has been removed'
   Assert-Equal $gallery.Columns 3 'gallery has three columns'
-  Assert-Equal $gallery.Rows 2 'gallery has two rows'
+  Assert-Equal $gallery.Rows 0 'gallery automatically derives rows from responsive columns'
   Assert-Equal $gallery.Children.Count 6 'gallery displays all six local skins'
   Assert-Equal $script:SkinButtons.Count 6 'skin dictionary includes exactly six buttons'
   Assert-Equal $script:FrameCalls.Count 12 'initial previews load exactly two frames per skin'
@@ -321,7 +425,7 @@ try {
   $drag = Get-Control 'SettingsDragHandle' ([Windows.Controls.Grid])
   $chartUnit = Get-Control 'ChartUnit' ([Windows.Controls.ComboBox])
   $chartRange = Get-Control 'ChartRange' ([Windows.Controls.ComboBox])
-  Assert-Choices $size @('small', 'medium', 'large') 'size'
+  Assert-Choices $size @('tiny', 'small', 'medium', 'large') 'size'
   Assert-Choices $unit @('cny', 'token') 'floating unit'
   Assert-Equal $tabs.SelectedIndex 0 'initial tab is settings'
   $settingsLabel = [string][char]0x8BBE + [char]0x7F6E
@@ -384,7 +488,7 @@ try {
   Assert-True (-not $daily.IsChecked -and -not $reset.IsChecked) 'both automatic controls are initially off'
   Assert-Equal $warmupTime.Text '09:30' 'time input restores default'
   Assert-Equal ([string]$saveTime.Content) '保存时间' 'only action button saves time, never warms up'
-  $panelButtons = @($warmupPanel.Child.Children | Where-Object { $_ -is [Windows.Controls.StackPanel] } | ForEach-Object { $_.Children } | Where-Object { $_ -is [Windows.Controls.Button] })
+  $panelButtons = @(Get-VisualControls $warmupPanel ([Windows.Controls.Button]))
   Assert-Equal $panelButtons.Count 1 'warm-up panel contains only one button'
   Assert-True ([object]::ReferenceEquals($panelButtons[0], $saveTime)) 'no manual warm-up button exists'
   Assert-True (($script:SettingsWindow.FindName('CodexWarmupTimezone')).Text.Contains([TimeZoneInfo]::Local.DisplayName)) 'timezone uses readable PC local DisplayName'
@@ -492,14 +596,14 @@ try {
   Click-Button $script:SkinButtons['star']
   Assert-SkinSelection 'star'
   Assert-Equal $script:FrameCalls.Count 12 'click and keyboard selection never reload previews'
-  foreach ($tag in @('small', 'medium', 'large')) {
+  foreach ($tag in @('tiny', 'small', 'medium', 'large')) {
     $before = $script:SaveCount
     $beforeSize = $script:SizeCount
     Select-Tag $size $tag
     Assert-Equal $script:Prefs.size $tag 'size selection updates preferences'
     Assert-Equal $script:SaveCount ($before + 1) 'size selection saves exactly once'
     Assert-Equal $script:SizeCount ($beforeSize + 1) 'size selection applies pet dimensions exactly once'
-    Assert-Equal $script:Window.Width (@{ small = 100; medium = 160; large = 220 }[$tag]) 'size stub changes pet dimensions'
+    Assert-Equal $script:Window.Width (@{ tiny = 74; small = 100; medium = 160; large = 220 }[$tag]) 'size stub changes pet dimensions'
   }
   foreach ($tag in @('token', 'cny', 'token')) {
     $before = $script:SaveCount
@@ -516,14 +620,15 @@ try {
   Flush-Dispatcher
   Assert-True $chartUnit.IsVisible 'custom TabControl template displays statistics content'
   Assert-True (-not $gallery.IsVisible) 'settings content hides when statistics is selected'
-  Assert-Equal ($script:SettingsWindow.FindName('ChartCanvas')).Width 600 'statistics preserves its readable 600-wide canvas'
-  Assert-Equal ([string]$statsScroll.HorizontalScrollBarVisibility) 'Auto' 'statistics can scroll horizontally in small work areas'
+  Assert-True ([double]::IsNaN(($script:SettingsWindow.FindName('ChartCanvas')).Width)) 'statistics canvas has no fixed width'
+  Assert-Equal ([string]$statsScroll.HorizontalScrollBarVisibility) 'Disabled' 'statistics adapts without horizontal scrolling'
   Assert-True (($script:SettingsWindow.FindName('ChartCanvas')).Children.Count -gt 0) 'statistics chart renders with null stats'
   Save-SettingsCapture 'statistics-test.png'
   Assert-Equal $script:Prefs.unit 'token' 'chart unit is independent of floating unit'
   Assert-Equal ([string]$unit.SelectedItem.Tag) 'token' 'chart unit leaves the settings selection alone'
   Assert-Equal $script:SaveCount $before 'chart and tab changes do not save preferences'
   Assert-Equal $script:SizeCount $beforeSize 'chart and tab changes do not resize the pet'
+  Test-ResponsiveLayout
 
   $existing = $script:SettingsWindow
   Show-PetSettings
@@ -566,6 +671,8 @@ try {
   Assert-Equal ([string]$warmupPanel.Visibility) 'Visible' 'warm-up panel remains available in Codex display mode'
   Assert-Equal $script:Prefs.codexWarmupTime '07:05' 'display mode does not change schedule preferences'
   Assert-True (-not $chartUnit.IsEnabled) 'Codex graph cannot switch to currency'
+  Assert-Equal $chartUnit.SelectedIndex 1 'Codex chart explicitly displays Token instead of currency'
+  Test-ResponsiveLayout
   Assert-Equal $script:SettingsCost.Text '0%' 'exhausted quota is a genuine zero'
   Assert-Equal $script:SettingsHitRate.Text '87.5%' 'weekly quota is separate from cache-hit rate'
   foreach ($skin in $script:SkinCatalog) {

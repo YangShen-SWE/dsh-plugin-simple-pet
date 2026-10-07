@@ -1,5 +1,16 @@
 # 更新记录 / Changelog
 
+## v0.6.0 — 自适应布局、主题滚动条与超小尺寸（2026-10-07）
+
+- 设置和统计窗口支持调整大小：窄窗口自动将表单标签与输入上下排列，皮肤图库在 1–3 列之间切换，统计卡片自动换行；禁用横向滚动并消除原有固定宽度溢出。
+- 折线图根据实际视口宽度重绘，动态测量大数刻度，缩小窗口时减少横轴标签密度，保留周／月／年和人民币／Token 统计。
+- 纵向滚动条改为深蓝青色圆角细滑块，悬停与拖动高亮，保留滚轮、轨道翻页和原生拖动；按钮与退出区域仍可访问。
+- 新增「超小」尺寸（0.625 倍基础尺寸，约为原小号的 74%），角色、卡片与飘字统一缩放；小／中／大保持 0.85／1／1.25 倍，兼容保存与位置边界。
+- 修正 Codex 统计单位显示为 Token，不再显示被禁用的人民币选项。生产后端与素材不变，保留用户偏好、历史与预热开关；更新不自动启用预热。
+- 源码与解包安装包均通过 80 项回归测试及 2631 条原生断言（设置 1706、尺寸 438、素材 454、额度 33），覆盖 380／480／680／820 宽度、两种计费模式、周／月／年图表、大数刻度、轨道翻页及路由拖动事件。测试使用模拟数据，不发送真实模型请求；多显示器／混合 DPI 和实际鼠标体验尚待实机验证。
+- 安装包继续使用 `dsh-plugin-simple-pet.tgz` 和 latest stable 下载地址；同步现有市场 PR 的新版说明，收录仍取决于维护者审核。更新实际安装副本后请完整退出并重启 DSH。
+- Add resizable, Flexbox-like WPF settings/statistics, responsive charts with measured labels, theme-matched cyan rounded vertical scrollbars and a tiny 0.625 scale while preserving the other three sizes. Fix the Codex chart selector to show Token. Source and extracted package pass 80 tests / 2631 native assertions using mocks only; no live model calls or exhaustive multi-monitor/mixed-DPI validation is claimed. Preserve atomic saves, artwork, histories and opt-in warm-up settings. Fully restart DSH after upgrading.
+
 ## v0.5.2 — 修复重启后桌宠消失（2026-10-07）
 
 - 修复 Windows PowerShell 5.1 在已有设置文件时的启动崩溃：普通 `$null` 备份路径被绑定为空字符串，导致 `File.Replace` 报「The path is not of a legal form.」。改用 `NullString.Value` 传递真正的 null，保留原子替换，不删除旧配置再写入。

@@ -57,7 +57,8 @@ test('right-click opens settings directly instead of constructing a context menu
 
 test('settings use an accessible local six-card gallery instead of a skin dropdown', () => {
   assert.doesNotMatch(settingsSource, /\bSkinChoice\b/);
-  assert.match(settingsSource, /<UniformGrid\b[^>]*\bName="SkinGallery"[^>]*\bColumns="3"[^>]*\bRows="2"/);
+  assert.match(settingsSource, /<UniformGrid\b[^>]*\bName="SkinGallery"[^>]*\bColumns="3"/);
+  assert.doesNotMatch(settingsSource, /<UniformGrid\b[^>]*\bName="SkinGallery"[^>]*\bRows=/);
   assert.match(settingsSource, /foreach\s*\(\$skin\s+in\s+\$script:SkinCatalog\)/);
   assert.match(settingsSource, /Name="SkinCard_\$id"\s+Tag="\$id"/);
   assert.match(settingsSource, /\$script:SkinButtons\[\$id\]\s*=\s*\$button/);
@@ -79,8 +80,15 @@ test('settings use an accessible local six-card gallery instead of a skin dropdo
 
 test('settings and statistics remain reachable on smaller work areas', () => {
   assert.match(settingsSource, /<ScrollViewer\b[^>]*Name="SettingsScroll"[^>]*VerticalScrollBarVisibility="Auto"/);
-  assert.match(settingsSource, /<ScrollViewer\b[^>]*Name="StatsScroll"[^>]*HorizontalScrollBarVisibility="Auto"/);
-  assert.match(settingsSource, /<Canvas\b[^>]*Name="ChartCanvas"[^>]*Width="600"/);
+  assert.match(settingsSource, /<ScrollViewer\b[^>]*Name="StatsScroll"[^>]*HorizontalScrollBarVisibility="Disabled"/);
+  assert.match(settingsSource, /<Canvas\b[^>]*Name="ChartCanvas"[^>]*HorizontalAlignment="Stretch"/);
+  assert.doesNotMatch(settingsSource, /<Canvas\b[^>]*Name="ChartCanvas"[^>]*\bWidth=/);
+  assert.doesNotMatch(settingsSource, /MinWidth="630"/);
+  assert.match(settingsSource, /\$canvasWidth\s*=\s*\$canvas\.ActualWidth/);
+  assert.match(settingsSource, /<Style TargetType="ScrollBar">/);
+  assert.match(settingsSource, /Name="PART_Track"/);
+  assert.match(settingsSource, /Property="IsDragging"/);
+  assert.match(settingsSource, /Content="超小" Tag="tiny"/);
   assert.match(settingsSource, /\$script:SettingsWindow\.Height\s*=\s*\[math\]::Min\(625,\s*\$workArea\.Height\s*-\s*20\)/);
 });
 
@@ -96,6 +104,12 @@ test('native dual-mode quota presentation uses no real state', { skip: process.p
   const [delta] = quotaDeltas(quota(80, now - 1000), quota(79, now));
   assert.ok(delta);
   const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'usage-view.test.ps1'), '-DeltaJson', JSON.stringify(delta)], { cwd: root, stdio: 'inherit', windowsHide: true, timeout: 45_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0);
+});
+
+test('native tiny pet scales sprites, cards and floats without real preferences', { skip: process.platform !== 'win32', timeout: 60_000 }, () => {
+  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'pet-size.test.ps1')], { cwd: root, stdio: 'inherit', windowsHide: true, timeout: 45_000 });
   assert.ifError(result.error);
   assert.equal(result.status, 0);
 });

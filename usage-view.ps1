@@ -156,6 +156,7 @@ function Update-SettingsBillingMode {
   $script:SettingsWindow.FindName('TodayCostTitle').Text = if ($codexMode) { '5 小时额度剩余' } else { '今日人民币消耗' }
   $script:SettingsWindow.FindName('GalleryHint').Text = if ($codexMode) { '本地形象预览 · Codex 不随峰谷变换' } else { '峰时 / 谷时双预览 · 点击切换，即时保存' }
   $script:ChartUnit.IsEnabled = -not $codexMode
+  if ($codexMode) { $script:ChartUnit.SelectedIndex = 1 } # Match the visible unit to the Token-only graph.
   foreach ($id in $script:SkinButtons.Keys) {
     $button = $script:SkinButtons[$id]
     $button.FindName("SkinPreview_${id}_peak").Visibility = if ($codexMode) { 'Collapsed' } else { 'Visible' }
