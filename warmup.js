@@ -73,8 +73,9 @@ function delay(ms, signal) {
     signal.addEventListener('abort', abort, { once: true });
   });
 }
-const windowKey = (quota, now) => /^[a-f0-9]{16}$/.test(quota?.accountKey ?? '') && epoch(quota?.fiveHour?.resetAt)
-  && quota.fiveHour.resetAt > now ? `window:${quota.accountKey}:${quota.fiveHour.resetAt}` : null;
+const fullWindowKey = quota => /^[a-f0-9]{16}$/.test(quota?.accountKey ?? '') && epoch(quota?.fiveHour?.resetAt)
+  ? `window:${quota.accountKey}:${quota.fiveHour.resetAt}` : null;
+const windowKey = (quota, now) => quota?.fiveHour?.resetAt > now ? fullWindowKey(quota) : null;
 
 export class CodexWarmupScheduler {
   constructor({ getQuota, run, save, journal, onChange = () => {}, signal, clock = Date.now, wait = delay }) {
@@ -144,7 +145,6 @@ export class CodexWarmupScheduler {
     const daily = prefs.daily && !missed && schedule.at !== null && now >= schedule.at && now - schedule.at < MINUTE
       && gap >= 0 && (gap <= GRACE || punctual) && !this.journal.keys.includes(dailyKey);
     const startup = prefs.startup && !this.startupChecked;
-    if (startup) this.startupChecked = true;
     this.busy = this.work({ prefs, daily, dailyKey, startup, now, timely: !missedWake || punctual, suppressed });
     try { await this.busy; } finally { this.busy = null; }
   }
@@ -187,22 +187,35 @@ export class CodexWarmupScheduler {
               phase = 'journal'; this.journal.armed = nextArm;
               await cancellable(() => this.save(this.journal), signal); phase = 'precheck';
             }
-            const boot = startup && fresh && knownWindow(quota.weekly) && quota.fiveHour?.remainingPercent === 100
-              && epoch(quota.fiveHour.resetAt) && quota.fiveHour.resetAt > at && !quotaBlocked(quota, at);
-            if (!daily && !reset && !boot) return;
-            if (boot && this.journal.keys.includes(windowKey(quota, at))) {
+            const ready = fresh && knownWindow(quota.fiveHour) && knownWindow(quota.weekly);
+            // Loading/signed-out/stale initial reports must not consume the startup check.
+            if (startup && ready) this.startupChecked = true;
+            const fullQuota = ready && quota.fiveHour.remainingPercent === 100
+              && epoch(quota.fiveHour.resetAt) && !quotaBlocked(quota, at);
+            const boot = startup && fullQuota;
+            // A provider can restore quota before the armed deadline. Check the current
+            // full window on every quota refresh, not just at the old reset timestamp.
+            const full = prefs.reset && fullQuota;
+            if (!daily && !reset && !boot && !full) {
+              if (startup || prefs.reset) this.update('idle', ready
+                ? '未确认可预热的满额新窗口，等待下次额度检查'
+                : '额度或活动账号尚未就绪，等待下次额度检查');
+              return;
+            }
+            if ((boot || full) && this.journal.keys.includes(fullWindowKey(quota))) {
               this.update('skipped', '此账号的 5h 窗口已尝试预热，不重复发送'); return;
             }
-            candidate = { accountKey: fresh ? quota.accountKey : null, reset, armed, boot,
-              keys: [...(daily ? [dailyKey] : []), ...(reset ? [resetKey] : []), ...(boot ? [windowKey(quota, at)] : [])],
-              windowKey: boot ? windowKey(quota, at) : null };
+            candidate = { accountKey: fresh ? quota.accountKey : null, reset, armed, boot: boot || full,
+              reason: reset ? 'reset' : daily ? 'daily' : boot ? 'startup' : 'full',
+              keys: [...(daily ? [dailyKey] : []), ...(reset ? [resetKey] : []), ...((boot || full) ? [fullWindowKey(quota)] : [])],
+              windowKey: (boot || full) ? fullWindowKey(quota) : null };
           }
           if (!claimed) {
             // Claim the occurrence even if forced preflight fails; only this live task may safely retry.
             phase = 'journal';
             this.journal.keys = [...new Set([...this.journal.keys, ...candidate.keys])].slice(-96);
             this.journal.lastAttemptAt = now; this.view.lastAttemptAt = now;
-            this.view.lastReason = candidate.reset ? 'reset' : daily ? 'daily' : 'startup';
+            this.view.lastReason = candidate.reason;
             await cancellable(() => this.save(this.journal), signal); claimed = true; phase = 'precheck';
           }
           this.update('running', '正在检查额度并进行极简预热…');
@@ -224,10 +237,10 @@ export class CodexWarmupScheduler {
             this.update('skipped', '新 5h 窗口已有调用，无需重复预热'); return;
           }
           if (candidate.boot && !daily && !candidate.reset && (current.fiveHour.remainingPercent !== 100
-            || !epoch(current.fiveHour.resetAt) || current.fiveHour.resetAt <= at)) {
-            this.update('skipped', '启动检查未确认新鲜 100% 的 5h 窗口，本次未发送请求'); return;
+            || !epoch(current.fiveHour.resetAt))) {
+            this.update('skipped', '满额检查未确认新鲜 100% 的 5h 窗口，本次未发送请求'); return;
           }
-          const key = windowKey(current, at);
+          const key = candidate.boot ? fullWindowKey(current) : windowKey(current, at);
           // Unknown post-call window: conservative same-account 5h suppression, NOT a reset deadline.
           const unresolved = this.journal.unresolvedWindow;
           if (unresolved && unresolved.accountKey === current.accountKey && !candidate.ownsUnresolved
@@ -238,9 +251,10 @@ export class CodexWarmupScheduler {
             this.update('skipped', '此账号的 5h 窗口已尝试预热，不重复发送'); return;
           }
           if (key) {
-            phase = 'journal'; this.journal.keys = [...this.journal.keys, key].slice(-96);
+            phase = 'journal'; this.journal.keys = [...new Set([...this.journal.keys, key])].slice(-96);
             await cancellable(() => this.save(this.journal), signal); phase = 'precheck';
-          } else if (!candidate.ownsUnresolved) {
+          }
+          if (!windowKey(current, at) && !candidate.ownsUnresolved) {
             phase = 'journal';
             this.journal.unresolvedWindow = { accountKey: current.accountKey, attemptedAt: at };
             await cancellable(() => this.save(this.journal), signal); phase = 'precheck';
@@ -253,7 +267,7 @@ export class CodexWarmupScheduler {
           signal.throwIfAborted(); this.view.model = result.model;
           // Idle upstream reports can keep an expired deadline until the first real call.
           // Best-effort refresh records the actual new window; never invent a reset time.
-          if (!key) {
+          if (!windowKey(current, at)) {
             try {
               const after = await cancellable(() => this.getQuota({ force: true, signal }), signal);
               const afterAt = this.clock(), afterKey = windowKey(after, afterAt);
@@ -282,6 +296,7 @@ export class CodexWarmupScheduler {
             await cancellable(() => this.wait(WARMUP_RETRY_DELAY, life), life);
             continue;
           }
+          if (startup) this.startupChecked = true;
           this.fail(safe); return;
         } finally { clearTimeout(timer); }
       }

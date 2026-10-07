@@ -3,9 +3,17 @@ import test from 'node:test';
 import { join } from 'node:path';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { apply } from './index.js';
+import { apply, codexQuotaRefreshSeconds } from './index.js';
 
-for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'startup']) test(`automatic warm-up integration: ${scenario}`, async () => {
+test('quota refresh interval defaults to 5 seconds and accepts only bounded integer seconds', () => {
+  for (const seconds of [undefined, null, true, false, '5', 0, -1, 1.5, 3601, Infinity, NaN, {}, []]) {
+    assert.equal(codexQuotaRefreshSeconds({ codexQuotaRefreshSeconds: seconds }), 5);
+  }
+  assert.equal(codexQuotaRefreshSeconds(null), 5);
+  for (const seconds of [1, 5, 12, 60, 3600]) assert.equal(codexQuotaRefreshSeconds({ codexQuotaRefreshSeconds: seconds }), seconds);
+});
+
+for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'startup', 'periodic']) test(`automatic warm-up integration: ${scenario}`, async (t) => {
   const damaged = scenario === 'corrupt';
   const previous = process.env.LOCALAPPDATA, previousProfile = process.env.DSH_PET_PROFILE;
   process.env.DSH_PET_PROFILE = scenario === 'web' ? 'web' : 'desktop';
@@ -14,10 +22,11 @@ for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'start
   const data = join(root, 'DshSimpleDesktopPet'); await mkdir(data, { recursive: true });
   const date = new Date(); date.setSeconds(0, 0); const now = date.getTime();
   const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  await writeFile(join(data, 'settings.json'), '\uFEFF' + JSON.stringify({ codexWarmupDaily: scenario !== 'startup', codexWarmupStartup: scenario === 'startup', codexWarmupTime: time, codexWarmupReset: false, billingMode: 'deepseek' }));
+  await writeFile(join(data, 'settings.json'), '\uFEFF' + JSON.stringify({ codexWarmupDaily: !['startup', 'periodic'].includes(scenario), codexWarmupStartup: scenario === 'startup', codexWarmupTime: time, codexWarmupReset: scenario === 'periodic', billingMode: 'deepseek' }));
   if (damaged) await writeFile(join(data, 'warmup.json'), '{broken');
   const handlers = new Map(), disposers = [], calls = [];
-  let modelCalls = 0, streamPaused = false;
+  let modelCalls = 0, streamPaused = false, fullRestored = false;
+  if (scenario === 'periodic') t.mock.timers.enable({ apis: ['setInterval'] });
   const services = { effect(fn) { disposers.push(fn()); },
     webServer: { register({ path, handler }) { handlers.set(path, handler); return () => {}; } },
     connection: { requestRejection() { return undefined; }, createSharedFetchHandler() { return { async fetch(request) {
@@ -26,7 +35,7 @@ for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'start
       if (body.method === 'codex-subscription/status') value = { authenticated: true, accounts: [{ id: 'private-test-account', active: true, email: 'private-test-email' }] };
       else if (body.method === 'codex-subscription/default-model/status') value = { managed: false, provider: 'deepseek-official', model: 'deepseek-flash' };
       else if (body.method === 'codex-subscription/usage') value = { fetchedAt: now, rateLimits: [{ id: 'codex', windows: [
-        { windowSeconds: 18000, remainingPercent: scenario === 'startup' ? 100 : 80, resetsAt: Math.floor(now / 1000) + 18000 },
+        { windowSeconds: 18000, remainingPercent: scenario === 'startup' || fullRestored ? 100 : 80, resetsAt: Math.floor(now / 1000) + 18000 },
         { windowSeconds: 604800, remainingPercent: 90, resetsAt: Math.floor(now / 1000) + 604800 },
       ] }] };
       else throw new Error('unexpected write RPC');
@@ -51,6 +60,14 @@ for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'start
     const state = () => { let body; handlers.get('/api/dsh-plugin-simple-pet/state')({ method: 'GET', url: '/api/dsh-plugin-simple-pet/state?since=0', headers: {} },
       { writeHead() {}, end(value) { body = value; } }); return JSON.parse(body); };
     for (let i = 0; i < 500; i++) {
+      if (scenario === 'periodic' && !fullRestored && state().codex.status === 'ready'
+        && state().codexWarmup.status === 'idle') {
+        assert.equal(modelCalls, 0); assert.equal(state().codexQuotaRefreshSeconds, 5);
+        fullRestored = true; t.mock.timers.tick(4999);
+        await new Promise(resolve => setTimeout(resolve, 50));
+        assert.equal(modelCalls, 0, 'does not poll before the five-second interval');
+        t.mock.timers.tick(1);
+      }
       if (['succeeded', 'failed', 'skipped'].includes(state().codexWarmup.status) || streamPaused
         || (scenario === 'web' && state().codex.status === 'ready' && state().balance === 50)) break;
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -72,7 +89,8 @@ for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'start
       assert.equal(value.codexWarmup.status, 'failed'); assert.ok(value.codexWarmup.alertId); assert.equal(modelCalls, 0);
       assert.equal(await readFile(join(data, 'warmup.json'), 'utf8'), '{broken'); return;
     }
-    assert.equal(value.codexWarmup.status, 'succeeded', JSON.stringify(value.codexWarmup));
+    if (scenario === 'periodic') assert.ok(['succeeded', 'skipped'].includes(value.codexWarmup.status), JSON.stringify(value.codexWarmup));
+    else assert.equal(value.codexWarmup.status, 'succeeded', JSON.stringify(value.codexWarmup));
     assert.equal(modelCalls, 1); assert.equal(value.balance, 50);
     assert.equal(Object.values(value.stats.days).length, 0);
     assert.equal(Object.values(value.codexStats.days).reduce((sum, day) => sum + day.tokens, 0), 16);
@@ -80,8 +98,33 @@ for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'start
     assert.ok(!JSON.stringify(value).includes('private-test')); assert.ok(!JSON.stringify(value).includes('Reply only'));
     assert.ok(calls.some(call => call.method.endsWith('/usage') && call.payload.force === true));
     const journal = JSON.parse(await readFile(join(data, 'warmup.json'), 'utf8'));
-    assert.equal(journal.keys.filter(key => key.startsWith('daily:')).length, scenario === 'startup' ? 0 : 1);
+    assert.equal(journal.keys.filter(key => key.startsWith('daily:')).length, ['startup', 'periodic'].includes(scenario) ? 0 : 1);
     assert.equal(new Set(journal.keys.filter(key => key.startsWith('window:'))).size, 1); assert.equal(journal.lastSuccessAt, now);
+    if (scenario === 'periodic') {
+      assert.equal(value.codexWarmup.lastReason, 'full');
+      t.mock.timers.tick(5000); await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(modelCalls, 1, 'sustained 100% never sends on every timer refresh');
+      const settingsFile = join(data, 'settings.json');
+      const saved = JSON.parse((await readFile(settingsFile, 'utf8')).replace(/^\uFEFF/, ''));
+      saved.codexQuotaRefreshSeconds = 12;
+      await writeFile(settingsFile, JSON.stringify(saved));
+      for (let i = 0; i < 100 && state().codexQuotaRefreshSeconds !== 12; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.equal(state().codexQuotaRefreshSeconds, 12, 'settings watcher rearms without restarting DSH');
+      const usageCount = () => calls.filter(call => call.method.endsWith('/usage')).length;
+      const before = usageCount();
+      t.mock.timers.tick(11_999); await new Promise(resolve => setTimeout(resolve, 50));
+      assert.equal(usageCount(), before, 'old five-second interval is removed');
+      t.mock.timers.tick(1); await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(usageCount(), before + 1, 'uses the new twelve-second interval for upstream polling');
+      assert.equal(calls.filter(call => call.method.endsWith('/usage')).at(-1).payload.force, true);
+      assert.equal(modelCalls, 1, 'changing cadence never bypasses window dedup');
+      for (const dispose of disposers.splice(0).reverse()) await dispose?.();
+      const afterDispose = usageCount();
+      t.mock.timers.tick(120_000); await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(usageCount(), afterDispose, 'disposal removes the configurable poll timer');
+    }
     if (scenario === 'startup') {
       assert.equal(value.codexWarmup.lastReason, 'startup');
       for (const dispose of disposers.splice(0).reverse()) await dispose?.();

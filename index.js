@@ -110,6 +110,11 @@ export function launchPetProcess({ root = ROOT, profile = 'desktop', platform = 
   };
 }
 
+export function codexQuotaRefreshSeconds(raw) {
+  const seconds = raw?.codexQuotaRefreshSeconds;
+  return Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 3600 ? seconds : 5;
+}
+
 export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now } = {}) {
   let live = true;
   const instance = randomUUID();
@@ -137,6 +142,17 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let codexRevision = 0;
   let bridgeRevision = 0;
   let quotaRefreshTimer = null;
+  let quotaPollTimer = null;
+  let quotaPollSeconds = 5;
+  try { quotaPollSeconds = codexQuotaRefreshSeconds(JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, ''))); }
+  catch { /* Missing or invalid settings keep the five-second default. */ }
+  function configureQuotaPolling(raw) {
+    const seconds = codexQuotaRefreshSeconds(raw);
+    if (seconds === quotaPollSeconds && quotaPollTimer !== null) return;
+    quotaPollSeconds = seconds;
+    clearInterval(quotaPollTimer); quotaPollTimer = null;
+    if (live && codexBridge) quotaPollTimer = setInterval(() => void pollCodex(true), seconds * 1000);
+  }
   let storedStats = null;
   try { storedStats = JSON.parse(readFileSync(statsFile, 'utf8')); } catch { /* first launch */ }
   const ledger = loadLedger(storedStats);
@@ -182,7 +198,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       const now = warmupClock();
       if (!force && codex.provider === 'openai-codex' && codex.observedAt === warmupQuota?.observedAt) return warmupQuota;
       if (!force && codex.provider === 'openai-codex' && codex.observedAt > 0) return codex;
-      if (!force && warmupQuota && now - warmupPollAt < 60_000) return warmupQuota;
+      if (!force && warmupQuota && now - warmupPollAt < quotaPollSeconds * 1000) return warmupQuota;
       const current = await readCodexQuota(bridge, signal, now, 'openai-codex', { force });
       if (!live || generation !== bridgeRevision || bridge !== codexBridge) throw new Error('subscription bridge changed');
       warmupQuota = current; warmupPollAt = now;
@@ -237,6 +253,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       try { raw = JSON.parse((await readFile(prefsFile, 'utf8')).replace(/^\uFEFF/, '')); }
       catch { raw = null; }
       if (!live) return;
+      configureQuotaPolling(raw);
       const before = JSON.stringify(warmup.view);
       try { await warmup.tick(raw); } catch { /* scheduler never escalates an automatic request */ }
       if (live && before !== JSON.stringify(warmup.view)) snapshot();
@@ -256,7 +273,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       await mkdir(dataDir, { recursive: true });
       while (writeRequested && live) {
         writeRequested = false;
-        const body = JSON.stringify({ instance, seq: sequence, events, balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexWarmup: warmup.view, updatedAt: Date.now() });
+        const body = JSON.stringify({ instance, seq: sequence, events, balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexQuotaRefreshSeconds: quotaPollSeconds, codexWarmup: warmup.view, updatedAt: Date.now() });
         const codexTemporary = `${codexStatsFile}.${instance}.tmp`;
         await writeFile(codexTemporary, JSON.stringify(codexLedger), { mode: 0o600 });
         await rename(codexTemporary, codexStatsFile);
@@ -317,7 +334,8 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     const revision = codexRevision, bridgeGeneration = bridgeRevision;
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
-      const current = await readCodexQuota(codexBridge, signal, Date.now(), codexProvider, { force: force === true });
+      const current = await readCodexQuota(codexBridge, signal, Date.now(), codexProvider,
+        { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked) });
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
       for (const delta of quotaDeltas(codex, current)) push(delta);
       codex = current;
@@ -337,10 +355,11 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     codexBridge = bridge;
     codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
     void pollCodex();
-    const quotaTimer = setInterval(pollCodex, 60_000);
+    clearInterval(quotaPollTimer);
+    quotaPollTimer = setInterval(() => void pollCodex(true), quotaPollSeconds * 1000);
     quotaCtx.effect(() => () => {
-      clearInterval(quotaTimer);
       if (codexBridge === bridge) {
+        clearInterval(quotaPollTimer); quotaPollTimer = null;
         bridgeRevision++;
         codexBridge = null;
         warmup.active?.abort();
@@ -417,7 +436,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       if (raw !== null && !/^(0|[1-9]\d*)$/.test(raw)) return json(res, 400, { error: 'invalid since' }, method);
       const since = raw === null ? sequence : Number(raw);
       if (!Number.isSafeInteger(since)) return json(res, 400, { error: 'invalid since' }, method);
-      json(res, 200, { seq: sequence, events: events.filter(e => e.seq > since), balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexWarmup: warmup.view }, method);
+      json(res, 200, { seq: sequence, events: events.filter(e => e.seq > since), balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexQuotaRefreshSeconds: quotaPollSeconds, codexWarmup: warmup.view }, method);
     } }), 'deepseek-pet: state route');
     for (const asset of ASSETS) {
       const path = `/api/dsh-plugin-simple-pet/asset/${asset}.png`;
@@ -447,7 +466,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
         }
       });
       prefsWatcher.on('error', () => { prefsWatcher?.close(); prefsWatcher = null; });
-    }).catch(() => { /* minute quota refresh also reads settings */ });
+    }).catch(() => { /* periodic quota refresh also reads settings */ });
   }
   void pollWarmup();
   snapshot();
@@ -455,7 +474,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   ctx.effect(() => petLauncher({ root: ROOT, profile, logger: ctx.logger }), 'deepseek-pet: window');
   ctx.effect(() => async () => {
     live = false; clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
-    clearTimeout(quotaRefreshTimer); controller.abort(); await warmup.stop(); await snapshotTask;
+    clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await warmup.stop(); await snapshotTask;
     if (warmupUsageDirty) {
       try {
         await mkdir(dataDir, { recursive: true });

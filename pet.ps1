@@ -20,13 +20,13 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
 $savedWarmupTimeValid = $false
 if (Test-Path -LiteralPath $script:SettingsFile) {
   try {
     $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
-    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset', 'codexWarmupStartup', 'sleepMinutes', 'left', 'top')) {
+    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'codexQuotaRefreshSeconds', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset', 'codexWarmupStartup', 'sleepMinutes', 'left', 'top')) {
       if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     }
   } catch { }
@@ -35,6 +35,7 @@ if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id }))
 if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
 if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
 if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
+if (($script:Prefs.codexQuotaRefreshSeconds -isnot [int] -and $script:Prefs.codexQuotaRefreshSeconds -isnot [long]) -or $script:Prefs.codexQuotaRefreshSeconds -lt 1 -or $script:Prefs.codexQuotaRefreshSeconds -gt 3600) { $script:Prefs.codexQuotaRefreshSeconds = 5 }
 if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid) { $script:Prefs.codexWarmupDaily = $false }
 if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }
 if ($script:Prefs.codexWarmupStartup -isnot [bool]) { $script:Prefs.codexWarmupStartup = $false }

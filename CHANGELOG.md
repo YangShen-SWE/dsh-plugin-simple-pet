@@ -1,5 +1,16 @@
 # 更新记录 / Changelog
 
+## v0.5.1 — 可自定义额度检测与满额预热修复（2026-10-07）
+
+- 修复启动检查在订阅接口尚未就绪、报告过期或账号不可确认时被提前消耗：等待后续额度刷新取得可靠报告后再判断。
+- Codex 额度检测恢复默认 5 秒，在设置页可保存 1–3600 秒整数；保存后即时重排定时器，不需要重启，也不会打开预热开关。查询忙碌时不并发积压，默认账号／缓存报告仍不能触发预热。
+- 「5h 重置」开关增加按自定义间隔强制刷新与满额新窗口检测，不再只等待旧截止时间；支持提前恢复、百分比始终为 100% 但可靠重置时间改变的情况。只有每日开关不会启用周期满额请求。
+- 新鲜 100% 报告的已知截止时间即使已过期，也可启动空闲窗口；调用前保存旧窗口与未确认窗口保护，调用后刷新实际新窗口并持久去重。同一窗口持续 100% 不会每次检测都重复请求。
+- 保留账号、周额度、报告新鲜度、关闭开关、请求未发送重试和发送后不重试保护。若上游既不改变百分比也不改变已尝试窗口的标识，无法仅凭 100% 证明又发生了一次官方刷新，不绕过去重。
+- 79 项回归测试及 1153 项原生断言通过（设置 666、素材 454、额度 33）；覆盖默认 5 秒定时器、间隔保存与校验、无需重启热切换／旧定时器清理、卸载清理，以及启动接口加载、提前满额、空闲过期截止时间与持续 100% 去重。全程使用模拟模型，未发送真实 Codex 请求。
+- 安装包仍为 `dsh-plugin-simple-pet.tgz`，市场沿用 latest stable URL。更新实际安装目录后须完整退出并重启 DSH；仅刷新网页或重开桌宠不会加载新后端。保留已有设置、统计与去重记录，预热开关不自动启用。
+- Defer startup checks until quota is usable; force-refresh every 5 seconds by default with a settings-editable 1–3600-second interval. Warm fresh full windows, including early restoration and expired idle deadlines, without bypassing durable deduplication or fail-closed checks. Hot interval changes and timer disposal are covered. Source and extracted package pass 79 tests / 1153 native assertions using mocks only; no live billable verification is claimed. Fully restart DSH after updating the installed backend.
+
 ## v0.5.0 — 启动预热、定时调度与安全重试（2026-10-07）
 
 - 新增独立、默认关闭的「启动满额度预热」：启动或首次启用时，仅新鲜活动账号的 5h 额度为 100%、周额度可用且重置时间有效才尝试。保留现有每日／重置开关偏好；首次安装三个开关均关闭。

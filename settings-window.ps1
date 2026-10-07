@@ -282,6 +282,18 @@ function Show-PetSettings {
                   </ComboBox>
                 </Grid>
               </Border>
+              <Border Name="CodexQuotaRefreshPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <StackPanel Margin="16,14" TextBlock.FontFamily="Microsoft YaHei">
+                  <TextBlock Text="Codex 额度检测" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                  <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
+                    <TextBlock Text="额度检测间隔（秒）" Foreground="#C5E6F3" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <TextBox Name="CodexQuotaRefreshSeconds" Width="75" Height="31" TextAlignment="Center" FontSize="14" Foreground="White" Background="#113451" BorderBrush="#78B9D3" VerticalContentAlignment="Center" AutomationProperties.Name="Codex 额度检测间隔（秒）"/>
+                    <Button Name="SaveCodexQuotaRefreshSeconds" Content="保存间隔" Width="85" Height="31" Margin="10,0,0,0" Foreground="White" Background="#23789B" BorderBrush="#77CCEA" Cursor="Hand"/>
+                  </StackPanel>
+                  <TextBlock Text="默认 5 秒，可设为 1–3600 秒整数；保存后直接生效。用于刷新额度及检查已启用的预热条件，不会自动打开预热开关。更短间隔会增加上游查询频率，实际报告仍受订阅接口限制。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                  <TextBlock Name="CodexQuotaRefreshValidation" Foreground="#FFE2A7" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                </StackPanel>
+              </Border>
               <Border Name="CodexWarmupPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <StackPanel Margin="16,14" TextBlock.FontFamily="Microsoft YaHei">
                   <TextBlock Text="Codex 自动预热" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
@@ -294,12 +306,12 @@ function Show-PetSettings {
                     <TextBlock Text="HH:mm（24 小时制）" Foreground="#ABD2E3" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11"/>
                   </StackPanel>
                   <TextBlock Name="CodexWarmupTimeValidation" Foreground="#FFE2A7" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,7"/>
-                  <CheckBox Name="CodexWarmupReset" Content="5h 额度窗口重置后立即自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
+                  <CheckBox Name="CodexWarmupReset" Content="5h 重置 / 按检测间隔检查满额新窗口并自动预热" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
                   <CheckBox Name="CodexWarmupStartup" Content="启动 DSH 时，5h 额度为 100% 则预热一次" Foreground="White" FontSize="12" Margin="0,0,0,8"/>
                   <TextBlock Text="适合非 24 小时开机；开启后也会检查一次当前额度。同一已知窗口不会重复预热。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"/>
                   <TextBlock Name="CodexWarmupTimezone" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap"/>
                   <TextBlock Name="CodexWarmupScheduleNote" Text="保存后数秒内由后端读取，无需重启。切换显示模式不会停止已启用任务；关闭或退出桌宠窗口也不会停止后端计划。DSH 或插件停止时不会唤醒电脑，也不会补执行错过的每日任务。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
-                  <TextBlock Name="CodexWarmupSafetyNote" Text="重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。仅确认请求未发送时重试，最多尝试 3 次、间隔 5 秒；发送后结果不明则停止并提示。连续失败停止本次预热；底层传输仍可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                  <TextBlock Name="CodexWarmupSafetyNote" Text="按上方检测间隔刷新检查满额新窗口（含提前恢复），同一已知窗口只尝试一次；100% 可能是四舍五入。重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。仅确认请求未发送时重试，最多尝试 3 次、间隔 5 秒；发送后结果不明则停止并提示。连续失败停止本次预热；底层传输仍可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
                   <TextBlock Name="CodexWarmupStatus" Foreground="#D9F5FF" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
                 </StackPanel>
               </Border>
@@ -415,6 +427,25 @@ function Show-PetSettings {
   $script:SleepInput = $script:SettingsWindow.FindName('SleepInput')
   $script:SleepInput.Text = [string]$script:Prefs.sleepMinutes
   Initialize-SettingsSkinGallery
+  $refreshInput = $script:SettingsWindow.FindName('CodexQuotaRefreshSeconds')
+  $refreshInput.Text = [string]$(if (($script:Prefs.codexQuotaRefreshSeconds -is [int] -or $script:Prefs.codexQuotaRefreshSeconds -is [long]) -and $script:Prefs.codexQuotaRefreshSeconds -ge 1 -and $script:Prefs.codexQuotaRefreshSeconds -le 3600) { $script:Prefs.codexQuotaRefreshSeconds } else { 5 })
+  $script:SettingsWindow.FindName('SaveCodexQuotaRefreshSeconds').Add_Click({
+    $inputControl = $script:SettingsWindow.FindName('CodexQuotaRefreshSeconds')
+    $validation = $script:SettingsWindow.FindName('CodexQuotaRefreshValidation')
+    $seconds = 0
+    if ($inputControl.Text -cnotmatch '\A[0-9]{1,4}\z' -or -not [int]::TryParse($inputControl.Text, [ref]$seconds) -or $seconds -lt 1 -or $seconds -gt 3600) {
+      $validation.Text = '请输入 1–3600 秒的整数，例如 5。'
+      $inputControl.BorderBrush = [Windows.Media.Brushes]::Salmon
+      return
+    }
+    if ($script:Prefs.codexQuotaRefreshSeconds -ne $seconds) {
+      $script:Prefs.codexQuotaRefreshSeconds = $seconds
+      Save-Prefs
+    }
+    $inputControl.Text = [string]$seconds
+    $inputControl.BorderBrush = [Windows.Media.Brushes]::PaleGreen
+    $validation.Text = '检测间隔已保存；新版后端将直接采用。首次升级仍需完整重启 DSH。'
+  })
   $script:SettingsWindow.FindName('CodexWarmupTimezone').Text = '电脑本地时区：' + [TimeZoneInfo]::Local.DisplayName
   $script:SettingsWindow.FindName('CodexWarmupTime').Text = [string]$script:Prefs.codexWarmupTime
   # Restore before subscribing: opening settings must never enable or persist a task.

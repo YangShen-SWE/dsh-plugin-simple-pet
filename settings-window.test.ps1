@@ -155,6 +155,15 @@ Assert-True ($script:Prefs.codexWarmupDaily -is [bool] -and -not $script:Prefs.c
 Assert-True ($script:Prefs.codexWarmupReset -is [bool] -and -not $script:Prefs.codexWarmupReset) 'reset warm-up defaults strictly false'
 Assert-Equal $script:Prefs.codexWarmupTime '09:30' 'default daily time is 09:30'
 Assert-True ($script:Prefs.codexWarmupStartup -is [bool] -and -not $script:Prefs.codexWarmupStartup) 'startup warm-up defaults strictly false'
+Assert-Equal $script:Prefs.codexQuotaRefreshSeconds 5 'quota polling defaults to five seconds'
+foreach ($validSeconds in @(1, 5, 12, 60, 3600)) {
+  Initialize-TestPrefs @{ codexQuotaRefreshSeconds = $validSeconds }
+  Assert-Equal $script:Prefs.codexQuotaRefreshSeconds $validSeconds 'valid saved integer interval restores'
+}
+foreach ($invalidSeconds in @($null, $true, $false, '5', 0, -1, 1.5, 3601, @{})) {
+  Initialize-TestPrefs @{ codexQuotaRefreshSeconds = $invalidSeconds }
+  Assert-Equal $script:Prefs.codexQuotaRefreshSeconds 5 'invalid persisted interval returns to safe default'
+}
 Initialize-TestPrefs @{ codexWarmupStartup = $true }
 Assert-True $script:Prefs.codexWarmupStartup 'startup preference restores independently'
 Initialize-TestPrefs @{ codexWarmupStartup = 'true' }
@@ -274,6 +283,27 @@ try {
   Assert-True (-not $chartUnit.IsVisible) 'statistics content starts hidden'
   Save-SettingsCapture 'settings-test.png'
 
+  $refreshSeconds = Get-Control 'CodexQuotaRefreshSeconds' ([Windows.Controls.TextBox])
+  $saveRefresh = Get-Control 'SaveCodexQuotaRefreshSeconds' ([Windows.Controls.Button])
+  Assert-Equal $refreshSeconds.Text '5' 'quota interval input defaults to five seconds'
+  foreach ($invalidSeconds in @('', '0', '-1', '1.5', '3601', 'abc', ' 5 ', '5e1')) {
+    $before = $script:SaveCount
+    $refreshSeconds.Text = $invalidSeconds
+    Click-Button $saveRefresh
+    Assert-Equal $script:SaveCount $before 'invalid interval never saves'
+    Assert-Equal $script:Prefs.codexQuotaRefreshSeconds 5 'invalid interval keeps saved value'
+    Assert-True (($script:SettingsWindow.FindName('CodexQuotaRefreshValidation')).Text.Contains('1–3600')) 'invalid interval displays range hint'
+  }
+  foreach ($validSeconds in @(1, 3600, 12)) {
+    $before = $script:SaveCount
+    $refreshSeconds.Text = [string]$validSeconds
+    Click-Button $saveRefresh
+    Assert-Equal $script:Prefs.codexQuotaRefreshSeconds $validSeconds 'valid interval saves as integer'
+    Assert-Equal $script:SaveCount ($before + 1) 'changed interval saves exactly once'
+    Click-Button $saveRefresh
+    Assert-Equal $script:SaveCount ($before + 1) 'unchanged interval does not save again'
+    Assert-True (-not $script:Prefs.codexWarmupStartup -and -not $script:Prefs.codexWarmupDaily -and -not $script:Prefs.codexWarmupReset) 'saving polling interval never enables automatic warm-up'
+  }
   $daily = Get-Control 'CodexWarmupDaily' ([Windows.Controls.CheckBox])
   $reset = Get-Control 'CodexWarmupReset' ([Windows.Controls.CheckBox])
   $startup = Get-Control 'CodexWarmupStartup' ([Windows.Controls.CheckBox])
@@ -520,6 +550,7 @@ try {
   Assert-Equal ($script:SettingsWindow.FindName('SleepInput')).Text '10' 'reopen restores sleep'
   Assert-True ($script:SettingsWindow.FindName('CodexWarmupDaily').IsChecked -and $script:SettingsWindow.FindName('CodexWarmupReset').IsChecked) 'reopen restores preexisting enabled switches without saving'
   Assert-Equal ($script:SettingsWindow.FindName('CodexWarmupTime')).Text '07:05' 'reopen restores saved custom time'
+  Assert-Equal ($script:SettingsWindow.FindName('CodexQuotaRefreshSeconds')).Text '12' 'reopen restores saved custom polling interval'
   Assert-True ($script:SettingsWindow.FindName('CodexWarmupStatus').Text.Contains('重启 DSH')) 'reopen refreshes old-backend hint'
   Assert-Equal $script:SaveCount $before 'reopening does not save preferences'
   Assert-Equal $script:SizeCount $beforeSize 'reopening does not trigger size handlers'

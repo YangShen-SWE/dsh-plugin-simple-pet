@@ -190,11 +190,74 @@ test('startup is opt-in, requires fresh 100% 5h, and persists window dedup acros
   const reboot = fixture({ journal: f.scheduler.journal, getQuota: (_args, now) => unused(now) });
   await reboot.tick(base + 10_000, startupPrefs); assert.equal(reboot.calls.length, 0);
   for (const patch of [{ fiveHour: { remainingPercent: 99, resetAt: due + 18_000_000 } },
-    { fiveHour: { remainingPercent: 100, resetAt: due - 20_000 } }, { observedAt: base - 121_000 },
+    { fiveHour: { remainingPercent: 100, resetAt: null } }, { observedAt: base - 121_000 },
     { weekly: null }, { weekly: { remainingPercent: 0, resetAt: due + 18_000_000 } }]) {
     const bad = fixture({ getQuota: (_args, now) => ({ ...unused(now), ...patch }) });
     await bad.tick(base, startupPrefs); assert.equal(bad.calls.length, 0, JSON.stringify(patch));
   }
+});
+
+test('startup waits for a usable quota report rather than consuming the check during bridge loading', async () => {
+  let ready = false;
+  const f = fixture({ getQuota: (_args, now) => ready ? unused(now)
+    : { status: 'loading', observedAt: null, fiveHour: null, weekly: null } });
+  await f.tick(base, startupPrefs);
+  assert.equal(f.scheduler.startupChecked, false); assert.equal(f.calls.length, 0);
+  ready = true; await f.tick(base + 60_000, startupPrefs);
+  assert.equal(f.calls.length, 1); assert.equal(f.scheduler.view.lastReason, 'startup');
+  await f.tick(base + 120_000, startupPrefs); assert.equal(f.calls.length, 1);
+});
+
+test('periodic reset checking warms an early restored full window and never repeats sustained 100%', async () => {
+  const raw = { codexWarmupReset: true };
+  let full = false;
+  const f = fixture({ getQuota: (_args, now) => full ? unused(now) : fresh(now) });
+  await f.tick(base, raw); assert.equal(f.calls.length, 0);
+  full = true;
+  await f.tick(base + 60_000, raw);
+  assert.equal(f.calls.length, 1); assert.equal(f.scheduler.view.lastReason, 'full');
+  assert.ok(base + 60_000 < f.scheduler.journal.armed.resetAt, 'does not wait for the old reset deadline');
+  await f.tick(base + 120_000, raw); await f.tick(base + 180_000, raw);
+  assert.equal(f.calls.length, 1, 'a tiny successful call may still report rounded 100%');
+  const reboot = fixture({ journal: f.scheduler.journal, getQuota: (_args, now) => unused(now) });
+  await reboot.tick(base + 180_000, raw); assert.equal(reboot.calls.length, 0);
+});
+
+test('periodic full checking finds a changed deadline while quota remains 100%', async () => {
+  let resetAt = due + 18_000_000;
+  const f = fixture({ getQuota: (_args, now) => fresh(now, { fiveHour: { remainingPercent: 100, resetAt } }) });
+  const raw = { codexWarmupReset: true };
+  await f.tick(base, raw); assert.equal(f.calls.length, 1);
+  resetAt += 3_600_000;
+  await f.tick(base + 60_000, raw); assert.equal(f.calls.length, 2);
+  await f.tick(base + 120_000, raw); assert.equal(f.calls.length, 2);
+});
+
+test('full unused quota with an expired idle deadline can start a window without repeat calls', async () => {
+  for (const raw of [startupPrefs, { codexWarmupReset: true }]) {
+    const expired = base - 60_000;
+    let sent = false;
+    const f = fixture({ getQuota: (_args, now) => fresh(now, { fiveHour: {
+      remainingPercent: 100, resetAt: sent ? due + 18_000_000 : expired,
+    } }), run: async () => { sent = true; return { model: 'test' }; } });
+    await f.tick(base, raw); assert.equal(f.calls.length, 1);
+    assert.ok(f.scheduler.journal.keys.includes(`window:${ACCOUNT}:${expired}`));
+    assert.ok(f.scheduler.journal.keys.includes(`window:${ACCOUNT}:${due + 18_000_000}`));
+    await f.tick(base + 60_000, raw); assert.equal(f.calls.length, 1);
+    const reboot = fixture({ journal: f.scheduler.journal, getQuota: (_args, now) => unused(now) });
+    await reboot.tick(base + 120_000, raw); assert.equal(reboot.calls.length, 0);
+  }
+});
+
+test('periodic full detection still rejects stale/default/unknown/exhausted quota and disabled switches', async () => {
+  for (const patch of [{ observedAt: base - 121_000 }, { selection: 'default' }, { weekly: null },
+    { weekly: { remainingPercent: 0, resetAt: due + 604_800_000 } },
+    { fiveHour: { remainingPercent: 100, resetAt: null } }]) {
+    const f = fixture({ getQuota: (_args, now) => ({ ...unused(now), ...patch }) });
+    await f.tick(base, { codexWarmupReset: true }); assert.equal(f.calls.length, 0);
+  }
+  const daily = fixture({ getQuota: (_args, now) => unused(now) });
+  await daily.tick(base, prefs); assert.equal(daily.calls.length, 0, 'daily alone does not opt into full-quota requests');
 });
 
 test('startup/daily/reset share one window claim and never duplicate a same-window request', async () => {

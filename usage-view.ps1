@@ -131,7 +131,7 @@ function Get-CodexWarmupStatusText($snapshot = $script:LastSnapshot, $prefs = $s
       $lines.Add($prefix + '（本地）：' + $time)
     } catch { }
   }
-  if ($warmup.lastReason -in @('daily', 'reset', 'startup')) { $lines.Add('上次触发：' + $(switch ($warmup.lastReason) { 'daily' { '每日定时' }; 'reset' { '5h 额度窗口重置' }; 'startup' { '启动时满额度' } })) }
+  if ($warmup.lastReason -in @('daily', 'reset', 'startup', 'full')) { $lines.Add('上次触发：' + $(switch ($warmup.lastReason) { 'daily' { '每日定时' }; 'reset' { '5h 额度窗口重置' }; 'startup' { '启动时满额度' }; 'full' { '周期检测到满额新窗口' } })) }
   if ($warmup.model -is [string] -and $warmup.model.Length -gt 0) { $lines.Add('模型：' + $warmup.model) }
   return $lines -join "`n"
 }

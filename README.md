@@ -1,22 +1,22 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.5.0 · Codex 自动预热](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.5.1 · 可自定义额度检测与预热修复](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.1)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
-> **v0.5.0 新增：** 默认关闭的启动满额度预热、单次目标时间调度和安全重试。三个开关独立；新启动开关升级后不会自动开启，原有每日／重置开关保留偏好。主动开启会发送真实请求并消耗额度；升级后请完整重启 DSH。
+> **v0.5.1 更新：** 额度默认每 5 秒刷新，设置可自定义 1–3600 秒；修复启动接口尚未就绪、提前恢复满额及空闲过期窗口的预热判断。保留三个独立、默认关闭的预热开关和已有偏好，不绕过持久去重。主动开启会发送真实请求并消耗额度；升级后请完整重启 DSH。
 
 ## 中文使用说明
 
-### v0.5.0 更新重点
+### v0.5.1 更新重点
 
-- 新增 **启动满额度预热**：DSH 插件启动或首次启用此选项时，只有新鲜活动账号报告确认 5h 为 100%、周额度可用且有未来截止时间才尝试。三个开关独立、首次安装默认关闭，无手动按钮。
-- 从常驻 5 秒检查改为下一每日／重置目标的单次定时器，设置变更及时重排，复用约每 60 秒额度刷新兜底；界面显示本机时区、状态与上次尝试／成功。
-- 仅确认尚未调用模型的失败可安全重试，总计最多 3 次、间隔 5 秒；模型调用后的失败／超时结果不明则停止并弹窗提示，不重复发送。保留持久去重、账号检查与休眠／重启保护，不补发已错过的任务。
-- 修复闲置上游过期截止时间长期压制每日任务、设置非原子写入竞态，并保留原生中文脚本编码。服务器报告决定重置时间，不能保证 09:30 → 14:30。
-- 原有 DeepSeek / Codex 双模式及下表功能继续保留；设置、位置、六款皮肤和用量历史兼容。
+- **可自定义额度检测：** 默认每 5 秒强制刷新；设置支持 1–3600 秒整数，保存后直接重排定时器，不会启用预热开关。查询忙碌时不并发积压，上游限流与报告新鲜度仍受接口约束。
+- **启动就绪等待：** 接口尚未加载、报告过期或账号未确认时不提前消耗启动检查；取得可靠报告后再判断。
+- **提前满额与空闲窗口：** 「5h 重置」开关按检测间隔检查满额新窗口，不只等待旧截止时间。允许新鲜满额报告的过期空闲截止时间启动窗口，并刷新实际新窗口；持续 100% 不会重复请求。
+- 保留单次目标定时器、三个独立且默认关闭的预热开关、账号／周额度保护及持久去重。仅已证实未发送的失败最多安全重试 3 次，间隔 5 秒；发送后结果不明不重试，不补发休眠错过的任务。
+- 原有 DeepSeek / Codex 双模式及下表功能继续保留；设置、位置、六款皮肤和用量历史兼容。服务器报告决定重置时间，不能保证 09:30 → 14:30。
 
 | 模式 | 悬浮卡片 | 用量飘字与统计 |
 | --- | --- | --- |
@@ -38,10 +38,10 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.5.0 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.0) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.5.1 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.1) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.5.0 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.5.1 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -70,16 +70,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 - **`dsh-plugin-subscriptions`：** 显示其默认 Codex 账号，标为「默认账号 · 可能缓存」。模型池／独立模型实际使用账号没有公开关联，不能保证与默认账号一致；上游没有原始刷新时间，不生成其百分比飘字。
 - **Token 飘字：** 来自 DSH 报告的输入、缓存与输出，不重复计入推理 Token，不包含其他客户端未报告给 DSH 的调用。
 - **额度百分比飘字：** 只表示同账号、同重置窗口、两次新鲜报告间的实际下降；不是 Token 折算，也不保证属于某一轮 DSH 请求。额度恢复、窗口重置、账号切换不算消费；缺少可靠报告时回退 Token。
-- **刷新与升级：** 新后台加载后立即查询，约每 60 秒刷新。提示「请重启 DSH 更新桌宠」表示读到缺少 Codex 字段的旧后端状态，不代表订阅插件未登录；「等待 DSH 数据」表示尚未读到首份状态。
+- **刷新与升级：** 新后台加载后立即查询，默认每 5 秒请求刷新；右键设置 → **Codex 额度检测** 可保存 1–3600 秒整数，保存后重排刷新定时器，无需重启。查询忙碌时不并发积压，报告新鲜度和上游限流仍由订阅接口决定。调整检测间隔不会启用预热。提示「请重启 DSH 更新桌宠」表示读到缺少 Codex 字段的旧后端状态，不代表订阅插件未登录；「等待 DSH 数据」表示尚未读到首份状态。
 - **统计边界：** Codex 不显示人民币／峰价／谷价；统计页显示今日 Codex Token 和 5h／周额度，折线图仅统计 DSH Token。其他客户端的消耗可能影响账户额度，但不会被编造成本插件的 Token 历史。只有 OAuth 模型、没有受支持的用量接口时，不虚构额度。
 
-### Codex 自动预热（v0.5.0）
+### Codex 自动预热（v0.5.1）
+
+启动就绪等待、周期满额检测、过期空闲截止时间支持和默认 5 秒／可自定义检测间隔已包含在 v0.5.1。请更新实际安装副本并完整重启 DSH；下载旧安装包或仅修改源码不会更新已经运行的后台。
 
 右键 → 设置 → **Codex 自动预热**，在任一计费显示模式下均可设置。**没有手动预热按钮**；三个开关独立，默认都关闭（升级保留原有开关偏好，新启动开关默认关闭）：
 
-- **每日预热：** 设置严格的 24 小时制 `HH:mm`，例如 `09:30`，保存时间并启用每日开关。按运行 DSH 的电脑本地时区执行，不固定为北京时间或哥本哈根时间；设置文件变化时重新读取，按下一目标时间安排单次定时器；复用约每 60 秒的额度刷新作为兜底。只在持续运行、及时观察到指定时刻后，于该分钟内最多尝试一次；启动或恢复运行时已错过时刻不会补发。修改时间、失败、重启不会重试当天已记录的尝试。
-- **启动满额度预热：** 启动 DSH 插件或首次开启此选项时，仅在新鲜报告显示 5h 为 100%、周额度可用且有有效未来重置时间时尝试一次。同一账号、同一已知窗口持久去重；100% 可能是取整结果，不证明此前没有调用。
-- **5h 重置预热：** 仅依据 `dsh-codex-subscription` 当前活动账号的新鲜 5h 报告，先观察未来截止时间，再在截止后及时核对新报告。每个已观察窗口最多尝试一次；新窗口已有调用时跳过。周额度重置、旧缓存或多提供商插件的默认账号报告不会触发。两个条件同时命中合并为一次调用。
+- **每日预热：** 设置严格的 24 小时制 `HH:mm`，例如 `09:30`，保存时间并启用每日开关。按运行 DSH 的电脑本地时区执行，不固定为北京时间或哥本哈根时间；设置文件变化时重新读取，按下一目标时间安排单次定时器；复用额度刷新（默认每 5 秒，可在设置中调整）作为兜底。只在持续运行、及时观察到指定时刻后，于该分钟内最多尝试一次；启动或恢复运行时已错过时刻不会补发。修改时间、失败、重启不会重试当天已记录的尝试。
+- **启动满额度预热：** 启动 DSH 插件或首次开启此选项时，等待订阅接口和活动账号报告就绪，仅在新鲜报告显示 5h 为 100%、周额度可用且有已知有效重置时间时尝试一次。空闲账号可能仍报告过期截止时间，允许极短请求启动窗口，随后刷新实际新窗口；未确认新窗口时保守阻止同账号 5h 内重复请求。同一账号、同一已知窗口持久去重；100% 可能是取整结果，不证明此前没有调用。
+- **5h 重置／周期满额预热：** 仅依据 `dsh-codex-subscription` 当前活动账号的新鲜 5h 报告。除单次截止定时器外，按用户设置的检测间隔（默认 5 秒）强制刷新并检查满额新窗口，覆盖提前恢复，以及一直为 100% 但可靠重置时间改变的情况，不必等待旧截止时间。同一已知窗口最多尝试一次，持续 100% 不会每次检测都发送；只有每日开关不会开启周期满额请求。旧缓存、未知额度、周额度耗尽或默认账号报告不会触发；多个条件同时命中合并为一次调用。如果上游百分比与已尝试窗口标识都不变，无法证明再次官方刷新，不绕过去重。
 - **后台生命周期：** 仅 Windows 的 `desktop` 配置执行，其他配置不会因共享设置被自动启用。DSH 与插件必须运行；不会唤醒电脑，不补执行长时间休眠、离线期间错过的任务。夏令时不存在的时间跳过，重复时间不重复执行。关闭设置、退出桌宠窗口或切换显示模式不会停用任务；要停止自动请求，请关闭开关或禁用插件。修改相关设置会取消正在进行的请求，已发送部分可能计入额度。
 - **真实请求：** 通过现有宿主 `llm.stream`，显式指定 `openai-codex` 与可用目录内模型；优先当前默认的 Codex 模型，否则使用 Codex 目录首项，并选择已报告支持的最低推理档。只发送固定短提示 `Reply only OK.`，不附带聊天历史、系统提示、会话 ID 或工具，不创建聊天或运行工具；不改动全局模型、账号或订阅插件设置。
 - **安全与消耗：** 调用前强制查询当前账号的 5h / 周额度，未登录、报告不新鲜、账号变化、额度耗尽或去重记录无法保存时不发送。调用前后再次核对活动账号，但公开接口**不能锁定调用期间账号**。用量计入独立 Codex Token 统计，失败若仍报告用量也计入；不由 Token 推测额度或重置时间。
@@ -112,17 +114,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 
 价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对，官方改价后需更新代码。源码与文档为 MIT 许可；十二张角色图集及四张生成源图另见 [美术授权](ARTWORK-LICENSE.md)。保留 AI 来源信息，人工视觉检查不等于绝无相似或法律保证。本项目交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但未打包其源码或素材，与 DeepSeek 及上游无隶属关系。
 
-运行 `npm test` 检查计费、路由、额度、统计和 UI；受限沙箱可用 `node --test --test-isolation=none`。v0.5.0 的源码与解包安装包回归均包括 72 项测试及 1096 项原生断言（设置 609、真实素材 454、额度展示 33）。Codex 接口与切号行为使用公开 DTO 的模拟回归；这些测试不读取真实账号数据，也不等于所有宿主／账号已完成实时额度验收。
+运行 `npm test` 检查计费、路由、额度、统计和 UI；受限沙箱可用 `node --test --test-isolation=none`。v0.5.1 的源码与解包安装包回归均包括 79 项测试及 1153 项原生断言（设置 666、真实素材 454、额度展示 33）。Codex 接口与切号行为使用公开 DTO 的模拟回归；这些测试不读取真实账号数据，也不等于所有宿主／账号已完成实时额度验收。
 
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 可查看独立模拟动效；加 `-PreviewSleep` 看睡眠、`-PreviewSettings` 看模拟统计，不修改真实余额。
 
 ## English guide
 
-### What's new in v0.5.0
+### What's new in v0.5.1
 
-- **Startup warm-up:** a new default-off switch requires fresh 100% five-hour quota, usable weekly quota and a valid future deadline. It shares durable window deduplication with daily and observed-reset triggers.
-- **Deadline scheduling and safe retries:** one-shot target timers replace five-second checks; settings changes reschedule immediately. Only proven-unsent failures retry, up to three attempts five seconds apart; ambiguous post-invocation failures stop and warn. Existing daily/reset preferences are preserved.
-- Sends only a fixed short prompt through existing Codex authentication, with no conversation history or tools and no global model/account changes. Durable deduplication, quota checks and cancellation prevent pet-level retries, overlap and missed-time catch-up. Real requests consume quota; server reports determine reset times.
+- **Configurable quota checks:** force-refresh every 5 seconds by default; Settings accepts integer intervals of 1–3600 seconds and rearms immediately without enabling warm-up. Busy queries do not overlap and upstream limits still apply.
+- **Startup readiness:** wait for a usable active-account quota report rather than consuming the startup check while the addon is loading or reports are stale.
+- **Early full windows and idle deadlines:** the reset switch detects fresh full windows before an old deadline. Expired idle deadlines can start a window, followed by a real quota refresh and durable deduplication; sustained 100% never resends on every check.
+- Keep three independent default-off warm-up switches, one-shot deadline scheduling, account/weekly-quota checks and saved preferences. Only proven-unsent failures retry, up to three attempts five seconds apart; ambiguous post-invocation failures stop and warn.
+- Sends only a fixed short prompt through existing Codex authentication, with no conversation history or tools and no global model/account changes. Real requests consume quota; server reports determine reset times.
 - **Existing two display modes remain:** DeepSeek balance, CNY/Token feedback, peak/off-peak poses and statistics; Codex remaining 5-hour/week quotas, reset times and a separate Token ledger.
 - Switch under right-click **Settings → Billing mode**. This only changes the pet, not DSH's model, provider or account. Codex shows no CNY or peak/off-peak pricing.
 - Six local, keyboard-accessible skin cards, three sizes, draggable settings/statistics, direct right-click entry, and saved preferences remain available. DeepSeek previews both poses; Codex shows a single preview.
@@ -131,7 +135,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.5.0](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.0), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.5.1](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.5.1), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"
@@ -147,17 +151,19 @@ The market submission uses the [latest stable release tarball](https://github.co
 
 The host must expose the public in-process connection adapter and a supported addon must be enabled. `dsh-codex-subscription` follows its active account, checked before and after the query. `dsh-plugin-subscriptions` exposes a default account, not necessarily the pool's selected account; its report is labeled potentially cached and never generates percent animations without an original refresh timestamp.
 
-Unknown quota is `—`, not 0% or 100%. Reset times use your local time zone. Queries start when the backend loads and repeat about every 60 seconds. Percent feedback measures decreases between fresh reports for the same account/window; it is **not a Token conversion or guaranteed per-turn attribution**. Resets and account changes are not spending. Missing reliable reports fall back to Token feedback.
+Unknown quota is `—`, not 0% or 100%. Reset times use your local time zone. Queries start when the backend loads and repeat every 5 seconds by default. Settings → Codex quota checks accepts an integer interval of 1–3600 seconds; saving rearms the timer without restarting or enabling warm-up. Busy queries do not overlap, and upstream refresh limits still apply. Percent feedback measures decreases between fresh reports for the same account/window; it is **not a Token conversion or guaranteed per-turn attribution**. Resets and account changes are not spending. Missing reliable reports fall back to Token feedback.
 
 “请重启 DSH 更新桌宠” means an old backend snapshot lacks Codex fields: update the installed copy and fully restart DSH, not the subscription login. “等待 DSH 数据” means no initial snapshot yet. Other statuses distinguish signed-out, unsupported, switching and stale data. Codex Token charts count DSH-reported usage only; account quota may also reflect other clients.
 
-### Automatic Codex warm-up (v0.5.0)
+### Automatic Codex warm-up (v0.5.1)
 
-Settings has independent, default-off **daily local HH:mm**, **observed 5-hour reset**, and **startup at 100% quota** switches, with no manual request button. The startup switch and revised scheduling ship in v0.5.0; existing switches keep their saved preferences, and the new startup switch defaults off. Startup requires a fresh quota report and a known future deadline; durable account/window claims prevent repeated requests on restart. Only the Windows desktop profile executes the shared local schedule; other profiles do not opt in. Settings-file changes wake the scheduler, which uses one-shot deadline timers plus the existing approximately 60-second quota refresh. A target already missed at startup/wake is suppressed, including subsequent ticks and restarts; the computer is never woken. Closing the pet or changing display mode does not disable the backend schedule; turn off the switches or disable the plugin to stop it.
+Startup-readiness waiting, periodic full-quota detection, expired-idle-deadline support and the configurable five-second polling default ship in v0.5.1. Update the installed copy and fully restart DSH; updating source alone does not update a running installed backend.
+
+Settings has independent, default-off **daily local HH:mm**, **observed 5-hour reset**, and **startup at 100% quota** switches, with no manual request button. The startup switch and revised scheduling ship in v0.5.0; existing switches keep their saved preferences, and the new startup switch defaults off. Startup waits until the active-account quota is usable, then requires fresh 100% five-hour quota, usable weekly quota and a known deadline. An expired idle deadline is permitted: a post-call refresh records the actual new window, with conservative same-account suppression if it remains unknown. Durable account/window claims prevent repeated requests on restart. The reset switch also force-refreshes and checks for full new windows at the configured interval (5 seconds by default), including early restoration or a changed deadline while quota remains 100%; daily alone does not opt into this behavior. Sustained 100% never causes a request on every quota check. If both percentage and the already-claimed window identifier stay unchanged, the API cannot prove a new provider-wide reset, so deduplication is not bypassed. Only the Windows desktop profile executes the shared local schedule; other profiles do not opt in. Settings-file changes wake the scheduler, which uses one-shot deadline timers plus the configurable quota refresh. A target already missed at startup/wake is suppressed, including subsequent ticks and restarts; the computer is never woken. Closing the pet or changing display mode does not disable the backend schedule; turn off the switches or disable the plugin to stop it.
 
 A fresh, forced active-account quota check and durable attempt claim precede a direct `openai-codex` stream. It uses an available Codex model (current Codex default if available, otherwise the first catalog entry) and the lowest advertised supported reasoning effort. Only `Reply only OK.` is sent: no session, history, system prompt or tools. Model/account/addon preferences are not changed. A daily date or observed reset deadline is attempted at most once; simultaneous triggers coalesce. Unknown/stale/exhausted quotas or account changes skip dispatch. Reported usage, including failed-call usage, enters the separate Codex ledger.
 
-The public API cannot pin an account during dispatch, impose an enforceable Codex token cap, or forbid every existing transport retry. The pet retries only proven-unsent failures, at most three attempts five seconds apart. Once model invocation begins, an uncertain failure or timeout stops the occurrence and shows a warning instead of resending. Existing addon WebSocket/middleware behavior may still retry internally. A 60-second cancellation signal does not guarantee an authentication/cleanup deadline. Reset reports, not success or token counts, determine window timing: 09:30 does not guarantee a 14:30 reset. Tests use mocks only; no live billable verification was performed. This feature is included in v0.5.0 and defaults off on first upgrade. Fully restart DSH once after updating the installed backend.
+The public API cannot pin an account during dispatch, impose an enforceable Codex token cap, or forbid every existing transport retry. The pet retries only proven-unsent failures, at most three attempts five seconds apart. Once model invocation begins, an uncertain failure or timeout stops the occurrence and shows a warning instead of resending. Existing addon WebSocket/middleware behavior may still retry internally. A 60-second cancellation signal does not guarantee an authentication/cleanup deadline. Reset reports, not success or token counts, determine window timing: 09:30 does not guarantee a 14:30 reset. Tests use mocks only; no live billable verification was performed. Warm-up remains opt-in in v0.5.1; existing preferences are preserved and no switch is enabled by the upgrade. Fully restart DSH once after updating the installed backend.
 
 ### DeepSeek numbers, privacy and verification
 
@@ -165,4 +171,4 @@ The DeepSeek card queries the signed-in account wallet at startup and switches w
 
 Data and preferences stay under `%LOCALAPPDATA%\DshSimpleDesktopPet\`, with separate DeepSeek/Codex ledgers. No prompt/response bodies or credentials are stored. Codex quota uses public read-only addon RPC and hashes account identifiers; opt-in warm-up sends only a fixed short prompt through the host LLM service and stores attempt timestamps/keys, not response bodies. See [PRIVACY.md](PRIVACY.md), [artwork terms](ARTWORK-LICENSE.md), and [CHANGELOG.md](CHANGELOG.md). There is no telemetry or cloud sync.
 
-Run `npm test` (or `node --test --test-isolation=none` in restricted sandboxes). Both the v0.5.0 source and extracted installation package pass 72 tests and 1096 native assertions (609 settings, 454 actual-asset and 33 quota-presentation assertions). Codex/account-switch tests use synthetic public DTOs, not live credentials; passing them is not a claim of live quota verification on every host/account. Isolated preview mode uses synthetic events and does not change live balance data.
+Run `npm test` (or `node --test --test-isolation=none` in restricted sandboxes). Both the v0.5.1 source and extracted installation package pass 79 tests and 1153 native assertions (666 settings, 454 actual-asset and 33 quota-presentation assertions). Codex/account-switch tests use synthetic public DTOs, not live credentials; passing them is not a claim of live quota verification on every host/account. Isolated preview mode uses synthetic events and does not change live balance data.
