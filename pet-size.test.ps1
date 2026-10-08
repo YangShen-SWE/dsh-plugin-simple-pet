@@ -9,6 +9,7 @@ if ([Threading.Thread]::CurrentThread.ApartmentState -ne [Threading.ApartmentSta
 }
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 $script:Assertions = 0
+$Preview = $true # Isolated Save-Prefs intentionally exercises full preview persistence.
 function Assert-True([bool]$condition, [string]$message) {
   if (-not $condition) { throw "FAIL: $message" }
   $script:Assertions++

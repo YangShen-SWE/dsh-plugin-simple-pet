@@ -1,14 +1,23 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.6.0 · 自适应布局与超小尺寸](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.6.1 · 原生 DSH 设置与右键无弹窗](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.1)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
-> **v0.6.0 更新：** 设置与统计支持类似 Flexbox 的自适应布局，不再横向滚动；纵向滚动使用主题圆角细滑块，新增「超小」尺寸且原三档不变。保留 v0.5.2 原子保存修复、默认 5 秒／可自定义额度刷新、三个独立且默认关闭的预热开关和持久去重。更新实际安装副本后请完整重启 DSH；升级不会启用预热，主动启用才会发送真实请求并消耗额度。
+> **v0.6.1 更新：** 设置与统计正式集成至 **DSH → 设置 → 桌宠**，跟随宿主深浅主题与自适应布局；显式保存后约一秒内热更新。右键不再弹出菜单或窗口，保留左键拖动，坐标独立保存。保留六款皮肤、四档尺寸、原有统计及默认关闭的独立预热开关。升级后请完整重启 DSH；升级不会自动启用预热，主动启用才会发送真实请求并消耗额度。
 
 ## 中文使用说明
+
+### v0.6.1 更新重点：设置集成进 DSH
+
+- 正常使用入口为 **DSH → 设置 → 桌宠**，包括「设置」与「统计」两个页签，不再打开独立 WPF 设置弹窗。右键桌宠不执行操作，不弹出菜单或窗口；保留左键拖动。
+- 保留六款皮肤、DeepSeek／Codex 显示模式、飘字单位、四档尺寸、休眠时间、额度刷新和三个预热选项。更改先成为草稿，点击「保存设置」才提交；正常桌宠约一秒内应用，不要求再次重启。
+- 保留原 `settings.json` 与独立统计文件；拖动只写 `position.json`，避免覆盖后台保存的选项。多页面冲突拒绝覆盖；损坏的设置文件保持原样，页面提示重新读取。打开页面不调用模型，升级不自动打开预热。
+- 原生页面随 DSH 深浅主题和可用宽度调整，皮肤图库与统计卡片自适应；图表支持本周／本月／本年，Codex 图表保持 Token。每日计划与统计日期使用后台电脑时区，而非远程浏览器时区。
+- 此前的设置迁移版本在本地源码与实际安装副本均通过 123 项测试及 2847 条原生断言（包括配置热更新、坐标独立保存、鉴权与并发冲突）。使用隔离文件和模拟服务，不发送模型请求；正在运行的 DSH 页面需完整重启后验收，本轮没有自动关闭宿主。
+- v0.6.1 发布与现有市场 PR 同步更新；PR 更新不代表市场已合并或收录。此次仅做右键相关定向检查及客户端构建、安装包校验，未重跑全量测试。升级后须完整退出并重启 DSH 一次，载入新增客户端及后端路由；旧弹窗仅保留给 `-Preview -PreviewSettings` 显式开发回归。
 
 ### v0.6.0 更新重点
 
@@ -37,26 +46,26 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 | DeepSeek 计费模式 | 当前官方路由的钱包余额、缓存命中率、峰谷价格 | 人民币 / Token 飘字；原有统计保留 |
 | Codex 订阅模式 | 5 小时 / 周剩余额度、重置时间、数据状态 | Token / 实测额度百分比飘字；独立 Token 统计，不显示人民币与峰谷价格 |
 
-在右键设置中切换模式。**切换只改变桌宠显示，不改变 DSH 的模型、提供商或登录账号。** 原有六款皮肤、位置、统计、可拖动设置窗口及右键直达设置继续保留。
+在 **DSH → 设置 → 桌宠** 中切换模式并保存。**切换只改变桌宠显示，不改变 DSH 的模型、提供商或登录账号。** 六款皮肤、位置、统计与桌宠拖动继续保留；旧弹窗仅用于开发预览。
 
 ### 功能与特色
 
-- **轻量悬浮窗：** 透明、可拖动、始终置顶；角色位于卡片边缘。右键直接打开设置，可选择超小／小／中／大尺寸，原有三档大小不变；设置与统计窗口可拖动标题栏移动、拖动边缘调整大小。
-- **六款图片形象：** 默认海蓝鲸鱼娘、夜航科技娘、雪绒鲸娘、薄荷茶娘、樱桃汽水娘、星砂魔法娘。图库点击即切换并保存，选中卡片有高亮和勾选，支持 Tab 聚焦及 Space／Enter 选择。预览使用本地缓存；小屏幕可滚动设置内容，退出按钮固定在底部。
+- **轻量悬浮窗：** 透明、可拖动、始终置顶；角色位于卡片边缘。设置集成在 DSH，可选择超小／小／中／大尺寸，原有三档大小不变；右键不弹出菜单或窗口。
+- **六款图片形象：** 默认海蓝鲸鱼娘、夜航科技娘、雪绒鲸娘、薄荷茶娘、樱桃汽水娘、星砂魔法娘。图库选择后高亮，支持 Tab 聚焦及 Space／Enter 选择；点击「保存设置」后应用。预览使用鉴权保护的本地图片；小屏幕随宿主设置页自适应。
 - **DeepSeek 峰谷形象：** 按北京时间工作日 09:00–12:00、14:00–18:00 区分峰价与谷价；六款形象均有两种姿态。Codex 使用固定单预览，不显示峰谷措辞。
 - **按调用反馈：** 缓存命中轻微受伤、未命中暴击、模型返回时开心弹跳；DeepSeek 另有余额恢复吃白米饭、连续消费与余额耗尽反馈。用量数字按事件顺序上飘，无气泡；仅播放所选计费模式的事件。
 - **打瞌睡待机：** 根据所选模式的调用活动进入睡眠动作，默认 10 分钟，可调整为 1–240 分钟。
-- **自适应布局：** 设置表单、皮肤图库与统计卡片随窗口宽度换行；折线图与长刻度自适应可用宽度，不再出现底部横向滚动条。纵向滚动使用深蓝青色圆角细滑块，悬停与拖动高亮，保留滚轮与轨道翻页。
-- **独立统计：** DeepSeek 的 API Key 与账号钱包不会混扣；Codex Token 单独记账。设置中的统计页支持本周／本月／本年折线图，Codex 只绘制 Token，不虚构人民币花费。
+- **自适应布局：** 原生设置表单、皮肤图库与统计卡片随可用宽度换行；趋势图与长刻度自适应可用宽度，不添加横向滚动条。深浅主题与纵向滚动沿用 DSH；旧 WPF 预览保留深蓝青色圆角滚动条。
+- **独立统计：** DeepSeek 的 API Key 与账号钱包不会混扣；Codex Token 单独记账。设置中的统计页支持本周／本月／本年趋势图，Codex 只绘制 Token，不虚构人民币花费。
 - **明确数据边界：** 处理 `deepseek-official`、`deepseek-account`、`openai-codex` 与 `codex` 路由；没有通知或自定义价格规则。动作由 WPF 原生动画播放，状态轮询不限制动作帧率。
 
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.6.0 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.0) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.6.1 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.1) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.6.0 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.6.1 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -67,7 +76,7 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 
 4. 如果以前安装过 `@local/dsh-simpledesktoppet` 或 `@local/dsh-deepseek-pet`，先禁用／移除旧插件，避免重复处理事件。升级已有安装时，重新安装新目录或通过市场更新，不能只修改源码副本。
 5. **保存当前任务后，完全退出并重新启动 DSH（包含后台／托盘进程）**，让新版 Node 后端加载。只刷新网页、关闭桌宠、重新打开桌宠或重启旧安装副本都不等于升级后台。
-6. 在插件管理中启用 `dsh-plugin-simple-pet`，桌宠随插件自动启动；停用插件时关闭由插件启动的窗口。右键进入「设置与统计」，切换计费模式、形象、尺寸、飘字单位与睡眠时间。右上角「×」只关闭设置，「退出桌宠」才退出悬浮窗。运行期间不要移动或删除安装目录。
+6. 在插件管理中启用 `dsh-plugin-simple-pet`，桌宠随插件自动启动；停用插件时关闭由插件启动的窗口。进入 **DSH → 设置 → 桌宠**，切换计费模式、形象、尺寸、飘字单位与睡眠时间并保存。关闭设置页不退出桌宠；右键不执行操作，停用插件可关闭桌宠。运行期间不要移动或删除安装目录。
 
 市场条目使用 [最新稳定版安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)，不是固定到旧版本的下载地址。市场收录状态取决于维护者审核，[收录 PR](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6267) 未合并前可先使用 GitHub 安装。
 
@@ -79,20 +88,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 
 ### Codex 订阅模式
 
-右键 → 设置 → **计费模式 → Codex 订阅模式**。卡片展示**剩余额度**与本机时区的重置时间；未知显示 `—`，过期或失败标为上次额度。
+DSH → 设置 → 桌宠 → **计费模式 → Codex 订阅模式**。卡片展示**剩余额度**与本机时区的重置时间；未知显示 `—`，过期或失败标为上次额度。
 
 - **`dsh-codex-subscription`：** 通过其公开状态 / 用量接口跟随激活账号，查询前后核对账号，丢弃切号期间的结果。不默认查询 Codex CLI 账号，也不擅自切换账号。
 - **`dsh-plugin-subscriptions`：** 显示其默认 Codex 账号，标为「默认账号 · 可能缓存」。模型池／独立模型实际使用账号没有公开关联，不能保证与默认账号一致；上游没有原始刷新时间，不生成其百分比飘字。
 - **Token 飘字：** 来自 DSH 报告的输入、缓存与输出，不重复计入推理 Token，不包含其他客户端未报告给 DSH 的调用。
 - **额度百分比飘字：** 只表示同账号、同重置窗口、两次新鲜报告间的实际下降；不是 Token 折算，也不保证属于某一轮 DSH 请求。额度恢复、窗口重置、账号切换不算消费；缺少可靠报告时回退 Token。
-- **刷新与升级：** 新后台加载后立即查询，默认每 5 秒请求刷新；右键设置 → **Codex 额度检测** 可保存 1–3600 秒整数，保存后重排刷新定时器，无需重启。查询忙碌时不并发积压，报告新鲜度和上游限流仍由订阅接口决定。调整检测间隔不会启用预热。提示「请重启 DSH 更新桌宠」表示读到缺少 Codex 字段的旧后端状态，不代表订阅插件未登录；「等待 DSH 数据」表示尚未读到首份状态。
-- **统计边界：** Codex 不显示人民币／峰价／谷价；统计页显示今日 Codex Token 和 5h／周额度，折线图仅统计 DSH Token。其他客户端的消耗可能影响账户额度，但不会被编造成本插件的 Token 历史。只有 OAuth 模型、没有受支持的用量接口时，不虚构额度。
+- **刷新与升级：** 新后台加载后立即查询，默认每 5 秒请求刷新；DSH → 设置 → 桌宠 → **Codex 额度检测** 可保存 1–3600 秒整数，保存后重排刷新定时器，无需重启。查询忙碌时不并发积压，报告新鲜度和上游限流仍由订阅接口决定。调整检测间隔不会启用预热。提示「请重启 DSH 更新桌宠」表示读到缺少 Codex 字段的旧后端状态，不代表订阅插件未登录；「等待 DSH 数据」表示尚未读到首份状态。
+- **统计边界：** Codex 不显示人民币／峰价／谷价；统计页显示今日 Codex Token 和 5h／周额度，趋势图仅统计 DSH Token。其他客户端的消耗可能影响账户额度，但不会被编造成本插件的 Token 历史。只有 OAuth 模型、没有受支持的用量接口时，不虚构额度。
 
 ### Codex 自动预热（v0.5.1）
 
 启动就绪等待、周期满额检测、过期空闲截止时间支持和默认 5 秒／可自定义检测间隔已包含在 v0.5.1。请更新实际安装副本并完整重启 DSH；下载旧安装包或仅修改源码不会更新已经运行的后台。
 
-右键 → 设置 → **Codex 自动预热**，在任一计费显示模式下均可设置。**没有手动预热按钮**；三个开关独立，默认都关闭（升级保留原有开关偏好，新启动开关默认关闭）：
+DSH → 设置 → 桌宠 → **Codex 自动预热**，在任一计费显示模式下均可设置。**没有手动预热按钮**；三个开关独立，默认都关闭（升级保留原有开关偏好，新启动开关默认关闭）：
 
 - **每日预热：** 设置严格的 24 小时制 `HH:mm`，例如 `09:30`，保存时间并启用每日开关。按运行 DSH 的电脑本地时区执行，不固定为北京时间或哥本哈根时间；设置文件变化时重新读取，按下一目标时间安排单次定时器；复用额度刷新（默认每 5 秒，可在设置中调整）作为兜底。只在持续运行、及时观察到指定时刻后，于该分钟内最多尝试一次；启动或恢复运行时已错过时刻不会补发。修改时间、失败、重启不会重试当天已记录的尝试。
 - **启动满额度预热：** 启动 DSH 插件或首次开启此选项时，等待订阅接口和活动账号报告就绪，仅在新鲜报告显示 5h 为 100%、周额度可用且有已知有效重置时间时尝试一次。空闲账号可能仍报告过期截止时间，允许极短请求启动窗口，随后刷新实际新窗口；未确认新窗口时保守阻止同账号 5h 内重复请求。同一账号、同一已知窗口持久去重；100% 可能是取整结果，不证明此前没有调用。
@@ -125,7 +134,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 
 ### 数据、版权和开发检查
 
-本机数据位于 `%LOCALAPPDATA%\DshSimpleDesktopPet\`：`state-desktop.json` 保存余额、额度与最近事件，`stats-desktop.json` 保存 DeepSeek 用量，`stats-codex-desktop.json` 单独保存 Codex Token，`settings.json` 保存偏好与位置，`warmup.json` 保存自动预热的尝试键、时间及错过的每日时刻，防止重启后重复；已有日志损坏或无法读取时停止发送，不静默重建。旧目录与数据保留；状态不保存 API Key、Codex 令牌或对话正文。额度查询走订阅插件公共只读接口；启用预热才通过宿主模型接口发送固定极短提示，账号标识仅保存短哈希；完整说明见 [隐私说明](PRIVACY.md)。
+本机数据位于 `%LOCALAPPDATA%\DshSimpleDesktopPet\`：`state-desktop.json` 保存余额、额度与最近事件，`stats-desktop.json` 保存 DeepSeek 用量，`stats-codex-desktop.json` 单独保存 Codex Token，`settings.json` 保存偏好并保留旧坐标，`position.json` 保存桌宠最新拖动位置，`warmup.json` 保存自动预热的尝试键、时间及错过的每日时刻，防止重启后重复；已有日志损坏或无法读取时停止发送，不静默重建。旧目录与数据保留；状态不保存 API Key、Codex 令牌或对话正文。额度查询走订阅插件公共只读接口；启用预热才通过宿主模型接口发送固定极短提示，账号标识仅保存短哈希；完整说明见 [隐私说明](PRIVACY.md)。
 
 价格表按 [DeepSeek 官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/) 于 2026-09-29 核对，官方改价后需更新代码。源码与文档为 MIT 许可；十二张角色图集及四张生成源图另见 [美术授权](ARTWORK-LICENSE.md)。保留 AI 来源信息，人工视觉检查不等于绝无相似或法律保证。本项目交互受 [dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 启发，但未打包其源码或素材，与 DeepSeek 及上游无隶属关系。
 
@@ -134,6 +143,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -Preview` 可查看独立模拟动效；加 `-PreviewSleep` 看睡眠、`-PreviewSettings` 看模拟统计，不修改真实余额。
 
 ## English guide
+
+### What's new in v0.6.1 — host-native settings, inert right-click
+
+Settings and statistics now live in **DSH → Settings → 桌宠**, using the host's theme and settings sidebar instead of a standalone popup. Select options as drafts, then explicitly save; the pet hot-reloads them in roughly one second. Keep the original preferences/ledgers and opt-in warm-up flags. Dragging writes only a separate position file; atomic saves reject stale revisions and never overwrite malformed JSON. Opening the page makes no model calls. Restart DSH once after updating the local installed plugin to load its new client and API routes. Right-click does nothing and opens no menu or window; existing left-button dragging stays. The old WPF settings window requires explicit developer flags `-Preview -PreviewSettings`. Existing marketplace PRs are synchronized for v0.6.1; this does not imply approval or merger. The earlier settings-migration regression passed 123 tests / 2847 native assertions on source and installed copies; this release runs only focused right-click checks plus build/package verification, not the full suite. The refreshed live host page still needs post-restart visual verification.
 
 ### What's new in v0.6.0
 
@@ -157,14 +170,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 - Keep three independent default-off warm-up switches, one-shot deadline scheduling, account/weekly-quota checks and saved preferences. Only proven-unsent failures retry, up to three attempts five seconds apart; ambiguous post-invocation failures stop and warn.
 - Sends only a fixed short prompt through existing Codex authentication, with no conversation history or tools and no global model/account changes. Real requests consume quota; server reports determine reset times.
 - **Existing two display modes remain:** DeepSeek balance, CNY/Token feedback, peak/off-peak poses and statistics; Codex remaining 5-hour/week quotas, reset times and a separate Token ledger.
-- Switch under right-click **Settings → Billing mode**. This only changes the pet, not DSH's model, provider or account. Codex shows no CNY or peak/off-peak pricing.
-- Six local, keyboard-accessible skin cards, four sizes (tiny plus the unchanged small/medium/large scales), resizable and draggable settings/statistics, direct right-click entry, and saved preferences remain available. Forms, galleries, stat cards and charts reflow to fit the viewport without horizontal scrollbars; rounded cyan vertical thumbs match the dark-blue theme. DeepSeek previews both poses; Codex shows a single preview.
+- Switch under **DSH → Settings → Desktop pet → Billing mode**. This only changes the pet, not DSH's model, provider or account. Codex shows no CNY or peak/off-peak pricing.
+- Six local, keyboard-accessible skin cards, four sizes (tiny plus the unchanged small/medium/large scales), host-native settings/statistics and saved preferences remain available. Right-click does nothing; existing left-button dragging remains. Forms, galleries, stat cards and charts reflow to fit the viewport without horizontal scrollbars; rounded cyan vertical thumbs match the dark-blue theme. DeepSeek previews both poses; Codex shows a single preview.
 - Cached-input damage, uncached-input reactions and reply jumps use the selected mode's events. Sleep follows that mode's activity, after 1–240 minutes (10 by default). WPF animates between state polls.
 
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.6.0](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.0), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.6.1](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.1), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"
@@ -172,7 +185,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\pet.ps1 -DshProfi
 
 3. Disable/remove old `@local/dsh-simpledesktoppet` or `@local/dsh-deepseek-pet` copies. To upgrade, update the installed copy via the market or reinstall the updated folder.
 4. **Save running work, fully quit DSH including its background/tray process, and relaunch it.** Refreshing the browser or reopening the pet does not update the loaded Node backend.
-5. Enable `dsh-plugin-simple-pet`. DSH owns the pet window lifecycle. Right-click for settings; drag the title bar to move settings/statistics. × closes settings; Exit Pet closes the pet. Keep the installed directory in place.
+5. Enable `dsh-plugin-simple-pet`. DSH owns the pet window lifecycle. Open DSH → Settings → 桌宠 for preferences/statistics. Right-click shows the new settings location and Exit Pet; closing settings does not close the pet. Keep the installed directory in place.
 
 The market submission uses the [latest stable release tarball](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz); [PR #6267](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6267) is subject to maintainer review. The pet is single-instance. Manual startup is only a troubleshooting fallback.
 

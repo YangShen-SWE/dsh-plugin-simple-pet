@@ -50,9 +50,21 @@ test('settings expose a draggable header without dragging from every input', () 
   assert.ok(callbackBodies(settingsSource, 'MouseLeftButtonDown').some(body => /\$script:SettingsWindow\.DragMove\s*\(\s*\)/i.test(body)), 'header drag callback invokes settings DragMove');
 });
 
-test('right-click opens settings directly instead of constructing a context menu', () => {
-  assert.doesNotMatch(petSource, /New-Object\s+(?:[\w.]*\.)?ContextMenu\b|\[\s*(?:[\w.]*\.)?ContextMenu\s*\]\s*::\s*new/i);
-  assert.ok(callbackBodies(petSource, 'MouseRightButton(?:Up|Down)').some(body => /\bShow-PetSettings\b/.test(body)), 'right-button callback directly opens settings');
+test('right-click has no action, context menu or popup in normal and preview modes', () => {
+  assert.doesNotMatch(petSource, /\.Add_(?:Preview)?MouseRightButton(?:Up|Down)\b/);
+  assert.doesNotMatch(petSource, /Windows\.Controls\.(?:ContextMenu|MenuItem)\b|\.ContextMenu\s*=/);
+  assert.equal(callbackBodies(petSource, 'MouseRightButton(?:Up|Down)').length, 0);
+  assert.match(petSource, /if \(\$Preview -and \$PreviewSettings\) \{\s*\. \(Join-Path \$script:ProjectRoot 'settings-window\.ps1'\)/);
+  assert.ok(callbackBodies(petSource, 'MouseLeftButtonDown').some(body => /\.DragMove\s*\(\s*\)/.test(body)), 'existing left-button dragging stays intact');
+});
+
+test('backend and pet keep the same original settings file, separate position writer and hot reload', () => {
+  const backend = readFileSync(join(root, 'index.js'), 'utf8');
+  assert.match(backend, /const prefsFile = join\(dataDir, 'settings\.json'\)/);
+  assert.match(petSource, /\$script:SettingsFile = .*'settings-preview\.json'.*'settings\.json'/);
+  assert.doesNotMatch(petSource, /globalsettings\.json/);
+  assert.match(petSource, /function Reload-PetPreferences\(\[switch\]\$Force\)/);
+  assert.match(petSource, /Reload-PetPreferences[\r\n ]+Read-PetState/);
 });
 
 test('settings use an accessible local six-card gallery instead of a skin dropdown', () => {
@@ -110,6 +122,12 @@ test('native dual-mode quota presentation uses no real state', { skip: process.p
 
 test('native tiny pet scales sprites, cards and floats without real preferences', { skip: process.platform !== 'win32', timeout: 60_000 }, () => {
   const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'pet-size.test.ps1')], { cwd: root, stdio: 'inherit', windowsHide: true, timeout: 45_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0);
+});
+
+test('native settings hot reload and position-only writer preserve original preferences', { skip: process.platform !== 'win32', timeout: 60_000 }, () => {
+  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'pet-preferences.test.ps1')], { cwd: root, stdio: 'inherit', windowsHide: true, timeout: 45_000 });
   assert.ifError(result.error);
   assert.equal(result.status, 0);
 });

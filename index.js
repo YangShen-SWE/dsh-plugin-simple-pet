@@ -9,6 +9,8 @@ import { addUsage, loadLedger, seedFromRecentEvents } from './stats.js';
 import { CODEX_PROVIDERS, codexTokenItems, readCodexQuota, quotaDeltas } from './codex.js';
 import { CodexWarmupScheduler } from './warmup.js';
 import { runCodexWarmup } from './warmup-call.js';
+import { PreferencesStore } from './preferences.js';
+import { preferencesHandler } from './preferences-route.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -29,8 +31,9 @@ function json(res, status, body, method = 'GET') {
 
 function guard(ctx, req, res) {
   let code = 403;
-  try { code = ctx.connection?.requestRejection(req); } catch { /* fail closed */ }
+  try { if (typeof ctx.connection?.requestRejection === 'function') code = ctx.connection.requestRejection(req); } catch { /* fail closed */ }
   if (code === undefined) return true;
+  if (code !== 401 && code !== 403) code = 403;
   res.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(code === 401 ? 'unauthorized' : 'forbidden');
   return false;
@@ -427,7 +430,12 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     snapshot();
   });
 
+  const preferencesStore = new PreferencesStore(prefsFile);
   ctx.inject(['webServer', 'connection'], routeCtx => {
+    routeCtx.effect(() => routeCtx.webServer.register({
+      kind: 'exact', path: '/api/dsh-plugin-simple-pet/preferences',
+      handler: preferencesHandler(preferencesStore, (req, res) => guard(routeCtx, req, res)),
+    }), 'simple-pet: host settings preferences');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
       const method = req.method ?? 'GET';

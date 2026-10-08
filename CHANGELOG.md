@@ -1,5 +1,16 @@
 # 更新记录 / Changelog
 
+## v0.6.1 — 原生 DSH 设置与右键无弹窗（2026-10-08）
+
+- 设置与统计注册到宿主 `settings.section`，入口为「DSH → 设置 → 桌宠」，使用宿主 React、设置导航、深浅主题与自适应布局。没有替代服务器、嵌入式 WPF 弹窗或新的 UI 运行依赖。
+- 六款本地皮肤、双模式、飘字单位、四档尺寸、休眠时间、额度检测和三个独立预热开关保留；修改先保留为草稿，显式保存才应用。统计保留周／月／年、人民币／Token 与 Codex 的独立额度／Token 视图；日期和每日计划使用后台电脑时区。
+- 继续使用原 `settings.json`：只允许白名单字段和严格类型，通过 SHA-256 修订值、进程内串行队列及临时文件原子替换保存；冲突拒绝覆盖，损坏 JSON 保持原样。新路由和图片复用宿主鉴权，拒绝越界路径、非法内容类型和过大请求。
+- 普通 WPF 桌宠每秒检查设置修改并应用，不因选项变更移动或重写坐标；拖动仅保存 `position.json`。重启优先恢复新位置，兼容旧配置坐标。桌宠右键不执行操作，不弹出菜单、退出选项或设置窗口，保留原有左键拖动；旧设置弹窗仅通过显式开发参数 `-Preview -PreviewSettings` 打开。本次移除右键只执行相关定向检查，不重跑全项目。
+- 预热保持默认关闭，保留已有开关偏好和去重日志；打开设置／统计只读取本地数据，不触发模型请求，也不修改账号或模型。测试全部使用隔离文件及模拟服务。
+- 原生 Codex 页明确区分新鲜、过期和默认账号缓存额度，显示后端电脑时区的重置时间；图库使用固定预览，不显示 DeepSeek 峰谷标签。此前的设置迁移版本源码与实际安装副本均通过 123 项测试及 2847 条原生断言；宿主页面的最终实机验收需首次完整重启后进行，本轮未自动关闭宿主。
+- 发布 v0.6.1 GitHub 标签与安装包，同步本地安装副本和现有市场 PR；PR 是否合并／收录以维护者审核为准。此次仅做相关定向检查、客户端构建及包内容核验，未重跑全项目。第一次载入新增客户端和后端须完整退出并重启 DSH；后续保存设置热更新。
+- Integrate settings/statistics into the native DSH settings sidebar, with host React, themes, responsive layout, explicit-save drafts and hot reload. Use authenticated revision-checked atomic preference saves and separate drag-position storage. Right-click is inert in normal and preview modes; keep left dragging and all existing modes, skins, sizes, ledgers and opt-in warm-up safeguards. Earlier migration regressions passed 123 tests / 2847 native assertions; this release uses focused checks and package/build verification only. Live host visual verification after a full restart remains outstanding. No live model calls or account/model changes.
+
 ## v0.6.0 — 自适应布局、主题滚动条与超小尺寸（2026-10-07）
 
 - 设置和统计窗口支持调整大小：窄窗口自动将表单标签与输入上下排列，皮肤图库在 1–3 列之间切换，统计卡片自动换行；禁用横向滚动并消除原有固定宽度溢出。

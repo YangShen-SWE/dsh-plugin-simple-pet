@@ -4,6 +4,8 @@
 param([string]$CaptureDirectory = '',
       [string]$SettingsScript = (Join-Path $PSScriptRoot 'settings-window.ps1'))
 
+# The old popup is a developer-preview surface only; test its full writer in Preview.
+$Preview = $true
 $ErrorActionPreference = 'Stop'
 if ([Threading.Thread]::CurrentThread.ApartmentState -ne [Threading.ApartmentState]::STA) {
   throw 'WPF regression tests require Windows PowerShell with -STA.'

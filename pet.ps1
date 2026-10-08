@@ -14,48 +14,133 @@ $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
 $script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
 $script:SettingsFile = Join-Path $script:DataDir $(if ($Preview) { 'settings-preview.json' } else { 'settings.json' })
+$script:PositionFile = Join-Path $script:DataDir 'position.json'
+$script:LegacySettingsFile = Join-Path (Join-Path $env:LOCALAPPDATA 'DshDeepSeekPet') 'settings.json'
 New-Item -ItemType Directory -Path $script:DataDir -Force | Out-Null
 if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
-  $legacySettings = Join-Path (Join-Path $env:LOCALAPPDATA 'DshDeepSeekPet') 'settings.json'
-  if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile }
+  foreach ($legacySettings in @($script:LegacySettingsFile)) {
+    if (Test-Path -LiteralPath $legacySettings) { Copy-Item -LiteralPath $legacySettings -Destination $script:SettingsFile; break }
+  }
 }
 
 $script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
-$savedWarmupTimeValid = $false
-if (Test-Path -LiteralPath $script:SettingsFile) {
+function Set-PetPreferenceValues($saved) {
+  # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
+  $defaults = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
+  foreach ($key in $defaults.Keys) {
+    # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
+    if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
+    else { $script:Prefs[$key] = $defaults[$key] }
+  }
+  $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
+  foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit')) {
+    if ($script:Prefs[$key] -isnot [string]) { $script:Prefs[$key] = $defaults[$key] }
+  }
+  if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id })) { $script:Prefs.skin = 'default' }
+  if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
+  if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
+  if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
+  if (($script:Prefs.codexQuotaRefreshSeconds -isnot [int] -and $script:Prefs.codexQuotaRefreshSeconds -isnot [long]) -or $script:Prefs.codexQuotaRefreshSeconds -lt 1 -or $script:Prefs.codexQuotaRefreshSeconds -gt 3600) { $script:Prefs.codexQuotaRefreshSeconds = 5 }
+  if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid) { $script:Prefs.codexWarmupDaily = $false }
+  if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }
+  if ($script:Prefs.codexWarmupStartup -isnot [bool]) { $script:Prefs.codexWarmupStartup = $false }
+  if ($script:Prefs.codexWarmupTime -isnot [string] -or $script:Prefs.codexWarmupTime -cnotmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z') { $script:Prefs.codexWarmupTime = '09:30' }
+  if ($script:Prefs.size -notin @('tiny', 'small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
+  if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
+  $script:Prefs.sleepMinutes = [int][math]::Max(1, [math]::Min(240, [double]$script:Prefs.sleepMinutes))
+}
+
+function Test-FinitePetCoordinate($value) {
+  return (($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [single] -or $value -is [decimal]) -and -not [double]::IsNaN([double]$value) -and -not [double]::IsInfinity([double]$value))
+}
+
+function Restore-PetPosition($saved) {
+  # Position is local to WPF, never part of a live host preference reload.
+  foreach ($key in @('left', 'top')) {
+    $script:Prefs[$key] = if (Test-FinitePetCoordinate $saved.$key) { [double]$saved.$key } else { $null }
+  }
+  if ($Preview) { return }
+  # A host-created sanitized global file may no longer carry legacy coordinates.
+  if (($null -eq $script:Prefs.left -or $null -eq $script:Prefs.top) -and $script:LegacySettingsFile -and (Test-Path -LiteralPath $script:LegacySettingsFile)) {
+    try {
+      $legacy = Get-Content -LiteralPath $script:LegacySettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      foreach ($key in @('left', 'top')) {
+        if ($null -eq $script:Prefs[$key] -and (Test-FinitePetCoordinate $legacy.$key)) { $script:Prefs[$key] = [double]$legacy.$key }
+      }
+    } catch { }
+  }
+  if (-not (Test-Path -LiteralPath $script:PositionFile)) { return }
   try {
-    $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
-    foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit', 'codexQuotaRefreshSeconds', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset', 'codexWarmupStartup', 'sleepMinutes', 'left', 'top')) {
-      if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
+    $position = Get-Content -LiteralPath $script:PositionFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($key in @('left', 'top')) {
+      if (Test-FinitePetCoordinate $position.$key) { $script:Prefs[$key] = [double]$position.$key }
     }
   } catch { }
 }
-if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id })) { $script:Prefs.skin = 'default' }
-if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
-if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
-if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
-if (($script:Prefs.codexQuotaRefreshSeconds -isnot [int] -and $script:Prefs.codexQuotaRefreshSeconds -isnot [long]) -or $script:Prefs.codexQuotaRefreshSeconds -lt 1 -or $script:Prefs.codexQuotaRefreshSeconds -gt 3600) { $script:Prefs.codexQuotaRefreshSeconds = 5 }
-if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid) { $script:Prefs.codexWarmupDaily = $false }
-if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }
-if ($script:Prefs.codexWarmupStartup -isnot [bool]) { $script:Prefs.codexWarmupStartup = $false }
-if ($script:Prefs.codexWarmupTime -isnot [string] -or $script:Prefs.codexWarmupTime -cnotmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z') { $script:Prefs.codexWarmupTime = '09:30' }
-if ($script:Prefs.size -notin @('tiny', 'small', 'medium', 'large')) { $script:Prefs.size = 'medium' }
-if ($script:Prefs.sleepMinutes -isnot [int] -and $script:Prefs.sleepMinutes -isnot [long]) { $script:Prefs.sleepMinutes = 10 }
-$script:Prefs.sleepMinutes = [math]::Max(1, [math]::Min(240, [int]$script:Prefs.sleepMinutes))
+
+$script:NextPrefsReload = [DateTime]::MinValue
+$script:PreferencesFileTicks = $null
+$script:ApplyingPetPreferences = $false
+function Reload-PetPreferences([switch]$Force) {
+  if ($Preview) { return }
+  $now = [DateTime]::UtcNow
+  if (-not $Force -and $now -lt $script:NextPrefsReload) { return }
+  $script:NextPrefsReload = $now.AddSeconds(1)
+  try {
+    $file = Get-Item -LiteralPath $script:SettingsFile -ErrorAction Stop
+    if (-not $Force -and $file.LastWriteTimeUtc.Ticks -eq $script:PreferencesFileTicks) { return }
+    $content = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8
+    if ($null -eq $content -or -not $content.TrimStart().StartsWith('{')) { throw 'Pet preferences must be a JSON object.' }
+    $saved = $content | ConvertFrom-Json
+    if ($saved -isnot [pscustomobject]) { throw 'Pet preferences must be a JSON object.' }
+    $oldMode = $script:Prefs.billingMode
+    $oldSize = $script:Prefs.size
+    Set-PetPreferenceValues $saved
+    $script:PreferencesFileTicks = $file.LastWriteTimeUtc.Ticks
+    if ($null -ne $script:Window) {
+      # Refresh-BillingMode still owns queue/float/activity transitions. Its resize
+      # must not clamp or save coordinates just because host settings changed.
+      $script:ApplyingPetPreferences = $true
+      try {
+        if ($script:Prefs.billingMode -ne $oldMode) { Refresh-BillingMode }
+        elseif ($script:Prefs.size -ne $oldSize) { Set-PetSize }
+        Update-PetUsageCard
+      } finally { $script:ApplyingPetPreferences = $false }
+    }
+  } catch {
+    # Preserve last-known visuals on incomplete/invalid external writes, but never
+    # leave any automatic warmup switch enabled after a failed preference read.
+    $script:Prefs.codexWarmupDaily = $false
+    $script:Prefs.codexWarmupReset = $false
+    $script:Prefs.codexWarmupStartup = $false
+  }
+}
+
+$saved = $null
+if ($Preview) {
+  try { $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+  Set-PetPreferenceValues $saved
+} else {
+  Reload-PetPreferences -Force
+  # Read legacy coordinates only at startup; subsequent reloads never move WPF.
+  try { $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+}
+Restore-PetPosition $saved
 
 function Save-Prefs {
   $script:Prefs.left = [math]::Round($script:Window.Left, 0)
   $script:Prefs.top = [math]::Round($script:Window.Top, 0)
-  $temporary = $script:SettingsFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+  $destination = if ($Preview) { $script:SettingsFile } else { $script:PositionFile }
+  $payload = if ($Preview) { $script:Prefs } else { [ordered]@{ left = $script:Prefs.left; top = $script:Prefs.top } }
+  $temporary = $destination + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
   try {
-    $script:Prefs | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
-    if (Test-Path -LiteralPath $script:SettingsFile) {
+    $payload | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
+    if (Test-Path -LiteralPath $destination) {
       # PS5.1 binds ordinary $null to an empty string here, which is an invalid
       # backup path. NullString passes a real null while keeping atomic replace.
-      [System.IO.File]::Replace($temporary, $script:SettingsFile, [System.Management.Automation.Language.NullString]::Value)
+      [System.IO.File]::Replace($temporary, $destination, [System.Management.Automation.Language.NullString]::Value)
     } else {
-      [System.IO.File]::Move($temporary, $script:SettingsFile)
+      [System.IO.File]::Move($temporary, $destination)
     }
   } finally {
     if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
@@ -163,11 +248,13 @@ function Set-PetSize {
   $scale = [double]$script:Sizes[$script:Prefs.size]
   $script:Window.Width = 272 * $scale
   $script:Window.Height = $(if ((Get-BillingMode) -eq 'codex') { 360 } else { 296 }) * $scale
-  $area = [Windows.SystemParameters]::WorkArea
-  # Keep restored or resized windows in the work area, including its left/top edges.
-  $script:Window.Left = [math]::Max($area.Left, [math]::Min($area.Right - $script:Window.Width, $script:Window.Left))
-  $script:Window.Top = [math]::Max($area.Top, [math]::Min($area.Bottom - $script:Window.Height, $script:Window.Top))
-  Save-Prefs
+  if (-not $script:ApplyingPetPreferences) {
+    $area = [Windows.SystemParameters]::WorkArea
+    # Keep startup/preview resizing in bounds, but never move on host changes.
+    $script:Window.Left = [math]::Max($area.Left, [math]::Min($area.Right - $script:Window.Width, $script:Window.Left))
+    $script:Window.Top = [math]::Max($area.Top, [math]::Min($area.Bottom - $script:Window.Height, $script:Window.Top))
+    Save-Prefs
+  }
 }
 
 $area = [Windows.SystemParameters]::WorkArea
@@ -536,6 +623,7 @@ $script:Timer.Add_Tick({
       $script:NextPreviewAt = $now.AddMilliseconds(900)
     }
   } else {
+    Reload-PetPreferences
     Read-PetState
     if ($script:LastUpdate -eq [DateTime]::MinValue -or ($now - $script:LastUpdate).TotalSeconds -gt 90) {
       $script:Balance.Text = '等待 DSH…'
@@ -595,13 +683,11 @@ $script:Timer.Add_Tick({
   Clear-ExpiredFloats $now
 })
 
-. (Join-Path $script:ProjectRoot 'settings-window.ps1')
-$settingsHandler = [Windows.Input.MouseButtonEventHandler]{
-  param($sender, $eventArgs)
-  $eventArgs.Handled = $true
-  Show-PetSettings
+# Right-click intentionally has no action, context menu, or settings popup.
+# The legacy settings UI is loaded only for an explicit developer preview.
+if ($Preview -and $PreviewSettings) {
+  . (Join-Path $script:ProjectRoot 'settings-window.ps1')
 }
-$script:Window.Add_MouseRightButtonUp($settingsHandler)
 
 $dragHandler = [Windows.Input.MouseButtonEventHandler]{
   param($sender, $eventArgs)
@@ -613,7 +699,7 @@ $script:SpriteLayer.Add_MouseLeftButtonDown($dragHandler)
 $script:Window.Add_Closed({ $script:Timer.Stop(); $script:SingleInstance.ReleaseMutex(); $script:SingleInstance.Dispose() })
 
 if (-not $Preview) { Read-PetState }
-if ($PreviewSettings) {
+if ($Preview -and $PreviewSettings) {
   $script:Window.Add_Loaded({
     Show-PetSettings
     if ($PreviewChartYear) {
