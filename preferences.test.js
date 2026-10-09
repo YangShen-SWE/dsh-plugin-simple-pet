@@ -26,7 +26,7 @@ async function unchanged(file, bytes, operation, expected = 400) {
 
 test('defaults are exact, frozen, fresh and do not expose unknown values', () => {
   assert.deepEqual(DEFAULT_PREFERENCES, {
-    skin: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
+    skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
     codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
     codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
   });

@@ -1,5 +1,15 @@
 # 更新记录 / Changelog
 
+## v0.6.3 — 独立信息框主题与双模式组合预览（2026-10-09）
+
+- 新增独立于人物 `skin` 的 `cardTheme` 偏好：海盐蓝（default，保留原色）、苔庭墨绿（forest）、焦糖暖棕（amber）、暮云紫灰（violet）、月笺雾白（paper）。五款各具渐变、文字、徽标、额度条、边框及圆角，可与六款人物任意组合，缺省／非法旧字段仍回退原蓝色。
+- 每款均适配 DeepSeek 余额／缓存／独立峰谷价牌与 Codex 5 小时／周额度／重置／状态，Codex 不继承峰价配色或人民币文案；新浅色款使用深色字，新四色正文对比度达到 4.5:1。
+- DSH 原生设置新增双模式主题图库和人物／框组合预览；示例数字明确标注为合成数据。DeepSeek 峰谷预览只修改本地画面；Codex 固定人物姿态，预览不新增模型请求、不读取真实账号额度。
+- 显式保存沿用严格类型、修订冲突和原子替换；桌宠约一秒内应用新卡片，更新文字、进度条、阴影与边框并保留调用闪光，不移动窗口或写坐标。旧开发预览设置同步支持主题选择。人物、尺寸、位置、统计、预热偏好和右键无交互均保留。
+- 本轮只运行新功能测试：13 项定向测试、54222 条原生断言、480 个主题×模式×人物×尺寸×峰谷组合；源码与解包分别验证，真实 WPF 画面已核对。未运行全量回归，不发真实模型请求、不更改账号／模型，不自动重启宿主；宿主设置页的最终视觉验收仍需首次完整重启后进行。
+- 发布 v0.6.3 GitHub 标签与安装包并更新本地副本；仅保留、同步最早市场 PR #6267，另外两条提交已关闭。市场同步不代表合并或收录，状态以维护者审核为准。更新后请完整退出并重启 DSH 一次。
+- Add five independently selectable card palettes with DeepSeek and Codex variants, freely paired with six character skins. Host-native galleries and combination previews use clearly labeled synthetic values, preserve explicit revision-checked saves and hot reload, and never initiate model requests or change accounts, models, positions or warm-up preferences. Only the new-feature suite runs (13 tests / 54222 native assertions / 480 combinations); no full regression is claimed. Verify real WPF rendering; live host-page visual acceptance remains pending a full restart. Retain and synchronize only original marketplace PR #6267; close the other two submissions.
+
 ## v0.6.1 — 原生 DSH 设置与右键无弹窗（2026-10-08）
 
 - 设置与统计注册到宿主 `settings.section`，入口为「DSH → 设置 → 桌宠」，使用宿主 React、设置导航、深浅主题与自适应布局。没有替代服务器、嵌入式 WPF 弹窗或新的 UI 运行依赖。

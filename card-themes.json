@@ -1,0 +1,32 @@
+[
+  {
+    "id": "default", "name": "海盐蓝", "description": "保留原有海蓝信息框，清透科技感。",
+    "deepseek": { "start": "#F407294B", "end": "#F4146884", "border": "#91DFFA", "text": "#FFFFFF", "muted": "#C8EFFF", "accent": "#95E8FF", "secondary": "#B7ABFF", "track": "#234B66", "badge": "#1D5B75", "badgeText": "#D8F7FF", "divider": "#458BAC", "shadow": "#092A46", "radius": 17 },
+    "peak": { "start": "#F43C345C", "end": "#F3A05B53", "border": "#FFD184", "badge": "#A06943", "accent": "#FFE1A8" },
+    "codex": { "start": "#F407294B", "end": "#F4146884", "border": "#91DFFA", "text": "#FFFFFF", "muted": "#C8EFFF", "accent": "#7DE9FF", "secondary": "#B7ABFF", "track": "#234B66", "badge": "#1D5B75", "badgeText": "#D8F7FF", "divider": "#458BAC", "shadow": "#092A46", "radius": 17 }
+  },
+  {
+    "id": "forest", "name": "苔庭墨绿", "description": "深墨绿底、鼠尾草描边与玉石色重点，安静耐看。",
+    "deepseek": { "start": "#F4102D27", "end": "#F4234B3C", "border": "#91BFA2", "text": "#F3F7E9", "muted": "#C5DBC5", "accent": "#BCE5B3", "secondary": "#D9D8A2", "track": "#395548", "badge": "#3B5B3F", "badgeText": "#EBF1CD", "divider": "#668E71", "shadow": "#0A2019", "radius": 21 },
+    "peak": { "start": "#F4193427", "end": "#F34E5936", "border": "#D4CC93", "badge": "#62613C", "accent": "#EBDEA6" },
+    "codex": { "start": "#F40D2925", "end": "#F320443B", "border": "#8BBCAB", "text": "#F0F8F1", "muted": "#C3DBD0", "accent": "#A6DFC2", "secondary": "#D0DAB2", "track": "#35574A", "badge": "#35554A", "badgeText": "#DCF2E5", "divider": "#648D7B", "shadow": "#08211C", "radius": 21 }
+  },
+  {
+    "id": "amber", "name": "焦糖暖棕", "description": "咖啡棕底、奶油字色与琥珀点缀，像一张温暖手账。",
+    "deepseek": { "start": "#F43D2921", "end": "#F3644433", "border": "#D6B28C", "text": "#FFF1DE", "muted": "#F0DCC5", "accent": "#FFD395", "secondary": "#EAD2DE", "track": "#72533F", "badge": "#815737", "badgeText": "#FFEBD0", "divider": "#A17B57", "shadow": "#2A1A13", "radius": 13 },
+    "peak": { "start": "#F4492B20", "end": "#F379492D", "border": "#E8BF84", "badge": "#80502C", "accent": "#FFE0A0" },
+    "codex": { "start": "#F4342824", "end": "#F35A4238", "border": "#D1B19B", "text": "#FFF1E4", "muted": "#E1CDBF", "accent": "#EEC494", "secondary": "#DFC7B7", "track": "#6A5044", "badge": "#745542", "badgeText": "#F5E5D4", "divider": "#A1836D", "shadow": "#291C17", "radius": 13 }
+  },
+  {
+    "id": "violet", "name": "暮云紫灰", "description": "低饱和紫灰底与薰衣草高光，轻柔而不刺眼。",
+    "deepseek": { "start": "#F42E2A41", "end": "#F34F4562", "border": "#BDB1D5", "text": "#F8F1FF", "muted": "#DAD1EB", "accent": "#D9C5FA", "secondary": "#D0DDF2", "track": "#5B506D", "badge": "#635172", "badgeText": "#F0E4FF", "divider": "#8D7DA8", "shadow": "#211B31", "radius": 19 },
+    "peak": { "start": "#F4392B44", "end": "#F36B4861", "border": "#E0B8D0", "badge": "#805970", "accent": "#F4CBE0" },
+    "codex": { "start": "#F4292B41", "end": "#F3434861", "border": "#B1BDD7", "text": "#F3F3FF", "muted": "#D1D7ED", "accent": "#C3CBFA", "secondary": "#DFBDED", "track": "#4D536D", "badge": "#545B79", "badgeText": "#E4E9FF", "divider": "#7D8CA8", "shadow": "#1C2032", "radius": 19 }
+  },
+  {
+    "id": "paper", "name": "月笺雾白", "description": "米白纸感、深灰文字与青灰细线，明亮简洁。",
+    "deepseek": { "start": "#F8F7F4ED", "end": "#F8E9EEE8", "border": "#8C9E96", "text": "#253D35", "muted": "#4B6258", "accent": "#315F4D", "secondary": "#685C7E", "track": "#D2DBD3", "badge": "#D4DED0", "badgeText": "#35523B", "divider": "#A4B6A8", "shadow": "#7C8E82", "radius": 11 },
+    "peak": { "start": "#F8FAF5EA", "end": "#F8EEE6D7", "border": "#AB9271", "badge": "#E8D8BB", "accent": "#76502D" },
+    "codex": { "start": "#F8F4F5F1", "end": "#F8E6EDF0", "border": "#8D9EAA", "text": "#293C49", "muted": "#4D6170", "accent": "#37647A", "secondary": "#6A5D80", "track": "#D0DCE3", "badge": "#D5E0E6", "badgeText": "#385B6B", "divider": "#A4B4C0", "shadow": "#7B8993", "radius": 11 }
+  }
+]

@@ -1,4 +1,5 @@
 ﻿. (Join-Path $PSScriptRoot 'usage-view.ps1')
+if (-not $script:CardThemeCatalog) { . (Join-Path $PSScriptRoot 'card-themes.ps1') }
 
 function Get-StatDay([string]$key) {
   if ($null -eq $script:Stats -or $null -eq $script:Stats.days) { return $null }
@@ -144,7 +145,7 @@ function Update-SettingsLayout {
   $gallery.Rows = 0
   $gallery.Columns = [math]::Max(1, [math]::Min(3, [math]::Floor(($available - 28) / 160)))
   # Grid star sizing supplies flex-shrink; narrow rows stack label and input.
-  foreach ($name in @('BillingModeChoice', 'SizeChoice', 'UnitChoice', 'CodexUnitChoice', 'SleepInput')) {
+  foreach ($name in @('BillingModeChoice', 'CardThemeChoice', 'SizeChoice', 'UnitChoice', 'CodexUnitChoice', 'SleepInput')) {
     $control = $script:SettingsWindow.FindName($name)
     $form = $control.Parent
     while ($form -and -not ($form -is [Windows.Controls.Grid])) { $form = $form.Parent }
@@ -419,6 +420,13 @@ function Show-PetSettings {
                   </ComboBox>
                 </Grid>
               </Border>
+              <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
+                <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="信息框主题" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBlock Text="与人物独立搭配，每版含 DeepSeek / Codex 两种样式" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#ABD2E3" Margin="0,5,0,0"/></StackPanel>
+                  <ComboBox Name="CardThemeChoice" Grid.Column="1" Width="160" Height="31" VerticalAlignment="Center" Foreground="#17384F" Background="White"/>
+                </Grid>
+              </Border>
               <Border Name="DeepSeekUnitPanel" Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">
                 <Grid Margin="16,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <StackPanel><TextBlock Text="扣费飘字" FontFamily="Microsoft YaHei" FontSize="14" FontWeight="SemiBold" Foreground="White"/>
@@ -565,8 +573,14 @@ function Show-PetSettings {
     $timeInput.BorderBrush = [Windows.Media.Brushes]::PaleGreen
     Update-SettingsCodexWarmup
   })
+  $themeChoice = $script:SettingsWindow.FindName('CardThemeChoice')
+  foreach ($theme in $script:CardThemeCatalog) {
+    $item = New-Object Windows.Controls.ComboBoxItem
+    $item.Content = [string]$theme.name; $item.Tag = [string]$theme.id
+    [void]$themeChoice.Items.Add($item)
+  }
   # Restore saved choices before subscribing so opening settings does not write preferences.
-  foreach ($choice in @(@{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' }, @{ name = 'BillingModeChoice'; group = 'billingMode' }, @{ name = 'CodexUnitChoice'; group = 'codexUnit' })) {
+  foreach ($choice in @(@{ name = 'CardThemeChoice'; group = 'cardTheme' }, @{ name = 'SizeChoice'; group = 'size' }, @{ name = 'UnitChoice'; group = 'unit' }, @{ name = 'BillingModeChoice'; group = 'billingMode' }, @{ name = 'CodexUnitChoice'; group = 'codexUnit' })) {
     $control = $script:SettingsWindow.FindName($choice.name)
     $control.Tag = $choice.group
     foreach ($item in $control.Items) {
@@ -580,6 +594,7 @@ function Show-PetSettings {
       if ($script:Prefs[$group] -eq $value) { return }
       $script:Prefs[$group] = $value
       if ($group -eq 'size') { Set-PetSize }
+      elseif ($group -eq 'cardTheme') { Update-PetCardTheme ([bool]$script:LastPeak); Save-Prefs }
       elseif ($group -eq 'billingMode') {
         if (Get-Command Refresh-BillingMode -ErrorAction SilentlyContinue) { Refresh-BillingMode } else { Save-Prefs }
         Update-SettingsBillingMode

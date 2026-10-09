@@ -1,14 +1,24 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.6.1 · 原生 DSH 设置与右键无弹窗](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.1)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.6.3 · 独立信息框主题与双模式组合预览](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.3)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
-> **v0.6.1 更新：** 设置与统计正式集成至 **DSH → 设置 → 桌宠**，跟随宿主深浅主题与自适应布局；显式保存后约一秒内热更新。右键不再弹出菜单或窗口，保留左键拖动，坐标独立保存。保留六款皮肤、四档尺寸、原有统计及默认关闭的独立预热开关。升级后请完整重启 DSH；升级不会自动启用预热，主动启用才会发送真实请求并消耗额度。
+> **v0.6.3 更新：** 新增独立的信息框主题，保留海盐蓝，增加苔庭墨绿、焦糖暖棕、暮云紫灰、月笺雾白；每款均适配 DeepSeek／Codex，能与六款人物自由组合。在 **DSH → 设置 → 桌宠** 中分别选择人物和信息框，组合预览使用明确标注的合成数据，点击保存后约一秒内热更新。保留右键无交互、左键拖动和原有预热偏好；升级不启用预热，主题切换不发模型请求。升级后请完整重启 DSH 一次。
 
 ## 中文使用说明
+
+### v0.6.3 更新重点：信息框与人物独立搭配
+
+- **五款信息框：** 海盐蓝（原色）、苔庭墨绿、焦糖暖棕、暮云紫灰、月笺雾白；分别调整渐变、文字、徽标、额度条、边框与圆角。浅色款使用深色文字。
+- **每款均有双模式：** DeepSeek 保留余额、缓存与独立峰谷价牌；Codex 保留 5 小时／周额度、重置时间与状态，不混用人民币或峰谷文案。
+- **人物与框独立：** 新字段 `cardTheme` 不绑定 `skin`。六款人物可与五款信息框任意组合；旧配置缺省时仍用原蓝色，不改变人物、位置或预热开关。
+- **原生图库与组合预览：** 每个主题选项同时显示两个模式；所选人物与框实时合成预览。示例数字明确标注为合成数据，预览不查询真实额度或触发模型请求；DeepSeek 预览的峰谷切换仅影响本地画面。
+- **显式保存与热更新：** 保留草稿／保存流程、修订冲突保护和原子保存；约一秒内更新实际卡片，不移动桌宠、不写拖动坐标，不新增鼠标交互。
+- **仅测试本次新功能：** 13 项定向测试及 54222 条原生断言，覆盖 480 个主题／模式／人物／尺寸／峰谷组合；新主题文字对比度、保存、鉴权接口与合成预览也已检查。未重跑全量测试，不发送真实模型请求。真实 WPF 渲染已核对；更新后宿主设置页仍需完整重启后的实机视觉验收。
+- **市场范围：** 仅保留并同步最早的 [PR #6267](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6267)，其他两条提交已关闭。同步不代表合并或收录。
 
 ### v0.6.1 更新重点：设置集成进 DSH
 
@@ -62,10 +72,10 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.6.1 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.1) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.6.3 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.3) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.6.1 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.6.3 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -144,6 +154,10 @@ DSH → 设置 → 桌宠 → **Codex 自动预热**，在任一计费显示模�
 
 ## English guide
 
+### What's new in v0.6.3 — independent card themes
+
+Five independent card palettes (original sea blue, forest green, caramel brown, violet gray and paper white) pair freely with all six character skins. Every palette supports both DeepSeek balance/cache/peak pricing and Codex five-hour/weekly quotas/reset/status. The host-native gallery shows both modes and a live character/card combination using explicitly labeled synthetic values; previews make no model calls. `cardTheme` is independent of `skin`; old saves retain the original blue. Explicit revision-checked saves hot-reload without moving the pet or touching position storage, account/model selection or warm-up switches. Right-click remains inert. Only the new-feature suite is run: 13 tests and 54222 isolated native assertions over 480 combinations, plus build/package audits; no full regression or live model calls. Real WPF rendering is verified; refreshed live host settings still need post-restart visual acceptance. Fully restart DSH once after upgrading. Only the original marketplace PR #6267 is retained and synchronized; the other two submissions are closed. Synchronization does not imply approval or merger.
+
 ### What's new in v0.6.1 — host-native settings, inert right-click
 
 Settings and statistics now live in **DSH → Settings → 桌宠**, using the host's theme and settings sidebar instead of a standalone popup. Select options as drafts, then explicitly save; the pet hot-reloads them in roughly one second. Keep the original preferences/ledgers and opt-in warm-up flags. Dragging writes only a separate position file; atomic saves reject stale revisions and never overwrite malformed JSON. Opening the page makes no model calls. Restart DSH once after updating the local installed plugin to load its new client and API routes. Right-click does nothing and opens no menu or window; existing left-button dragging stays. The old WPF settings window requires explicit developer flags `-Preview -PreviewSettings`. Existing marketplace PRs are synchronized for v0.6.1; this does not imply approval or merger. The earlier settings-migration regression passed 123 tests / 2847 native assertions on source and installed copies; this release runs only focused right-click checks plus build/package verification, not the full suite. The refreshed live host page still needs post-restart visual verification.
@@ -177,7 +191,7 @@ Settings and statistics now live in **DSH → Settings → 桌宠**, using the h
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.6.1](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.1), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.6.3](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.3), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"

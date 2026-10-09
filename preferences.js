@@ -1,15 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { CARD_THEME_IDS } from './card-themes.js';
 
 export const DEFAULT_PREFERENCES = Object.freeze({
-  skin: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
+  skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
   codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
   codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
 });
 
 const enums = {
   skin: ['default', 'night', 'snow', 'mint', 'cherry', 'star'],
+  cardTheme: CARD_THEME_IDS,
   unit: ['cny', 'token'], size: ['tiny', 'small', 'medium', 'large'],
   billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'],
 };

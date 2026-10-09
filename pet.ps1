@@ -10,6 +10,7 @@ $script:SingleInstance = New-Object Threading.Mutex($true, $mutexName, [ref]$cre
 if (-not $created) { exit 0 }
 $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $script:ProjectRoot 'skin-catalog.ps1')
+. (Join-Path $script:ProjectRoot 'card-themes.ps1')
 . (Join-Path $script:ProjectRoot 'usage-view.ps1')
 $script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
 $script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
@@ -23,20 +24,21 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
 function Set-PetPreferenceValues($saved) {
   # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
-  $defaults = [ordered]@{ skin = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
+  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
   foreach ($key in $defaults.Keys) {
     # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
     if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     else { $script:Prefs[$key] = $defaults[$key] }
   }
   $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
-  foreach ($key in @('skin', 'unit', 'size', 'billingMode', 'codexUnit')) {
+  foreach ($key in @('skin', 'cardTheme', 'unit', 'size', 'billingMode', 'codexUnit')) {
     if ($script:Prefs[$key] -isnot [string]) { $script:Prefs[$key] = $defaults[$key] }
   }
   if ($script:Prefs.skin -notin @($script:SkinCatalog | ForEach-Object { $_.id })) { $script:Prefs.skin = 'default' }
+  if ($script:Prefs.cardTheme -cnotin @($script:CardThemeCatalog | ForEach-Object { $_.id })) { $script:Prefs.cardTheme = 'default' }
   if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
   if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
   if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
@@ -95,6 +97,7 @@ function Reload-PetPreferences([switch]$Force) {
     if ($saved -isnot [pscustomobject]) { throw 'Pet preferences must be a JSON object.' }
     $oldMode = $script:Prefs.billingMode
     $oldSize = $script:Prefs.size
+    $oldTheme = $script:Prefs.cardTheme
     Set-PetPreferenceValues $saved
     $script:PreferencesFileTicks = $file.LastWriteTimeUtc.Ticks
     if ($null -ne $script:Window) {
@@ -105,6 +108,10 @@ function Reload-PetPreferences([switch]$Force) {
         if ($script:Prefs.billingMode -ne $oldMode) { Refresh-BillingMode }
         elseif ($script:Prefs.size -ne $oldSize) { Set-PetSize }
         Update-PetUsageCard
+        if ($script:CardThemeCatalog -and $script:Prefs.cardTheme -cne $oldTheme) {
+          $peak = if ((Get-BillingMode) -eq 'codex') { $false } else { Get-Peak }
+          Update-PetCardTheme $peak
+        }
       } finally { $script:ApplyingPetPreferences = $false }
     }
   } catch {
@@ -173,18 +180,18 @@ $xaml = @'
         </Border>
         <TextBlock Name="Balance" Canvas.Left="13" Canvas.Top="49" Width="150"
                    Text="查询中…" FontFamily="Microsoft YaHei" FontSize="26" FontWeight="Bold" Foreground="White"/>
-        <Border Canvas.Left="165" Canvas.Top="58" Width="1" Height="20" Background="#458BAC"/>
+        <Border Name="BalanceDivider" Canvas.Left="165" Canvas.Top="58" Width="1" Height="20" Background="#458BAC"/>
         <TextBlock Name="Rate" Canvas.Left="174" Canvas.Top="66" Width="80" TextAlignment="Right"
                    Text="缓存命中 —" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A8EEFF"/>
       </Canvas>
       <Canvas Name="CodexPanel" Width="260" Height="154" Visibility="Collapsed">
-        <TextBlock Canvas.Left="13" Canvas.Top="25" Text="CODEX · 订阅额度" FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
+        <TextBlock Name="CodexHeader" Canvas.Left="13" Canvas.Top="25" Text="CODEX · 订阅额度" FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
         <TextBlock Name="QuotaStatus" Canvas.Left="122" Canvas.Top="26" Width="125" TextAlignment="Right" Text="等待 DSH 数据" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#ABD2E3" TextTrimming="CharacterEllipsis"/>
-        <TextBlock Canvas.Left="13" Canvas.Top="51" Text="5 小时剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
+        <TextBlock Name="FiveHourLabel" Canvas.Left="13" Canvas.Top="51" Text="5 小时剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
         <TextBlock Name="FiveHourValue" Canvas.Left="147" Canvas.Top="42" Width="100" TextAlignment="Right" Text="—" FontFamily="Segoe UI" FontSize="23" FontWeight="Bold" Foreground="#7DE9FF"/>
         <ProgressBar Name="FiveHourBar" Canvas.Left="13" Canvas.Top="71" Width="234" Height="5" Minimum="0" Maximum="100" Value="0" Foreground="#7DE9FF" Background="#234B66" BorderThickness="0"/>
         <TextBlock Name="FiveHourReset" Canvas.Left="13" Canvas.Top="80" Width="234" Text="重置时间未知" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#A9CEE2"/>
-        <TextBlock Canvas.Left="13" Canvas.Top="108" Text="周额度剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
+        <TextBlock Name="WeeklyLabel" Canvas.Left="13" Canvas.Top="108" Text="周额度剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
         <TextBlock Name="WeeklyValue" Canvas.Left="147" Canvas.Top="99" Width="100" TextAlignment="Right" Text="—" FontFamily="Segoe UI" FontSize="23" FontWeight="Bold" Foreground="#B7ABFF"/>
         <ProgressBar Name="WeeklyBar" Canvas.Left="13" Canvas.Top="128" Width="234" Height="5" Minimum="0" Maximum="100" Value="0" Foreground="#B7ABFF" Background="#234B66" BorderThickness="0"/>
         <TextBlock Name="WeeklyReset" Canvas.Left="13" Canvas.Top="137" Width="234" Text="重置时间未知" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#A9CEE2"/>
@@ -456,13 +463,7 @@ function Start-Event($item, [DateTime]$now) {
 
 function Set-ModeVisual([bool]$peak) {
   $script:ModeLabel.Text = if ($peak) { '☀ 峰值价' } else { '☾ 谷时价' }
-  $start = [Windows.Media.ColorConverter]::ConvertFromString($(if ($peak) { '#F43C345C' } else { '#F407294B' }))
-  $end = [Windows.Media.ColorConverter]::ConvertFromString($(if ($peak) { '#F3A05B53' } else { '#F4146884' }))
-  $script:Card.Background = [Windows.Media.LinearGradientBrush]::new($start, $end, 18)
-  $script:Card.BorderBrush = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#FFD184' } else { '#91DFFA' }))
-  $script:CardBaseBorder = $script:Card.BorderBrush
-  $script:PriceBadge.Background = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#A06943' } else { '#1D5B75' }))
-  $script:Rate.Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#FFE1A8' } else { '#95E8FF' }))
+  Update-PetCardTheme $peak
 }
 
 function Start-IdleMotion([bool]$peak) {

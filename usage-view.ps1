@@ -89,6 +89,12 @@ function Refresh-BillingMode {
   $script:LastActivityAt = if ($script:Stats.activityAt -gt 0) { [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$script:Stats.activityAt).UtcDateTime } else { [DateTime]::UtcNow }
   Update-PetUsageCard
   Set-PetSize
+  # Apply the mode's palette now, without waiting for the next peak transition.
+  # Standalone usage/AST consumers may omit the optional WPF palette module.
+  if ($script:CardThemeCatalog) {
+    $peak = if ((Get-BillingMode) -eq 'codex') { $false } elseif ($Preview) { [bool]$script:PreviewPeak } else { Get-Peak }
+    Update-PetCardTheme $peak
+  }
 }
 
 function Test-PetEventVisible($item) {

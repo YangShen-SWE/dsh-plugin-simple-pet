@@ -1,3 +1,5 @@
+import { CARD_THEMES, cardCssVariables } from './card-themes.js';
+
 // Browser-only UI. Host preferences remain in the original global JSON file.
 export function statBuckets(days, range, unit, now = new Date()) {
   const dayKey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -40,6 +42,18 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
   const { useState, useEffect, useRef } = React;
   const base = 'api/dsh-plugin-simple-pet';
   const skins = [['default','海蓝鲸鱼娘'],['night','夜航科技娘'],['snow','雪绒鲸娘'],['mint','薄荷茶娘'],['cherry','樱桃汽水娘'],['star','星砂魔法娘']];
+  const cardPreview = (theme, mode, { compact = false, peak = false } = {}) => {
+    const codex = mode === 'codex';
+    const bar = (label, value, secondary = false) => h('div', { className: 'pet-card-quota-row', key: label },
+      h('div', { className: 'pet-card-quota-label' }, h('span', null, label), h('strong', { className: secondary ? 'secondary' : '' }, `${value}%`)),
+      h('div', { className: `pet-card-bar${secondary ? ' secondary' : ''}`, 'aria-hidden': true }, h('span', { style: { width: `${value}%` } })),
+      !compact && h('span', { className: 'pet-card-reset' }, secondary ? '重置 10-16 09:30' : '重置 10-09 14:30'));
+    return h('div', { className: `pet-card-preview ${codex ? 'codex' : 'deepseek'}${compact ? ' compact' : ''}`, style: cardCssVariables(theme, mode, peak), 'data-pet-theme': theme, 'data-pet-mode': mode, 'data-preview-only': true },
+      h('div', { className: 'pet-card-header' }, h('span', null, compact ? codex ? 'Codex' : 'DeepSeek' : codex ? 'CODEX · 订阅额度' : 'DEEPSEEK · API 余额'),
+        !codex && h('span', { className: 'pet-card-badge' }, peak ? '☀ 峰值价' : '☾ 谷时价')),
+      codex ? h('div', { className: 'pet-card-quota' }, !compact && h('span', { className: 'pet-card-status' }, '当前账号 · 官方报告'), bar('5h 剩余', 82), bar('周剩余', 64, true)) :
+        h('div', { className: 'pet-card-balance-row' }, h('strong', { className: 'pet-card-balance' }, '¥128.60'), h('span', { className: 'pet-card-hit' }, compact ? '命中 84%' : '缓存命中 84%')));
+  };
   async function request(path, init = {}) {
     const res = await send(`${base}/${path}`, { credentials: 'same-origin', ...init });
     const data = await res.json();
@@ -50,6 +64,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const [loaded, setLoaded] = useState(null), [draft, setDraft] = useState(null), [snapshot, setSnapshot] = useState(null);
     const [error, setError] = useState(''), [note, setNote] = useState(''), [busy, setBusy] = useState(false);
     const [tab, setTab] = useState('settings'), [range, setRange] = useState('week'), [chartUnit, setChartUnit] = useState('tokens');
+    const [previewPeak, setPreviewPeak] = useState(false);
     const alive = useRef(false), draftRef = useRef(null), editVersion = useRef(0), saving = useRef(false);
     useEffect(() => {
       alive.current = true;
@@ -128,6 +143,19 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       tab === 'settings' ? h('form', { onSubmit: e => { e.preventDefault(); void save(); } },
         group('形象', h('div', { className: 'pet-settings-gallery', role: 'radiogroup', 'aria-label': '桌宠形象' }, ...skins.map(([id, name]) => h('button', { type: 'button', role: 'radio', key: id, 'aria-checked': draft.skin === id, disabled: busy, onClick: () => change('skin', id) },
           h('span', { className: 'pet-settings-previews', 'aria-hidden': true }, ...(codex ? ['valley'] : ['valley','peak']).map(mode => h('span', { className: 'pet-settings-sprite', key: mode, title: codex ? '形象预览' : mode === 'peak' ? '峰时' : '谷时', style: { backgroundImage: `url(${base}/asset/${id}-${mode}.png)` } }))), h('span', null, name))))),
+        group('信息框主题',
+          h('p', { className: 'pet-settings-hint' }, '文字信息框与 2D 人物独立选择，可自由搭配。每一版同时包含 DeepSeek 与 Codex 两种样式；卡片内数字为示意，不是实时数据。'),
+          h('div', { className: 'pet-settings-theme-gallery', role: 'radiogroup', 'aria-label': '信息框主题' }, ...CARD_THEMES.map(theme => h('button', {
+            type: 'button', role: 'radio', key: theme.id, 'aria-checked': (draft.cardTheme || 'default') === theme.id, 'aria-label': `${theme.name}，含 DeepSeek 与 Codex 两种样式`, disabled: busy,
+            'data-card-theme-choice': theme.id, onClick: () => change('cardTheme', theme.id),
+          }, h('span', { className: 'pet-theme-name' }, theme.name), h('span', { className: 'pet-theme-pair', 'aria-hidden': true }, cardPreview(theme.id, 'deepseek', { compact: true }), cardPreview(theme.id, 'codex', { compact: true })), h('span', { className: 'pet-theme-description' }, theme.description))))),
+        group('组合预览',
+          h('div', { className: 'pet-combination-caption' }, `${skins.find(([id]) => id === draft.skin)?.[1] || skins[0][1]} × ${CARD_THEMES.find(theme => theme.id === (draft.cardTheme || 'default'))?.name || CARD_THEMES[0].name}`),
+          !codex && h('div', { className: 'pet-settings-actions', 'aria-label': '组合预览峰谷姿态' }, ...[[false,'谷时预览'],[true,'峰时预览']].map(([peak, label]) => h('button', { type: 'button', key: label, 'aria-pressed': previewPeak === peak, onClick: () => setPreviewPeak(peak) }, label))),
+          h('div', { className: 'pet-combination-preview', 'aria-label': '所选人物与信息框组合示意' },
+            h('div', { className: 'pet-combination-stage', 'aria-hidden': true }, h('div', { className: 'pet-combination-sprite', style: { backgroundImage: `url(${base}/asset/${draft.skin}-${!codex && previewPeak ? 'peak' : 'valley'}.png)` } })),
+            cardPreview(draft.cardTheme || 'default', codex ? 'codex' : 'deepseek', { peak: !codex && previewPeak })),
+          h('p', { className: 'pet-settings-hint' }, '仅预览外观，数字为示意。切换人物不会更改主题；切换主题不会更改人物。点击保存后桌宠应用，两种模式自动使用对应样式。')),
         group('显示与休眠',
           field('billingMode', '计费显示模式', [['deepseek','DeepSeek'],['codex','Codex 订阅']]),
           field('size', '桌宠尺寸', [['tiny','超小'],['small','小'],['medium','中'],['large','大']]),
