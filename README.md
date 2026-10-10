@@ -1,14 +1,23 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.6.3 · 独立信息框主题与双模式组合预览](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.3)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.6.4 · 陪伴与舒适：安静模式、温和反馈](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.4)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
-> **v0.6.3 更新：** 新增独立的信息框主题，保留海盐蓝，增加苔庭墨绿、焦糖暖棕、暮云紫灰、月笺雾白；每款均适配 DeepSeek／Codex，能与六款人物自由组合。在 **DSH → 设置 → 桌宠** 中分别选择人物和信息框，组合预览使用明确标注的合成数据，点击保存后约一秒内热更新。保留右键无交互、左键拖动和原有预热偏好；升级不启用预热，主题切换不发模型请求。升级后请完整重启 DSH 一次。
+> **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
 
 ## 中文使用说明
+
+### v0.6.4 更新重点：陪伴与舒适
+
+- 入口：**DSH → 设置 → 桌宠 → 陪伴与舒适**。更改先成为草稿，点击「保存设置」才生效；首次载入本次代码请完整退出（含托盘）并重启 DSH，后续保存通常约一秒内应用。
+- **安静模式：** 立即取消在播动作、闪光／暴击、飘字与睡眠动画；保留静态角色和真实睡姿，余额、额度、统计与活动记录继续更新。退出后不补播旧事件，也不会清空下方已保存的舒适偏好。
+- **温和反馈：** 复用中性待机帧，调用时做低幅确认；连续事件仅合并展示，不修改用量账本。不播放受伤、饥饿／喂养或连续消费奖励动作；真实余额及额度仍照常显示。
+- **独立舒适选项：** 减少动态（同时停用动态飘字和闪光）、关闭闪光／暴击标记、关闭用量飘字。减少动态保留静态待机／睡姿；普通闲置休眠继续按真实调用活动判断。
+- **兼容与边界：** 缺省仍为经典反馈，四个新开关默认关闭；人物、主题、模式、尺寸、位置和预热偏好保留。安静只控制桌宠视觉，不停止已经开启的后台预热，也不屏蔽原有预热失败安全提醒。不开启新的预热，不增加模型请求、声音、弹窗或桌宠鼠标交互。
+- 源码与解包各通过 **40 项定向检查、8344 条原生断言**，仅覆盖新增和受影响行为，未运行全量套件。评审范围、优化优先级与验证限制见 [陪伴首版评审与优化清单](COMPANION-REVIEW.md)。发布 v0.6.4 并仅同步最早市场 PR #6267；是否合并以 PR 实际状态为准，不绕过仓库权限或检查。实际宿主设置页与动作舒适度仍待完整重启后验收。
 
 ### v0.6.3 更新重点：信息框与人物独立搭配
 
@@ -72,10 +81,10 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.6.3 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.3) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.6.4 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.4) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.6.3 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.6.4 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -154,6 +163,10 @@ DSH → 设置 → 桌宠 → **Codex 自动预热**，在任一计费显示模�
 
 ## English guide
 
+### What's new in v0.6.4 — companion and comfort
+
+Optional quiet mode cancels active visual effects while real balances, quotas, ledgers and activity/cursors continue updating; leaving static mode does not replay old events. Gentle feedback reuses neutral frames with a 450ms/1px confirmation, merges presentation only and avoids wounded/feeding/spend-reward poses. Independent reduced-motion, flash and floating-text controls preserve their saved values when quiet overrides them. Classic remains the default and all four new switches default off. Use **DSH → Settings → 桌宠 → 陪伴与舒适**, edit drafts, then explicitly save. Preserve skins, themes, drag positions, accounts/models and opt-in warm-up safeguards; no additional model calls or pet interactions. Source and extracted packages each pass 40 focused checks including 8344 native assertions; no full regression is claimed. Live host-page and subjective comfort acceptance still require a full restart. Only original marketplace PR #6267 is synchronized; merge status depends on actual repository permissions and checks.
+
 ### What's new in v0.6.3 — independent card themes
 
 Five independent card palettes (original sea blue, forest green, caramel brown, violet gray and paper white) pair freely with all six character skins. Every palette supports both DeepSeek balance/cache/peak pricing and Codex five-hour/weekly quotas/reset/status. The host-native gallery shows both modes and a live character/card combination using explicitly labeled synthetic values; previews make no model calls. `cardTheme` is independent of `skin`; old saves retain the original blue. Explicit revision-checked saves hot-reload without moving the pet or touching position storage, account/model selection or warm-up switches. Right-click remains inert. Only the new-feature suite is run: 13 tests and 54222 isolated native assertions over 480 combinations, plus build/package audits; no full regression or live model calls. Real WPF rendering is verified; refreshed live host settings still need post-restart visual acceptance. Fully restart DSH once after upgrading. Only the original marketplace PR #6267 is retained and synchronized; the other two submissions are closed. Synchronization does not imply approval or merger.
@@ -191,7 +204,7 @@ Settings and statistics now live in **DSH → Settings → 桌宠**, using the h
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.6.3](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.3), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.6.4](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.4), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"
@@ -199,7 +212,7 @@ Settings and statistics now live in **DSH → Settings → 桌宠**, using the h
 
 3. Disable/remove old `@local/dsh-simpledesktoppet` or `@local/dsh-deepseek-pet` copies. To upgrade, update the installed copy via the market or reinstall the updated folder.
 4. **Save running work, fully quit DSH including its background/tray process, and relaunch it.** Refreshing the browser or reopening the pet does not update the loaded Node backend.
-5. Enable `dsh-plugin-simple-pet`. DSH owns the pet window lifecycle. Open DSH → Settings → 桌宠 for preferences/statistics. Right-click shows the new settings location and Exit Pet; closing settings does not close the pet. Keep the installed directory in place.
+5. Enable `dsh-plugin-simple-pet`. DSH owns the pet window lifecycle. Open DSH → Settings → 桌宠 for preferences/statistics. Right-click is inert; closing settings does not close the pet. Left-button dragging remains; disable the plugin to close its pet. Keep the installed directory in place.
 
 The market submission uses the [latest stable release tarball](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz); [PR #6267](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/6267) is subject to maintainer review. The pet is single-instance. Manual startup is only a troubleshooting fallback.
 

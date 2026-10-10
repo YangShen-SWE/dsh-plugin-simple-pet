@@ -1,5 +1,15 @@
 # 更新记录 / Changelog
 
+## v0.6.4 — 陪伴与舒适首版（2026-10-10）
+
+- 产品方案评审团的产品、UX、架构三位成员分别只读评审，主会话汇总优化清单并实现首版；未增加专家、未把分析意见当作实机验收。
+- 原生设置顶部增加「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字；草稿明确标注，显式保存、修订冲突和原子写盘保留。旧配置仍默认经典，四个新开关默认关闭。
+- 安静／减少动态统一停止角色、余额、叠图、睡眠及飘字动画，保留静态待机／睡姿；余额、额度、统计、活动时间与事件游标继续更新。进入／退出静态模式消耗边界快照，退出不补播旧事件；安静不会清空其他偏好。
+- 温和反馈复用现有中性待机帧，以 450ms／1px 确认替代受伤或消费奖励动作；连续事件仅合并展示，不修改原始事件、统计或账本。独立舒适开关热更新时立即清理正在播放的效果。
+- 不新增桌宠鼠标交互、声音、弹窗、联网轮询或陪伴模型请求；不改变人物、主题、尺寸、位置、账号和预热选择。安静仅控制视觉，不停止已经开启的后台预热，也不屏蔽原有失败安全提醒。
+- 随机陪伴动作、完整请求生命周期、休息邀请、开工便签和自动安静时段暂缓；敏感心情记录不纳入首版。优化清单与证据见 [COMPANION-REVIEW.md](COMPANION-REVIEW.md)。源码与解包各通过 40 项新增／受影响检查，包含 8344 条原生断言；不运行全量套件。发布 v0.6.4、更新本地副本，并仅同步最早市场 PR #6267；按正常权限尝试合并，不把同步当作收录。宿主设置页视觉、键盘与主观舒适度仍待完整重启后实机验收。
+- Add optional quiet/gentle/comfort presentation controls with classic defaults, atomic explicit-save drafts, live data/cursor consumption and no replay. Stop real WPF clocks in static modes; use existing neutral frames for gentle confirmations without spend rewards or ledger changes. Preserve opt-in warm-up safeguards and inert right-click. Publish v0.6.4 and update the local copy; synchronize only original marketplace PR #6267 and attempt a normal permission-checked merge. Source and extracted packages each pass 40 focused checks / 8344 native assertions. No live model requests or full regression claim; refreshed host-page acceptance remains pending a full restart.
+
 ## v0.6.3 — 独立信息框主题与双模式组合预览（2026-10-09）
 
 - 新增独立于人物 `skin` 的 `cardTheme` 偏好：海盐蓝（default，保留原色）、苔庭墨绿（forest）、焦糖暖棕（amber）、暮云紫灰（violet）、月笺雾白（paper）。五款各具渐变、文字、徽标、额度条、边框及圆角，可与六款人物任意组合，缺省／非法旧字段仍回退原蓝色。

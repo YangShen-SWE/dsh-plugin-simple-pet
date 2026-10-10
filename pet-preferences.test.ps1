@@ -21,6 +21,9 @@ function Get-FunctionText($ast, [string]$name) {
   return $node.Extent.Text
 }
 $petPath = Join-Path $ProjectRoot 'pet.ps1'
+. (Join-Path $ProjectRoot 'skin-catalog.ps1')
+. (Join-Path $ProjectRoot 'card-themes.ps1')
+. (Join-Path $ProjectRoot 'companion-view.ps1')
 foreach ($path in @($petPath, $PSCommandPath)) {
   $bytes = [IO.File]::ReadAllBytes($path)
   Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) 'owned PowerShell source preserves UTF-8 BOM'

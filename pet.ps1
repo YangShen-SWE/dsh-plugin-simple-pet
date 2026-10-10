@@ -11,6 +11,7 @@ if (-not $created) { exit 0 }
 $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $script:ProjectRoot 'skin-catalog.ps1')
 . (Join-Path $script:ProjectRoot 'card-themes.ps1')
+. (Join-Path $script:ProjectRoot 'companion-view.ps1')
 . (Join-Path $script:ProjectRoot 'usage-view.ps1')
 $script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
 $script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
@@ -24,15 +25,19 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
 function Set-PetPreferenceValues($saved) {
   # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
-  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
+  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
   foreach ($key in $defaults.Keys) {
     # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
     if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     else { $script:Prefs[$key] = $defaults[$key] }
   }
+  foreach ($key in @('quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
+    if ($script:Prefs[$key] -isnot [bool]) { $script:Prefs[$key] = $false }
+  }
+  if ($script:Prefs.feedbackStyle -isnot [string] -or $script:Prefs.feedbackStyle -cnotin @('classic', 'gentle')) { $script:Prefs.feedbackStyle = 'classic' }
   $savedWarmupTimeValid = $saved.codexWarmupTime -is [string] -and $saved.codexWarmupTime -cmatch '\A(?:[01][0-9]|2[0-3]):[0-5][0-9]\z'
   foreach ($key in @('skin', 'cardTheme', 'unit', 'size', 'billingMode', 'codexUnit')) {
     if ($script:Prefs[$key] -isnot [string]) { $script:Prefs[$key] = $defaults[$key] }
@@ -112,6 +117,7 @@ function Reload-PetPreferences([switch]$Force) {
           $peak = if ((Get-BillingMode) -eq 'codex') { $false } else { Get-Peak }
           Update-PetCardTheme $peak
         }
+        Sync-PetFeedbackPolicy
       } finally { $script:ApplyingPetPreferences = $false }
     }
   } catch {
@@ -394,18 +400,26 @@ function Read-PetState {
       $script:Instance = $snapshot.instance
       $script:Cursor = [int64]$snapshot.seq
       $script:Queue.Clear()
-    } else {
+    } elseif (-not $script:SkipPresentationSnapshot -and -not (Get-PetFeedbackPolicy).Static) {
+      $policy = Get-PetFeedbackPolicy
       foreach ($item in $snapshot.events) {
-        if ([int64]$item.seq -gt $script:Cursor -and (Test-PetEventVisible $item)) { $script:Queue.Enqueue($item) }
+        if ([int64]$item.seq -gt $script:Cursor -and (Test-PetEventVisible $item)) {
+          if ($policy.Gentle -and $item.kind -in @('combo', 'depleted', 'recharge')) { continue }
+          # Coalesce presentation only; ledger/snapshot/activity remain untouched.
+          if ($policy.Gentle) { $script:Queue.Clear() }
+          $script:Queue.Enqueue($item)
+        }
       }
-      $script:Cursor = [int64]$snapshot.seq
     }
+    $script:Cursor = [int64]$snapshot.seq
+    $script:SkipPresentationSnapshot = $false
     Update-PetUsageCard
   } catch { }
 }
 
 function Start-Track($target, [Windows.DependencyProperty]$property, [double]$duration,
                      [double[]]$times, [double[]]$values) {
+  if ((Get-PetFeedbackPolicy).Static) { return }
   $animation = New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
   $animation.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($duration))
   $animation.FillBehavior = [Windows.Media.Animation.FillBehavior]::Stop
@@ -424,6 +438,10 @@ function Start-Track($target, [Windows.DependencyProperty]$property, [double]$du
 }
 
 function Start-Event($item, [DateTime]$now) {
+  $policy = Get-PetFeedbackPolicy
+  if ($policy.Static) { return }
+  # These extra semantic events never become another gentle performance.
+  if ($policy.Gentle -and $item.kind -in @('combo', 'depleted', 'recharge')) { return }
   $script:Current = [string]$item.kind
   $script:ActionStart = $now
   $pace = if ($script:LastPeak) { 0.88 } else { 1.08 }
@@ -432,19 +450,26 @@ function Start-Event($item, [DateTime]$now) {
     'depleted' { 1250 } 'recharge' { 1050 } default { 580 }
   }
   $script:ActionEnd = $now.AddMilliseconds($duration * $pace)
+  if ($policy.Gentle) { $duration = 450; $pace = 1; $script:ActionEnd = $now.AddMilliseconds(450) }
   $script:NextEventAt = $now.AddMilliseconds(560)
   Start-EventMotion ($duration * $pace) $script:LastPeak
-  if ($script:Current -eq 'combo') { return }
+  if ($script:Current -eq 'combo' -or -not $policy.Floats) { return }
+  if ($policy.Gentle) {
+    foreach ($entry in $script:ActiveFloats) { $script:Root.Children.Remove($entry.control) }
+    $script:ActiveFloats.Clear()
+  }
   $float = New-Object Windows.Controls.TextBlock
   $float.Text = Format-Cost $item
   $float.FontFamily = New-Object Windows.Media.FontFamily('Microsoft YaHei')
   $float.FontWeight = [Windows.FontWeights]::ExtraBold
-  $float.FontSize = if ($script:Current -eq 'miss') { 20 } else { 17 }
-  $float.Foreground = switch ($script:Current) {
-    'miss' { [Windows.Media.Brushes]::Tomato }
-    'output' { [Windows.Media.Brushes]::LightGoldenrodYellow }
-    'recharge' { [Windows.Media.Brushes]::PaleGreen }
-    default { [Windows.Media.Brushes]::LightCyan }
+  $float.FontSize = if (-not $policy.Gentle -and $script:Current -eq 'miss') { 20 } else { 17 }
+  $float.Foreground = if ($policy.Gentle) { [Windows.Media.Brushes]::LightCyan } else {
+    switch ($script:Current) {
+      'miss' { [Windows.Media.Brushes]::Tomato }
+      'output' { [Windows.Media.Brushes]::LightGoldenrodYellow }
+      'recharge' { [Windows.Media.Brushes]::PaleGreen }
+      default { [Windows.Media.Brushes]::LightCyan }
+    }
   }
   $float.Effect = New-Object Windows.Media.Effects.DropShadowEffect
   $float.Effect.Color = [Windows.Media.Colors]::DarkSlateGray
@@ -467,6 +492,7 @@ function Set-ModeVisual([bool]$peak) {
 }
 
 function Start-IdleMotion([bool]$peak) {
+  if ((Get-PetFeedbackPolicy).Static) { $script:NextIdlePulse = [DateTime]::MaxValue; return }
   $script:SleepMark.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
   $script:SleepMark.Visibility = 'Collapsed'
   $script:Rotate.BeginAnimation([Windows.Media.RotateTransform]::AngleProperty, $null)
@@ -493,6 +519,7 @@ function Start-IdleMotion([bool]$peak) {
 
 function Start-SleepLoop($target, [Windows.DependencyProperty]$property,
                          [double]$from, [double]$to, [double]$halfCycle) {
+  if ((Get-PetFeedbackPolicy).Static) { return }
   $animation = New-Object Windows.Media.Animation.DoubleAnimation
   $animation.From = $from; $animation.To = $to
   $animation.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($halfCycle))
@@ -503,6 +530,7 @@ function Start-SleepLoop($target, [Windows.DependencyProperty]$property,
 
 function Start-SleepMotion([bool]$peak) {
   $script:Current = 'sleep'
+  if ((Get-PetFeedbackPolicy).Static) { $script:SleepMark.Visibility = 'Collapsed'; return }
   $script:SleepMark.Visibility = 'Visible'
   [Windows.Controls.Canvas]::SetTop($script:SleepMark, $(if ($peak) { 42 } else { 39 }))
   $script:SleepMark.Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString($(if ($peak) { '#FFAB62' } else { '#528BE8' }))
@@ -515,6 +543,28 @@ function Start-SleepMotion([bool]$peak) {
 }
 
 function Start-EventMotion([double]$duration, [bool]$peak) {
+  $policy = Get-PetFeedbackPolicy
+  if ($policy.Static) { return }
+  if ($policy.Gentle) {
+    # Reuse the neutral idle frame; acknowledge gently, independent of cost/peak.
+    $script:SleepMark.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
+    $script:SleepMark.Visibility = 'Collapsed'
+    $script:CriticalMark.Visibility = 'Collapsed'
+    foreach ($entry in @(
+      @{ target = $script:Move; property = [Windows.Media.TranslateTransform]::XProperty; value = 0.0 },
+      @{ target = $script:Move; property = [Windows.Media.TranslateTransform]::YProperty; value = 0.0 },
+      @{ target = $script:Scale; property = [Windows.Media.ScaleTransform]::ScaleXProperty; value = 1.0 },
+      @{ target = $script:Scale; property = [Windows.Media.ScaleTransform]::ScaleYProperty; value = 1.0 },
+      @{ target = $script:Rotate; property = [Windows.Media.RotateTransform]::AngleProperty; value = 0.0 },
+      @{ target = $script:BalanceScale; property = [Windows.Media.ScaleTransform]::ScaleXProperty; value = 1.0 },
+      @{ target = $script:BalanceScale; property = [Windows.Media.ScaleTransform]::ScaleYProperty; value = 1.0 }
+    )) { $entry.target.BeginAnimation($entry.property, $null); $entry.target.SetValue($entry.property, $entry.value) }
+    $script:Card.BorderBrush = $script:CardBaseBorder
+    $script:FlashEnd = [DateTime]::MaxValue; $script:MarkEnd = [DateTime]::MaxValue
+    Start-Track $script:Move ([Windows.Media.TranslateTransform]::YProperty) 450 @(0,.5,1) @(0,1.0,0)
+    $script:IdleMotionActive = $false
+    return
+  }
   $script:SleepMark.BeginAnimation([Windows.UIElement]::OpacityProperty, $null)
   $script:SleepMark.Visibility = 'Collapsed'
   $a = if ($peak) { 1.22 } else { 0.78 }
@@ -577,6 +627,11 @@ function Start-EventMotion([double]$duration, [bool]$peak) {
       $script:Card.BorderBrush = [Windows.Media.Brushes]::PaleGreen
     }
   }
+  if (-not $policy.Flash) {
+    $script:CriticalMark.Visibility = 'Collapsed'
+    $script:Card.BorderBrush = $script:CardBaseBorder
+    $script:FlashEnd = [DateTime]::MaxValue; $script:MarkEnd = [DateTime]::MaxValue
+  }
   if ($x.Count -ne $t.Count) { $x = @($t | ForEach-Object { 0.0 }) }
   if ($y.Count -ne $t.Count) { $y = @($t | ForEach-Object { 0.0 }) }
   if ($sx.Count -ne $t.Count) { $sx = @($t | ForEach-Object { 1.0 }) }
@@ -612,6 +667,7 @@ $script:Timer = New-Object Windows.Threading.DispatcherTimer
 $script:Timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $script:Timer.Add_Tick({
   $now = [DateTime]::UtcNow
+  Sync-PetFeedbackPolicy
   if ($Preview) {
     if ($PreviewSleep -and $now -ge $script:NextPreviewModeAt) {
       $script:PreviewPeak = -not $script:PreviewPeak
@@ -647,7 +703,9 @@ $script:Timer.Add_Tick({
     if ($script:Current -in @('idle','blink')) { Start-IdleMotion $peak }
     if ($script:Current -eq 'sleep') { Start-SleepMotion $peak }
   }
-  if ($now -ge $script:NextEventAt -and $script:Queue.Count -gt 0) {
+  $policy = Get-PetFeedbackPolicy
+  if ($policy.Static) { $script:Queue.Clear() }
+  if (-not $policy.Static -and $now -ge $script:NextEventAt -and $script:Queue.Count -gt 0) {
     $item = $script:Queue.Dequeue()
     if ($Preview -or (Test-PetEventVisible $item)) { Start-Event $item $now }
   }
@@ -663,22 +721,10 @@ $script:Timer.Add_Tick({
   }
   if ($script:Current -in @('idle','blink') -and $script:Queue.Count -eq 0 -and $shouldSleep) { Start-SleepMotion $peak }
   if ($script:Current -eq 'idle' -and $script:Queue.Count -eq 0 -and $now -ge $script:NextIdlePulse) { Start-IdleMotion $peak }
-  if ($script:Current -eq 'idle' -and $script:Queue.Count -eq 0 -and ($now - $script:LastBlink).TotalSeconds -ge 6) {
+  if (-not $policy.Static -and $script:Current -eq 'idle' -and $script:Queue.Count -eq 0 -and ($now - $script:LastBlink).TotalSeconds -ge 6) {
     $script:Current = 'blink'; $script:ActionStart = $now; $script:ActionEnd = $now.AddMilliseconds(300); $script:LastBlink = $now
   }
-  $mode = if ($peak) { 'peak' } else { 'valley' }
-  $key = "$($script:Prefs.skin)-$mode-$($script:Current)"
-  if ($key -ne $script:LastFrameKey) {
-    if ($null -ne $script:Sprite.Source) {
-      $script:OldSprite.Source = $script:Sprite.Source
-      $fade = New-Object Windows.Media.Animation.DoubleAnimation
-      $fade.From = 1; $fade.To = 0
-      $fade.Duration = [Windows.Duration]::new([TimeSpan]::FromMilliseconds($(if ($modeChanged) { 180 } else { 100 })))
-      $script:OldSprite.BeginAnimation([Windows.UIElement]::OpacityProperty, $fade)
-    }
-    $script:Sprite.Source = Get-Frame $script:Prefs.skin $mode $script:Current
-    $script:LastFrameKey = $key
-  }
+  Update-PetSpriteFrame $peak
   if ($now -ge $script:FlashEnd) { $script:Card.BorderBrush = $script:CardBaseBorder; $script:FlashEnd = [DateTime]::MaxValue }
   if ($now -ge $script:MarkEnd) { $script:CriticalMark.Visibility = 'Collapsed'; $script:MarkEnd = [DateTime]::MaxValue }
   Clear-ExpiredFloats $now

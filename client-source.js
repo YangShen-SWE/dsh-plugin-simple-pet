@@ -37,6 +37,14 @@ export function quotaReset(window, timeZone) {
   catch { return '重置时间未知'; }
 }
 
+export function companionSummary(prefs = {}) {
+  const quiet = prefs.quietMode === true, reduced = prefs.reduceMotion === true, gentle = prefs.feedbackStyle === 'gentle';
+  const motion = quiet ? '安静模式：角色静止；保持到关闭并保存' : reduced ? '减少动态：保留静态待机/睡姿，不播放动态反馈' : gentle ? '温和反馈：中性姿态、轻量确认，连续事件合并展示' : '经典反馈：保留原有角色动作';
+  const flashes = !quiet && !reduced && !gentle && prefs.disableFlashes !== true;
+  const floats = !quiet && !reduced && prefs.disableFloats !== true;
+  return `${motion}；闪光/暴击${flashes ? '开启' : '关闭'}；用量飘字${floats ? '开启' : '关闭'}。余额、额度与统计继续更新。`;
+}
+
 export function createSimplePetClient(React, send = (url, init) => (globalThis.__DSH_TRANSPORT__?.fetch ?? globalThis.fetch)(url, init)) {
   const h = React.createElement;
   const { useState, useEffect, useRef } = React;
@@ -112,17 +120,17 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         if (alive.current) {
           setLoaded(data);
           if (editVersion.current === version) { setDraft(data.values); draftRef.current = data.values; }
-          setNote(editVersion.current === version ? '已保存。桌宠将在约 1 秒内应用；无需重启。' : '已保存提交的设置，后续编辑仍待保存。');
+          setNote(editVersion.current === version ? '已保存；已加载本次代码的运行中桌宠通常约 1 秒内应用。首次更新代码需完整退出并重启 DSH。' : '已保存提交的设置，后续编辑仍待保存。');
         }
       } catch (e) { if (alive.current) setError(e.status === 409 ? '设置已被其他页面修改，未覆盖。请重新读取后再编辑；当前草稿已保留。' : e.message); }
       finally { saving.current = false; if (alive.current) setBusy(false); }
     };
     const field = (key, label, options) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
-      h('select', { value: draft[key], disabled: busy, onChange: e => change(key, e.target.value) }, ...options.map(([value, text]) => h('option', { key: value, value }, text))));
+      h('select', { name: key, value: draft[key] ?? (key === 'feedbackStyle' ? 'classic' : ''), disabled: busy, onChange: e => change(key, e.target.value) }, ...options.map(([value, text]) => h('option', { key: value, value }, text))));
     const number = (key, label, min, max) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
       h('input', { type: 'number', min, max, step: 1, value: draft[key], disabled: busy, onChange: e => change(key, e.target.value === '' ? '' : Number(e.target.value)) }));
     const toggle = (key, label) => h('label', { className: 'pet-settings-toggle', key },
-      h('input', { type: 'checkbox', checked: draft[key] === true, disabled: busy, onChange: e => change(key, e.target.checked) }), h('span', null, label));
+      h('input', { name: key, type: 'checkbox', checked: draft[key] === true, disabled: busy, onChange: e => change(key, e.target.checked) }), h('span', null, label));
     const group = (title, ...children) => h('section', { className: 'pet-settings-group' }, h('h3', null, title), ...children);
     const codex = draft?.billingMode === 'codex';
     const today = calendarDate(loaded?.timeZone), key = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
@@ -141,6 +149,16 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       error && h('p', { role: 'alert', className: 'pet-settings-error' }, error), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
       !draft ? h('div', null, h('p', null, error ? '设置不可用，未修改原文件。' : '正在读取桌宠设置…'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取')) :
       tab === 'settings' ? h('form', { onSubmit: e => { e.preventDefault(); void save(); } },
+        group('陪伴与舒适',
+          h('p', { className: 'pet-settings-hint' }, '只改变桌宠视觉表现，不停止额度检测、统计或已开启的自动预热，也不屏蔽原有预热失败安全提醒。更改是草稿，保存后才应用。'),
+          toggle('quietMode', '安静模式（关闭后保存，恢复下方偏好；不补播旧事件）'),
+          field('feedbackStyle', '反馈风格', [['classic','经典：保留原有动作'],['gentle','温和：中性姿态与轻量确认']]),
+          toggle('reduceMotion', '减少动态（静态角色，同时关闭动态飘字与闪光）'),
+          toggle('disableFlashes', '关闭闪光与暴击标记'),
+          toggle('disableFloats', '关闭用量飘字'),
+          draft.quietMode && h('p', { className: 'pet-settings-hint' }, '安静期间下方偏好被临时覆盖，但不会被清空；仍可编辑，退出安静并保存后恢复。'),
+          h('p', { className: 'pet-settings-hint', role: 'status', 'data-companion-summary': true }, '草稿表现（保存后应用）：' + companionSummary(draft)),
+          h('p', { className: 'pet-settings-hint' }, '温和档复用中性待机帧，不播放受伤、暴击、喂养表情；连续反馈合并，真实用量仍完整统计。下面仅为静态外观示意，不演示动作。')),
         group('形象', h('div', { className: 'pet-settings-gallery', role: 'radiogroup', 'aria-label': '桌宠形象' }, ...skins.map(([id, name]) => h('button', { type: 'button', role: 'radio', key: id, 'aria-checked': draft.skin === id, disabled: busy, onClick: () => change('skin', id) },
           h('span', { className: 'pet-settings-previews', 'aria-hidden': true }, ...(codex ? ['valley'] : ['valley','peak']).map(mode => h('span', { className: 'pet-settings-sprite', key: mode, title: codex ? '形象预览' : mode === 'peak' ? '峰时' : '谷时', style: { backgroundImage: `url(${base}/asset/${id}-${mode}.png)` } }))), h('span', null, name))))),
         group('信息框主题',

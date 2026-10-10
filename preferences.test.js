@@ -29,6 +29,7 @@ test('defaults are exact, frozen, fresh and do not expose unknown values', () =>
     skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
     codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
     codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
+    quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
   });
   assert.ok(Object.isFrozen(DEFAULT_PREFERENCES));
   for (const raw of [undefined, null, [], true, 5, 'night', { left: 1, top: 2, secret: 'private' }]) {
@@ -115,7 +116,7 @@ test('multi-field updates are atomic and preserve unknown fields and legacy posi
     codexQuotaRefreshSeconds: 3600, codexWarmupDaily: true, codexWarmupTime: '00:00',
     codexWarmupReset: true, codexWarmupStartup: true, sleepMinutes: 240 };
   const after = await f.store.update(patch, before.revision);
-  assert.deepEqual(after.values, patch);
+  assert.deepEqual(after.values, { ...DEFAULT_PREFERENCES, ...patch });
   const saved = JSON.parse(await fs.readFile(f.file, 'utf8'));
   for (const key of ['left', 'top', 'future', '__proto__', 'constructor']) assert.deepEqual(saved[key], raw[key]);
   assert.equal(after.revision, hash(await fs.readFile(f.file)));

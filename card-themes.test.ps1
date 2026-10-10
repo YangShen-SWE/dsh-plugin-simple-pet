@@ -36,6 +36,7 @@ $petAst = $asts['pet.ps1']
 $script:Window = $null
 . (Join-Path $ProjectRoot 'skin-catalog.ps1')
 . (Join-Path $ProjectRoot 'card-themes.ps1')
+. (Join-Path $ProjectRoot 'companion-view.ps1')
 Assert-Equal ($script:CardThemeCatalog.id -join ',') 'default,forest,amber,violet,paper' 'five canonical ids'
 Assert-Equal $script:CardThemeCatalog[1].name '苔庭墨绿' 'BOM-less canonical Chinese names decode as UTF-8'
 Update-PetCardTheme $true
