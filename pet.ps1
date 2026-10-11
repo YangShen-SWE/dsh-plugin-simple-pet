@@ -1,5 +1,6 @@
 ﻿param([ValidateSet('desktop', 'web')][string]$DshProfile = 'desktop', [switch]$Preview,
-      [switch]$PreviewSleep, [switch]$PreviewSettings, [switch]$PreviewChartYear)
+      [switch]$PreviewSleep, [switch]$PreviewSettings, [switch]$PreviewChartYear,
+      [string]$PetRunId = '')
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
@@ -13,6 +14,7 @@ $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $script:ProjectRoot 'card-themes.ps1')
 . (Join-Path $script:ProjectRoot 'companion-view.ps1')
 . (Join-Path $script:ProjectRoot 'usage-view.ps1')
+. (Join-Path $script:ProjectRoot 'preferences-applied.ps1')
 $script:DataDir = Join-Path $env:LOCALAPPDATA 'DshSimpleDesktopPet'
 $script:StateFile = Join-Path $script:DataDir "state-$DshProfile.json"
 $script:SettingsFile = Join-Path $script:DataDir $(if ($Preview) { 'settings-preview.json' } else { 'settings.json' })
@@ -86,43 +88,48 @@ function Restore-PetPosition($saved) {
 }
 
 $script:NextPrefsReload = [DateTime]::MinValue
-$script:PreferencesFileTicks = $null
 $script:ApplyingPetPreferences = $false
+Initialize-PetPreferencesReceipt
 function Reload-PetPreferences([switch]$Force) {
   if ($Preview) { return }
   $now = [DateTime]::UtcNow
   if (-not $Force -and $now -lt $script:NextPrefsReload) { return }
   $script:NextPrefsReload = $now.AddSeconds(1)
+  $feedbackKey = $script:AppliedFeedbackKey
+  $feedbackPolicy = $script:AppliedFeedbackPolicy
   try {
-    $file = Get-Item -LiteralPath $script:SettingsFile -ErrorAction Stop
-    if (-not $Force -and $file.LastWriteTimeUtc.Ticks -eq $script:PreferencesFileTicks) { return }
-    $content = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8
-    if ($null -eq $content -or -not $content.TrimStart().StartsWith('{')) { throw 'Pet preferences must be a JSON object.' }
-    $saved = $content | ConvertFrom-Json
-    if ($saved -isnot [pscustomobject]) { throw 'Pet preferences must be a JSON object.' }
+    $snapshot = Read-PetPreferenceSnapshot $script:SettingsFile
+    if (-not $Force -and -not $script:PetPreferencesDirty -and $snapshot.Revision -ceq $script:PetCandidateRevision) { return }
+    $retry = $script:PetPreferencesDirty
+    Invalidate-PetPreferencesApplication
     $oldMode = $script:Prefs.billingMode
     $oldSize = $script:Prefs.size
     $oldTheme = $script:Prefs.cardTheme
-    Set-PetPreferenceValues $saved
-    $script:PreferencesFileTicks = $file.LastWriteTimeUtc.Ticks
+    Set-PetPreferenceValues $snapshot.Saved
     if ($null -ne $script:Window) {
-      # Refresh-BillingMode still owns queue/float/activity transitions. Its resize
-      # must not clamp or save coordinates just because host settings changed.
+      # Refresh-BillingMode still owns real mode transitions; retry only repairs
+      # presentation, without moving/saving coordinates or restarting activity.
       $script:ApplyingPetPreferences = $true
       try {
         if ($script:Prefs.billingMode -ne $oldMode) { Refresh-BillingMode }
-        elseif ($script:Prefs.size -ne $oldSize) { Set-PetSize }
+        elseif ($retry -or $script:Prefs.size -ne $oldSize) { Set-PetSize }
         Update-PetUsageCard
-        if ($script:CardThemeCatalog -and $script:Prefs.cardTheme -cne $oldTheme) {
+        if ($script:CardThemeCatalog -and ($retry -or $script:Prefs.cardTheme -cne $oldTheme)) {
           $peak = if ((Get-BillingMode) -eq 'codex') { $false } else { Get-Peak }
           Update-PetCardTheme $peak
         }
         Sync-PetFeedbackPolicy
       } finally { $script:ApplyingPetPreferences = $false }
     }
+    $script:PetPreferencesSaved = $snapshot.Saved
+    $script:PetCandidateRevision = $snapshot.Revision
+    $script:PetPreferencesDirty = $false
   } catch {
-    # Preserve last-known visuals on incomplete/invalid external writes, but never
-    # leave any automatic warmup switch enabled after a failed preference read.
+    # Roll back optimistic policy cache, not real activity or native coordinates.
+    $script:AppliedFeedbackKey = $feedbackKey
+    $script:AppliedFeedbackPolicy = $feedbackPolicy
+    Invalidate-PetPreferencesApplication
+    # Keep last-known visuals, but disable automation after any failed reload.
     $script:Prefs.codexWarmupDaily = $false
     $script:Prefs.codexWarmupReset = $false
     $script:Prefs.codexWarmupStartup = $false
@@ -135,8 +142,9 @@ if ($Preview) {
   Set-PetPreferenceValues $saved
 } else {
   Reload-PetPreferences -Force
-  # Read legacy coordinates only at startup; subsequent reloads never move WPF.
-  try { $saved = Get-Content -LiteralPath $script:SettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+  # Reuse the same decoded startup snapshot; no second settings read/hash race.
+  # Legacy coordinates are restored only at startup, never during hot reload.
+  $saved = $script:PetPreferencesSaved
 }
 Restore-PetPosition $saved
 
@@ -414,7 +422,7 @@ function Read-PetState {
     $script:Cursor = [int64]$snapshot.seq
     $script:SkipPresentationSnapshot = $false
     Update-PetUsageCard
-  } catch { }
+  } catch { Invalidate-PetPreferencesApplication }
 }
 
 function Start-Track($target, [Windows.DependencyProperty]$property, [double]$duration,
@@ -666,6 +674,9 @@ $script:MarkEnd = [DateTime]::MinValue
 $script:Timer = New-Object Windows.Threading.DispatcherTimer
 $script:Timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $script:Timer.Add_Tick({
+  $feedbackKey = $script:AppliedFeedbackKey
+  $feedbackPolicy = $script:AppliedFeedbackPolicy
+  try {
   $now = [DateTime]::UtcNow
   Sync-PetFeedbackPolicy
   if ($Preview) {
@@ -728,6 +739,12 @@ $script:Timer.Add_Tick({
   if ($now -ge $script:FlashEnd) { $script:Card.BorderBrush = $script:CardBaseBorder; $script:FlashEnd = [DateTime]::MaxValue }
   if ($now -ge $script:MarkEnd) { $script:CriticalMark.Visibility = 'Collapsed'; $script:MarkEnd = [DateTime]::MaxValue }
   Clear-ExpiredFloats $now
+  Complete-PetPreferencesApplication
+  } catch {
+    $script:AppliedFeedbackKey = $feedbackKey
+    $script:AppliedFeedbackPolicy = $feedbackPolicy
+    Invalidate-PetPreferencesApplication
+  }
 })
 
 # Right-click intentionally has no action, context menu, or settings popup.
@@ -743,7 +760,12 @@ $dragHandler = [Windows.Input.MouseButtonEventHandler]{
 }
 $script:Card.Add_MouseLeftButtonDown($dragHandler)
 $script:SpriteLayer.Add_MouseLeftButtonDown($dragHandler)
-$script:Window.Add_Closed({ $script:Timer.Stop(); $script:SingleInstance.ReleaseMutex(); $script:SingleInstance.Dispose() })
+$script:Window.Add_Loaded({ Start-PetPreferencesReceipt })
+$script:Window.Add_Closed({
+  $script:Timer.Stop()
+  Stop-PetPreferencesReceipt
+  $script:SingleInstance.ReleaseMutex(); $script:SingleInstance.Dispose()
+})
 
 if (-not $Preview) { Read-PetState }
 if ($Preview -and $PreviewSettings) {

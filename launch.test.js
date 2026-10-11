@@ -21,7 +21,9 @@ test('DSH desktop activation launches the Windows pet and disposal closes it', (
     },
   });
   assert.equal(launched.command, 'powershell.exe');
-  assert.deepEqual(launched.args.slice(-4), ['-File', join('C:\\Program Files\\DSH Pet', 'pet.ps1'), '-DshProfile', 'desktop']);
+  assert.deepEqual(launched.args.slice(-6, -2), ['-File', join('C:\\Program Files\\DSH Pet', 'pet.ps1'), '-DshProfile', 'desktop']);
+  assert.equal(launched.args.at(-2), '-PetRunId');
+  assert.match(launched.args.at(-1), /^[a-f0-9-]{36}$/);
   assert.equal(launched.options.windowsHide, true);
   assert.equal(launched.options.cwd, 'C:\\Program Files\\DSH Pet');
   assert.equal(child.unreferenced, true);

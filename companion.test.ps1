@@ -25,6 +25,7 @@ $petAst = $asts['pet.ps1']
 . (Join-Path $ProjectRoot 'skin-catalog.ps1')
 . (Join-Path $ProjectRoot 'card-themes.ps1')
 . (Join-Path $ProjectRoot 'companion-view.ps1')
+. (Join-Path $ProjectRoot 'preferences-applied.ps1')
 . (Join-Path $ProjectRoot 'usage-view.ps1')
 foreach ($name in @('Prefs', 'Sizes', 'Cells')) {
   $node = $petAst.Find({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$script:' + $name) }, $true)

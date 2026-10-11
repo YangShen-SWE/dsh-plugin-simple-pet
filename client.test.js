@@ -61,8 +61,8 @@ test('mount only reads local settings and state; defaults never enable warm-up',
   const transport = mockTransport(), ui = harness(transport.send);
   try {
     await settle(); ui.render();
-    assert.equal(transport.calls.length, 2); assert(transport.calls.every(c => c.method !== 'PUT'));
-    assert.deepEqual(transport.calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
+    assert.equal(transport.calls.length, 3); assert(transport.calls.every(c => c.method !== 'PUT'));
+    assert.deepEqual(transport.calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
     const checkboxes = ui.nodes().filter(n => n.type === 'input' && n.props.type === 'checkbox');
     assert.equal(checkboxes.length, 7); assert(checkboxes.every(n => n.props.checked === false));
     assert.equal(checkboxes.filter(n => n.props.name?.startsWith('codexWarmup')).length, 3);
@@ -77,7 +77,7 @@ test('edits remain drafts until explicit submit, and time plus daily toggle comm
     await settle(); ui.render();
     ui.find(n => n.type === 'input' && n.props.type === 'text').props.onChange({ target: { value: '08:15' } });
     ui.find(n => n.type === 'input' && n.props.name === 'codexWarmupDaily').props.onChange({ target: { checked: true } });
-    ui.render(); assert.equal(transport.calls.length, 2);
+    ui.render(); assert.equal(transport.calls.length, 3);
     const radio = ui.find(n => n.props.role === 'radio' && ui.text(n).includes('薄荷')); radio.props.onClick(); ui.render();
     ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} });
     await settle(); ui.render();

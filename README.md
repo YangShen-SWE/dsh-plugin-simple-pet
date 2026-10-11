@@ -1,12 +1,24 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.6.4 · 陪伴与舒适：安静模式、温和反馈](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.4)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.6.5 · 可靠设置应用回执](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.5)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v0.6.5 更新重点：设置应用回执（2026-10-11）
+
+**为什么更新：** 旧版「保存成功」只代表写盘，不代表桌宠窗口已完成配置和视觉应用；按 mtime 跳过或提前缓存还可能遗漏变更和失败重试。新版分开显示草稿、已保存和最近成功应用，避免误报。
+
+- 已核查优化清单，补上 P1「桌宠是否实际接收设置」：保存成功只表示已写盘；页面另显示「等待桌宠应用」「最近确认桌宠已应用」或「尚未确认」。未保存草稿始终与已保存版本分开。
+- 正常桌宠在窗口 Loaded、完整原生视觉 tick 成功后写入独立本地回执；沿用现有计时器每 5 秒续期。后台核对自己启动的进程、启动标识、profile、原始文件 SHA-256、17 项实际偏好与 15 秒短租约；旧进程、旧版本、错误归一化、过期或失败均不确认。
+- 设置页只在既有 5 秒刷新中追加本地只读状态查询，不增加模型请求、桌宠交互、后台轮询定时器或遥测。写回执失败不崩溃，不写配置、位置或统计；视觉应用失败会失效缓存并重试，而不是沿用旧的成功状态。
+- 本轮源码 **43 项新增／受影响 Node 检查**及 **62996 条原生断言**通过，使用私有临时文件、模拟宿主和真实隐藏 WPF；未运行全量套件。详见 [优化清单](COMPANION-REVIEW.md)。完整宿主实机与主观舒适度验收仍待你重启后进行。
+- 本增量以 **v0.6.5** 发布，说明更新原因并同步唯一保留的市场 PR #6267；发布不等于上游合并。载入新后台、客户端和 PowerShell 后请完整退出 DSH（含托盘）并重启一次；之后保存无需再次重启。
+
+v0.6.5 rationale: saving previously proved only a disk write, not successful native application. Distinguish an atomic preference save from a recent successful native application. An owned process/run/profile, the full raw revision, all 17 effective values and a short renewable lease must agree. Reuse existing refresh/tick timers, fail closed on stale or failed evidence, and keep drafts separate. Only focused checks run; no live model requests, telemetry or automatic host restart. Released as v0.6.5 following user authorization; marketplace synchronization does not imply merging. Live host-page acceptance remains pending.
 
 ## 中文使用说明
 
@@ -81,10 +93,10 @@ Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰�
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。使用 DeepSeek 时，在 **DSH 内**配置官方 API Key 或登录 DeepSeek 账号；使用 Codex 时，在 DSH 中安装并启用支持的订阅插件并登录。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.6.4 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.4) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.6.5 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.5) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.6.4 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.6.5 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -204,7 +216,7 @@ Settings and statistics now live in **DSH → Settings → 桌宠**, using the h
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure official DeepSeek credentials in DSH, or install/enable and sign in to a supported Codex subscription addon. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.6.4](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.4), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.6.5](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.5), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"

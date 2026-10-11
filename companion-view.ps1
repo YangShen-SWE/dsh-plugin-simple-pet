@@ -82,10 +82,12 @@ function Sync-PetFeedbackPolicy {
   $key = "$($policy.Quiet)|$($policy.Static)|$($policy.Gentle)|$($policy.Flash)|$($policy.Floats)"
   if ($key -ceq $script:AppliedFeedbackKey) { return }
   $previous = $script:AppliedFeedbackPolicy
-  $script:AppliedFeedbackKey = $key; $script:AppliedFeedbackPolicy = $policy
   $now = [DateTime]::UtcNow
   # First active-mode tick keeps the legacy queue/animation startup untouched.
-  if ($null -eq $previous -and -not $policy.Static) { return }
+  if ($null -eq $previous -and -not $policy.Static) {
+    $script:AppliedFeedbackKey = $key; $script:AppliedFeedbackPolicy = $policy
+    return
+  }
   Reset-PetFeedbackEffects $now
   # Consume the current snapshot at both static-mode boundaries; never replay it.
   if ($null -eq $previous -or $previous.Static -ne $policy.Static -or $previous.Quiet -ne $policy.Quiet) {
@@ -97,4 +99,6 @@ function Sync-PetFeedbackPolicy {
     if ($script:Current -eq 'sleep') { Start-SleepMotion $peak } else { Start-IdleMotion $peak }
   }
   Update-PetSpriteFrame $peak
+  # Commit only after actual cleanup/motion/frame application succeeds; failures retry.
+  $script:AppliedFeedbackKey = $key; $script:AppliedFeedbackPolicy = $policy
 }

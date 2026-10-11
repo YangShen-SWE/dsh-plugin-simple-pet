@@ -1,5 +1,17 @@
 # 更新记录 / Changelog
 
+## v0.6.5 — 可靠设置应用回执（2026-10-11）
+
+- **更新原因：** 原先「保存成功」只能证明设置写盘，无法证明正常桌宠已经加载并成功应用视觉配置；仅看 mtime 或提前缓存也可能遗漏同时间戳变更及失败后的重试。本次把草稿、保存和真实近期应用确认分离，避免错误的成功提示。
+
+- 核查优化清单后完成 P1 设置应用确认：不再把保存响应或草稿摘要当成桌宠已接收；独立显示等待、最近确认、离线及未确认状态。保存立即清除旧证据，错误／旧宿主保留草稿，过期租约失效。
+- 后台为自己启动的子进程传入唯一 runId；只读鉴权 `/api/dsh-plugin-simple-pet/application` 同时核对当前进程、profile、原始配置 SHA-256、17 项实际偏好和 15 秒有效期。前后重复读取配置与运行状态，拒绝配置／进程竞态，接口不返回 PID、runId、偏好值或私有路径。
+- 原生桌宠一次读字节、严格 UTF-8 解码并对同一字节计算修订；不依赖 mtime 跳过。窗口 Loaded 后仍只发布 pending，完整原生 tick 成功才发布 applied；沿用现有 tick 每 5 秒续期，关闭仅撤销自己的回执。Preview、无 runId 的旧启动与其他活进程不得写入该成功证据。
+- 回执采用独立文件与原子临时替换，不写配置、坐标或统计。设置／数据／视觉异常使证据失效、修复缓存并重试；反馈策略缓存改为实际帧应用成功后提交。保留默认经典、双模式主题、人物、睡眠、拖动、右键无交互和原有预热选择。
+- 源码 43 项新增／受影响 Node 检查、62996 条原生断言通过（回执 214、主题 54222、陪伴 8344、偏好 216）。仅私有临时文件、模拟宿主与隐藏 WPF；不跑全量套件、不发真实模型请求、不自动重启。用户授权后发布 v0.6.5、更新本地安装并同步唯一市场 PR #6267；合并须遵守上游权限与检查。实际完整宿主页仍待重启后验收。
+- **Why:** a successful save proved only a disk write, not a successful pet visual update; timestamp-only skips and premature caches could also hide changes and retries.
+- Add a short-lived, process/run/profile-bound native application receipt, separate from saving and drafts. Require the same raw-byte revision and effective settings after a successful full visual tick; reject stale, mismatched or raced evidence. Reuse existing timers, keep receipt writes isolated and atomic, and retry failed presentation rather than caching success early. Released as v0.6.5 following user authorization. Saving previously proved only a disk write; this release closes that gap without claiming continuous visual or live-host acceptance.
+
 ## v0.6.4 — 陪伴与舒适首版（2026-10-10）
 
 - 产品方案评审团的产品、UX、架构三位成员分别只读评审，主会话汇总优化清单并实现首版；未增加专家、未把分析意见当作实机验收。

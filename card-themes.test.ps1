@@ -37,6 +37,7 @@ $script:Window = $null
 . (Join-Path $ProjectRoot 'skin-catalog.ps1')
 . (Join-Path $ProjectRoot 'card-themes.ps1')
 . (Join-Path $ProjectRoot 'companion-view.ps1')
+. (Join-Path $ProjectRoot 'preferences-applied.ps1')
 Assert-Equal ($script:CardThemeCatalog.id -join ',') 'default,forest,amber,violet,paper' 'five canonical ids'
 Assert-Equal $script:CardThemeCatalog[1].name '苔庭墨绿' 'BOM-less canonical Chinese names decode as UTF-8'
 Update-PetCardTheme $true
@@ -296,7 +297,7 @@ try {
   $calls = $script:ThemeCalls
   Reload-PetPreferences -Force
   Assert-True ($script:ThemeCalls -gt $calls) 'theme-only reload really invokes renderer without peak transition'
-  Assert-Equal $script:LastPeak $false 'theme-only reload does not require changing LastPeak'
+  Assert-Equal $script:LastPeak $null 'theme-only reload invalidates old peak cache until the next complete visual tick'
   Assert-Equal $script:Prefs.cardTheme 'forest' 'external theme preference applies'
   Assert-Equal $script:Prefs.skin 'star' 'external theme preserves chosen skin'
   Assert-Brush $script:Card.BorderBrush '#91BFA2' 'hot reload actual forest border'
@@ -308,7 +309,7 @@ try {
   Assert-True (($script:NextPrefsReload - [DateTime]::UtcNow).TotalSeconds -le 1) 'reload cadence stays one second'
   $script:NextPrefsReload = [DateTime]::MinValue
   Reload-PetPreferences
-  Assert-Equal $script:ThemeCalls $calls 'unchanged preference timestamp skips theme apply'
+  Assert-Equal $script:ThemeCalls $calls 'unchanged raw preference bytes skip theme apply'
   $script:TestPeak = $true
   [void](Write-External ([ordered]@{ skin = 'star'; cardTheme = 'paper'; billingMode = 'deepseek'; size = 'medium' }))
   $script:NextPrefsReload = [DateTime]::MinValue

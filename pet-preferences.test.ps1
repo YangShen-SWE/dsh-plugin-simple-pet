@@ -24,6 +24,7 @@ $petPath = Join-Path $ProjectRoot 'pet.ps1'
 . (Join-Path $ProjectRoot 'skin-catalog.ps1')
 . (Join-Path $ProjectRoot 'card-themes.ps1')
 . (Join-Path $ProjectRoot 'companion-view.ps1')
+. (Join-Path $ProjectRoot 'preferences-applied.ps1')
 foreach ($path in @($petPath, $PSCommandPath)) {
   $bytes = [IO.File]::ReadAllBytes($path)
   Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) 'owned PowerShell source preserves UTF-8 BOM'
@@ -37,7 +38,7 @@ foreach ($variable in @('script:Prefs', 'script:Sizes')) {
   $node = $petAst.Find({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq ('$' + $variable) }, $true)
   Invoke-Expression $node.Extent.Text
 }
-foreach ($name in @('Set-PetPreferenceValues', 'Test-FinitePetCoordinate', 'Restore-PetPosition', 'Reload-PetPreferences', 'Save-Prefs', 'Set-PetSize')) {
+foreach ($name in @('Get-Peak', 'Set-PetPreferenceValues', 'Test-FinitePetCoordinate', 'Restore-PetPosition', 'Reload-PetPreferences', 'Save-Prefs', 'Set-PetSize')) {
   Invoke-Expression (Get-FunctionText $petAst $name)
 }
 foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
@@ -47,9 +48,10 @@ $script:ProductionRefresh = ${function:Refresh-BillingMode}
 $script:RefreshCount = 0
 function Refresh-BillingMode { $script:RefreshCount++; & $script:ProductionRefresh }
 $script:ReadCount = 0
-function Get-Content([string]$LiteralPath, [switch]$Raw, [string]$Encoding) {
+$script:ProductionReadSnapshot = ${function:Read-PetPreferenceSnapshot}
+function Read-PetPreferenceSnapshot([string]$path) {
   $script:ReadCount++
-  Microsoft.PowerShell.Management\Get-Content -LiteralPath $LiteralPath -Raw:$Raw -Encoding $Encoding
+  & $script:ProductionReadSnapshot $path
 }
 $literal = $petAst.Find({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value.StartsWith('<Window') }, $true)
 $script:Window = [Windows.Markup.XamlReader]::Parse($literal.Value)
@@ -110,11 +112,11 @@ try {
   Assert-Equal $script:ReadCount $reads 'animation-frequency calls are throttled'
   $script:NextPrefsReload = [DateTime]::MinValue
   Reload-PetPreferences
-  Assert-Equal $script:ReadCount $reads 'unchanged last-write ticks skip even an eligible read'
+  Assert-Equal $script:ReadCount ($reads + 1) 'eligible read hashes unchanged bytes instead of relying on mtime'
   Write-External ($valid.Replace('"tiny"', '"large"'))
   $script:NextPrefsReload = [DateTime]::MinValue
   Reload-PetPreferences
-  Assert-Equal $script:ReadCount ($reads + 1) 'external changed ticks trigger a single read'
+  Assert-Equal $script:ReadCount ($reads + 2) 'changed bytes trigger one additional eligible snapshot read'
   Assert-Equal $script:RefreshCount 1 'size-only change does not refresh billing mode'
   Assert-Equal $script:Window.Width 340.0 'size-only reload invokes production Set-PetSize'
   Assert-Equal $script:Window.Left 123.25 'size-only change preserves exact left'

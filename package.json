@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-simple-pet",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "A Windows desktop pet for DeepSeek billing and Codex subscription quotas in DSH.",
   "repository": { "type": "git", "url": "https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git" },
   "license": "SEE LICENSE",
@@ -15,6 +15,7 @@
     "build": "node build-client.js",
     "test:themes": "node --test --test-isolation=none card-themes.test.js",
     "test:companion": "node --test --test-isolation=none companion.test.js",
-    "test": "node --test companion.test.js card-themes.test.js billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js codex.test.js warmup.test.js warmup-call.test.js preferences.test.js preferences-route.test.js native-settings.test.js client.test.js"
+    "test:application": "node --test --test-isolation=none preferences-applied.test.js",
+    "test": "node --test preferences-applied.test.js companion.test.js card-themes.test.js billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js codex.test.js warmup.test.js warmup-call.test.js preferences.test.js preferences-route.test.js native-settings.test.js client.test.js"
   }
 }

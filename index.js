@@ -11,6 +11,7 @@ import { CodexWarmupScheduler } from './warmup.js';
 import { runCodexWarmup } from './warmup-call.js';
 import { PreferencesStore } from './preferences.js';
 import { preferencesHandler } from './preferences-route.js';
+import { applicationHandler } from './preferences-applied.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -84,14 +85,14 @@ async function fetchAccountBalance(ctx) {
   return { status: 'ready', balance };
 }
 
-export function launchPetProcess({ root = ROOT, profile = 'desktop', platform = process.platform, spawnProcess = spawn, logger } = {}) {
+export function launchPetProcess({ root = ROOT, profile = 'desktop', platform = process.platform, spawnProcess = spawn, logger, runId = randomUUID() } = {}) {
   if (platform !== 'win32' || profile !== 'desktop') return () => {};
-  let stopped = false;
+  let stopped = false, active = false, finished = false;
   let child;
   try {
     child = spawnProcess('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden',
-      '-File', join(root, 'pet.ps1'), '-DshProfile', profile,
+      '-File', join(root, 'pet.ps1'), '-DshProfile', profile, '-PetRunId', runId,
     ], { cwd: root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   } catch (error) {
     logger?.warn?.('simple-pet: could not start the pet window: %o', error);
@@ -100,17 +101,22 @@ export function launchPetProcess({ root = ROOT, profile = 'desktop', platform = 
   let stderr = '';
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', chunk => { stderr = (stderr + chunk).slice(-2048); });
+  child.on('spawn', () => { if (!stopped && !finished) active = true; });
   child.on('error', error => {
+    active = false; finished = true;
     if (!stopped) logger?.warn?.('simple-pet: could not start the pet window: %o', error);
   });
   child.on('exit', code => {
+    active = false; finished = true;
     if (!stopped && code !== 0) logger?.warn?.('simple-pet: pet window exited with code %s: %s', code, stderr.trim());
   });
   child.unref();
-  return () => {
-    stopped = true;
+  const stop = () => {
+    stopped = true; active = false;
     if (child.pid && child.exitCode === null && !child.killed) child.kill();
   };
+  stop.applicationRuntime = () => ({ runId, pid: child.pid, active: active && !stopped && child.exitCode === null && !child.killed });
+  return stop;
 }
 
 export function codexQuotaRefreshSeconds(raw) {
@@ -431,11 +437,18 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   });
 
   const preferencesStore = new PreferencesStore(prefsFile);
+  let petStop = null;
+  const applicationRuntime = () => live ? petStop?.applicationRuntime?.() : null;
   ctx.inject(['webServer', 'connection'], routeCtx => {
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/preferences',
       handler: preferencesHandler(preferencesStore, (req, res) => guard(routeCtx, req, res)),
     }), 'simple-pet: host settings preferences');
+    routeCtx.effect(() => routeCtx.webServer.register({
+      kind: 'exact', path: '/api/dsh-plugin-simple-pet/application',
+      handler: applicationHandler({ store: preferencesStore, receiptFile: join(dataDir, `settings-applied-${profile}.json`),
+        profile, runtime: applicationRuntime, authorize: (req, res) => guard(routeCtx, req, res) }),
+    }), 'simple-pet: local application receipt');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
       const method = req.method ?? 'GET';
@@ -479,7 +492,10 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   void pollWarmup();
   snapshot();
   pollBalance();
-  ctx.effect(() => petLauncher({ root: ROOT, profile, logger: ctx.logger }), 'deepseek-pet: window');
+  ctx.effect(() => {
+    petStop = petLauncher({ root: ROOT, profile, logger: ctx.logger, runId: instance });
+    return () => { const stop = petStop; petStop = null; stop?.(); };
+  }, 'deepseek-pet: window');
   ctx.effect(() => async () => {
     live = false; clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
     clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await warmup.stop(); await snapshotTask;
