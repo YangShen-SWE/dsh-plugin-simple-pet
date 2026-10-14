@@ -2,7 +2,21 @@
 
 **最新版：[v0.6.5 · 可靠设置应用回执](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.5)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
-Windows 桌面上的 Q 版 DSH 桌宠：DeepSeek 模式看余额、用量与峰谷价格；Codex 模式看订阅的 5 小时及周额度，用角色动作反馈调用。A small native Windows pet for DeepSeek billing and Codex subscription quotas in DeepSeek Harness (DSH).
+陪你工作的 Windows 二次元桌宠：随手查看 DeepSeek 余额与峰谷价格、Codex 额度与重置时间。六款人物与五种信息框自由搭配，支持安静模式、温和反馈和 DSH 原生设置。
+
+A quiet Windows anime desktop companion for DeepSeek balances and Codex quotas, with six character skins, five interchangeable card themes, gentle feedback and native DSH settings.
+
+## 界面展示 / Screenshots
+
+以下使用生产 WPF 界面与内置人物素材渲染，数字为示例，不含真实账号或用户数据。These are real plugin UI renders with synthetic values, not live account data.
+
+![DeepSeek 模式：余额、峰谷价牌与缓存命中](docs/screenshots/deepseek.png)
+
+![Codex 模式：5 小时与周额度、重置时间](docs/screenshots/codex.png)
+
+![六款人物与五种信息框的独立搭配示例](docs/screenshots/characters-and-themes.png)
+
+市场展示顺序由仓库根目录的 [screenshots.json](screenshots.json) 声明；图片更新在市场下一次目录构建与客户端刷新后显示。The catalogue discovers these images from the repository declaration on its next build.
 
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
 
