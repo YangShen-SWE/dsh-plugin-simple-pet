@@ -7,7 +7,9 @@ import { spawn } from 'node:child_process';
 import { isPeak, priceUsage } from './billing.js';
 import { addUsage, loadLedger, seedFromRecentEvents } from './stats.js';
 import { CODEX_PROVIDERS, codexTokenItems, readCodexQuota, quotaDeltas } from './codex.js';
-import { CodexWarmupScheduler, localSchedule, loadWarmupJournal } from './warmup.js';
+import { CodexWarmupScheduler, loadWarmupJournal } from './warmup.js';
+import { warmupAfterAccountSwitch, multiBlocksLegacy, legacyBlocksMulti } from './warmup-safety.js';
+export { warmupAfterAccountSwitch, multiBlocksLegacy, legacyBlocksMulti };
 import { runCodexWarmup } from './warmup-call.js';
 import { PreferencesStore, preferenceValues } from './preferences.js';
 import { startPanelAccounts, createPanelCycle } from './panel-accounts.js';
@@ -140,12 +142,6 @@ export function accountSwitchCapability(provider, root = ROOT) {
   } catch { return false; }
 }
 
-export function warmupAfterAccountSwitch(uncertain, evidence) {
-  // A local timeout is not proof that an already sent shared-account write was cancelled.
-  // Never silently discharge this latch on a fresh read or a subsequent confirmation.
-  return uncertain === true || (evidence?.attempted === true && evidence?.confirmed !== true);
-}
-
 export function readLegacyWarmup(file) {
   try {
     const bytes = readFileSync(file);
@@ -157,15 +153,6 @@ export function readLegacyWarmup(file) {
       && (journal.lastAttemptAt == null || (Number.isSafeInteger(journal.lastAttemptAt) && journal.lastAttemptAt >= 0));
     return { readable, journal: readable ? journal : null };
   } catch (cause) { return { readable: cause.code === 'ENOENT', journal: null }; }
-}
-export function multiBlocksLegacy(data, now) {
-  const day = localSchedule(now, '00:00').day;
-  return data.paused || data.attempts.some(row => row.day >= day || row.attemptedAt > now || (row.finishedAt ?? 0) > now);
-}
-export function legacyBlocksMulti(journal, now) {
-  return journal.lastAttemptAt > now || (journal.lastAttemptAt > 0
-    && localSchedule(journal.lastAttemptAt, '00:00').day === localSchedule(now, '00:00').day)
-    || journal.keys.includes(`daily:${localSchedule(now, '00:00').day}`);
 }
 
 export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability, panelStarter = startPanelAccounts } = {}) {

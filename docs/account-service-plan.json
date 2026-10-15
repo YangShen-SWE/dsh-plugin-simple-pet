@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "purpose": "官方 Codex OAuth 订阅薄账号层；保留现有后端，小步定向验证，不是 API Key 替代订阅",
+  "schedule": {
+    "timeZone": "Europe/Copenhagen",
+    "localTime": "16:00:00",
+    "timeIsAdjustableDefault": true,
+    "tasksPerRun": 1,
+    "maxAutomaticRuns": 10,
+    "automaticRunCount": 0,
+    "stopAfterLocalDate": "2026-10-30",
+    "stopWhenNoAutomaticTaskReady": true
+  },
+  "prohibitedWithoutNewAuthorization": ["真实 OAuth 或凭据读写迁移", "账号/额度网络请求或切号", "模型/付费请求", "安装升级依赖", "生产功能接线或本地安装", "重启 DSH", "全量测试", "版本/tag/Release/市场更新", "绕过分支保护"],
+  "runs": [{"localDate":"2026-10-16","taskId":"T0","result":"verified","checks":39,"note":"本轮唯一任务；上传状态以远端 Git 提交为准，不由此记录代替证明"}],
+  "tasks": [
+    {"id":"T0","subject":"提取既有预热安全策略","dependsOn":[],"status":"completed","allowAutomatic":false,"files":["index.js","warmup-safety.js","warmup-safety.test.js","docs/ACCOUNT-SERVICE-PLAN.md","docs/account-service-plan.json"],"verify":"node --test --test-isolation=none warmup-safety.test.js account-control-ui.test.js multi-warmup-ui.test.js","evidence":"39/39 定向 Node 测试通过；三函数原样搬移，旧/新导出同一引用；两个隔离 TZ 子进程通过；无真实账号/模型或宿主重启"},
+    {"id":"T1","subject":"固定账号凭据视图（仅注入模拟 store）","dependsOn":["T0"],"status":"pending","allowAutomatic":true,"files":["codex-account-scope.js","codex-account-scope.test.js"],"acceptance":["A/B 假账号固定 scope；默认选择变化不重定向既有视图","仅 openai-codex OAuth grant；缺失/错误种类拒绝，API Key/env/全局槽回退为零","read/list/modify/delete 严格隔离；modify undefined 保留，删除独立","模拟 backing store 整段互斥；同账号并发不丢更新；不冒称宿主跨进程锁","错误不泄露假凭据；无生产接线和真实官方运行库导入"],"verify":"node --test --test-isolation=none codex-account-scope.test.js"},
+    {"id":"T2","subject":"固定账号适配器工厂能力门（mock）","dependsOn":["T1"],"status":"pending","allowAutomatic":true,"files":["codex-account-factory.js","codex-account-factory.test.js"],"acceptance":["公共版本/根导出/注入能力显式契约；未知能力拒绝而非安装修复","两个 mock 工厂绑定不同 store；无 grant 无 ambient/API Key fallback","取消/缺能力及默认变化测试；无真实库导入/注册/生产接线"],"verify":"node --test --test-isolation=none codex-account-scope.test.js codex-account-factory.test.js"},
+    {"id":"T3","subject":"目录与撤销 epoch 契约（内存假账号）","dependsOn":["T2"],"status":"pending","allowAutomatic":true,"files":["codex-account-directory.js","codex-account-directory.test.js"],"acceptance":["本地 opaque accountRef、backend、epoch、availability；DTO 无 grant/token/路径","默认仅影响新调用；撤销先失效；迟到刷新不复活；取消不删除","不实现 OAuth、不落真实凭据、不迁移旧账号/授权/claim"],"verify":"node --test --test-isolation=none codex-account-directory.test.js codex-account-scope.test.js codex-account-factory.test.js"},
+    {"id":"T4","subject":"额度 Observation 契约（合成 fixture）","dependsOn":["T3"],"status":"pending","allowAutomatic":true,"files":["codex-quota-observation.js","codex-quota-observation.test.js"],"acceptance":["accountRef/epoch/backend 与采样/接收时间分离；未知、缓存、来源错误可表达","300 分钟精度、百分比舍入、缺 accountId/周额度/消费许可未知 fail closed","无网络/付费 reset POST/真实响应 fixture；不改现有满额触发开关"],"verify":"node --test --test-isolation=none codex-quota-observation.test.js"},
+    {"id":"T5","subject":"独立核验保存提示与后台暂停可见性","dependsOn":["T0"],"status":"pending","allowAutomatic":true,"files":["client-source.js","client.test.js","multi-warmup-ui.test.js","lib/client.js"],"acceptance":["先复现保存反馈掩盖暂停；若无法复现记录理由，不捏造修复","必要时保存状态与实际暂停独立可见；保留草稿/显式保存语义","只定向 UI 测试；不改授权/账本或发送请求；如源码变更只重建现有客户端"],"verify":"node --test --test-isolation=none client.test.js multi-warmup-ui.test.js"},
+    {"id":"G1","subject":"用户真实接入决策门","dependsOn":["T2","T3","T4"],"status":"awaiting_authorization","allowAutomatic":false,"requiredDecisions":["凭据责任/隐私/OAuth 政策","公共依赖版本与额度后端","真实账号验收授权及范围"]},
+    {"id":"T6","subject":"官方登录/撤销桥接","dependsOn":["G1"],"status":"awaiting_authorization","allowAutomatic":false},
+    {"id":"T7","subject":"展示与新请求默认接线","dependsOn":["T6","T4"],"status":"awaiting_authorization","allowAutomatic":false},
+    {"id":"T8","subject":"官方固定每日调用后端与跨后端预算","dependsOn":["T7"],"status":"awaiting_authorization","allowAutomatic":false},
+    {"id":"T9","subject":"启动/报告满额触发再评估","dependsOn":["T4","T8"],"status":"awaiting_evidence_and_authorization","allowAutomatic":false}
+  ]
+}
