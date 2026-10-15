@@ -35,7 +35,7 @@ test('real plugin registers authenticated native-settings and bundled sprite rou
   try {
     apply(ctx, { petLauncher() { launched++; return () => {}; } });
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(launched,1); assert.equal(handlers.size,16);
+    assert.equal(launched,1); assert.equal(handlers.size,17);
     const route = '/api/dsh-plugin-simple-pet/preferences', handler = handlers.get(route);
     let result = await call(handler,route); assert.equal(result.code,200);
     const read = JSON.parse(result.data); assert.equal(read.values.skin,'night'); assert.equal(read.values.size,'small');

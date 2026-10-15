@@ -13,6 +13,7 @@ import { PreferencesStore } from './preferences.js';
 import { preferencesHandler } from './preferences-route.js';
 import { applicationHandler } from './preferences-applied.js';
 import { identityEvidence, accountIdentityHandler } from './codex-identity.js';
+import { createAccountControl, accountControlHandler } from './account-control.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -125,7 +126,23 @@ export function codexQuotaRefreshSeconds(raw) {
   return Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 3600 ? seconds : 5;
 }
 
-export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now } = {}) {
+// Read public manifests only, never tokens or account vaults. Unknown versions stay gated.
+export function accountSwitchCapability(provider, root = ROOT) {
+  const known = { 'openai-codex': ['dsh-codex-subscription', '2.6.8'], codex: ['dsh-plugin-subscriptions', '0.9.9'] }[provider];
+  if (!known) return false;
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, '..', known[0], 'package.json'), 'utf8'));
+    return manifest.name === known[0] && manifest.version === known[1];
+  } catch { return false; }
+}
+
+export function warmupAfterAccountSwitch(uncertain, evidence) {
+  // A local timeout is not proof that an already sent shared-account write was cancelled.
+  // Never silently discharge this latch on a fresh read or a subsequent confirmation.
+  return uncertain === true || (evidence?.attempted === true && evidence?.confirmed !== true);
+}
+
+export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability } = {}) {
   let live = true;
   const instance = randomUUID();
   const profile = (process.env.DSH_PET_PROFILE || process.env.DSH_PROFILE || 'desktop').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -152,6 +169,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let codexProvider = 'openai-codex';
   let codexRevision = 0;
   let bridgeRevision = 0;
+  let accountSourceGeneration = 0;
   let quotaRefreshTimer = null;
   let quotaPollTimer = null;
   let quotaPollSeconds = 5;
@@ -192,6 +210,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let warmupUsageDirty = false;
   let warmupQuota = null;
   let warmupPollAt = 0;
+  let accountChanging = false, warmupSwitchUncertain = false;
   const warmup = new CodexWarmupScheduler({ journal: storedWarmup, signal: controller.signal, clock: warmupClock,
     onChange() { if (live) snapshot(); },
     async save(journal) {
@@ -204,7 +223,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       await rename(temporary, warmupFile);
     },
     async getQuota({ force, signal }) {
-      if (!live || !codexBridge) throw new Error('subscription bridge unavailable');
+      if (!live || !codexBridge || accountChanging || warmupSwitchUncertain) throw new Error('subscription bridge unavailable');
       const bridge = codexBridge, generation = bridgeRevision, selectionGeneration = codexRevision;
       const now = warmupClock();
       if (!force && codex.provider === 'openai-codex' && codex.observedAt === warmupQuota?.observedAt) return warmupQuota;
@@ -216,13 +235,14 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       warmupQuota = current; warmupPollAt = now;
       if (codexProvider === 'openai-codex') {
         for (const delta of quotaDeltas(codex, current)) push(delta);
+        if (codex.provider !== current.provider) accountSourceGeneration++;
         codex = current; codexIdentity = identity; snapshot();
       }
       return current;
     },
     async run({ quota, signal }) {
       const bridge = codexBridge, generation = bridgeRevision;
-      if (!live || !bridge) throw new Error('subscription bridge unavailable');
+      if (!live || !bridge || accountChanging || warmupSwitchUncertain) throw new Error('subscription bridge unavailable');
       const result = await runCodexWarmup({ llm: ctx.llm, bridge, quota, signal,
         onUsage(usage, model) {
           const items = codexTokenItems(usage), at = warmupClock();
@@ -241,6 +261,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       return result;
     },
   });
+  const warmupView = () => warmupSwitchUncertain ? { ...warmup.view, detail: '共享账号切换结果不明，自动预热已暂停；请在订阅插件核验后完整重启 DSH。', accountSwitchPaused: true } : warmup.view;
   let prefsReading = false;
   let warmupTimer = null;
   let prefsWatcher = null;
@@ -248,12 +269,13 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let warmupRefreshPending = false;
   function scheduleWarmup() {
     clearTimeout(warmupTimer);
-    if (!live || profile !== 'desktop' || process.platform !== 'win32') return;
+    if (!live || warmupSwitchUncertain || profile !== 'desktop' || process.platform !== 'win32') return;
     const delay = warmup.nextDelay(warmupClock());
     if (Number.isFinite(delay)) warmupTimer = setTimeout(pollWarmup, Math.max(1, Math.min(delay, 2_147_483_647)));
   }
   async function pollWarmup({ preferencesChanged = false } = {}) {
-    if (!live || profile !== 'desktop' || process.platform !== 'win32') return;
+    if (!live || warmupSwitchUncertain || profile !== 'desktop' || process.platform !== 'win32') return;
+    if (accountChanging) { clearTimeout(warmupTimer); return; }
     if (prefsReading) {
       warmupRefreshPending = true;
       if (preferencesChanged) warmup.active?.abort();
@@ -285,7 +307,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       await mkdir(dataDir, { recursive: true });
       while (writeRequested && live) {
         writeRequested = false;
-        const body = JSON.stringify({ instance, seq: sequence, events, balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexQuotaRefreshSeconds: quotaPollSeconds, codexWarmup: warmup.view, updatedAt: Date.now() });
+        const body = JSON.stringify({ instance, seq: sequence, events, balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexQuotaRefreshSeconds: quotaPollSeconds, codexWarmup: warmupView(), updatedAt: Date.now() });
         const codexTemporary = `${codexStatsFile}.${instance}.tmp`;
         await writeFile(codexTemporary, JSON.stringify(codexLedger), { mode: 0o600 });
         await rename(codexTemporary, codexStatsFile);
@@ -341,7 +363,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   }
 
   async function pollCodex(force = false) {
-    if (!live || codexBusy || !codexBridge) return;
+    if (!live || accountChanging || codexBusy || !codexBridge) return;
     codexBusy = true;
     const revision = codexRevision, bridgeGeneration = bridgeRevision;
     try {
@@ -351,6 +373,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
         { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked), onIdentity(value) { identity = value; } });
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
       for (const delta of quotaDeltas(codex, current)) push(delta);
+      if (codex.provider !== current.provider) accountSourceGeneration++;
       codex = current; codexIdentity = identity;
     } catch {
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
@@ -399,6 +422,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     if (CODEX_PROVIDERS.has(source.provider)) {
       if (codexProvider !== source.provider) {
         codexProvider = source.provider;
+        accountSourceGeneration++;
         codexRevision++;
         codexIdentity = null;
         codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
@@ -443,6 +467,27 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     snapshot();
   });
 
+  const accountControl = createAccountControl({
+    context: () => live && codexBridge && switchSupported(codex.provider)
+      ? { bridge: codexBridge, provider: codex.provider, generation: `${bridgeRevision}:${accountSourceGeneration}:${codexProvider}` } : null,
+    blocked: () => accountChanging || warmupSwitchUncertain || prefsReading || !!warmup.active,
+    begin() {
+      if (!live || accountChanging || warmupSwitchUncertain || prefsReading || warmup.active) return false;
+      accountChanging = true; clearTimeout(warmupTimer);
+      codexRevision++; codexIdentity = null; warmupQuota = null; warmupPollAt = 0;
+      codex = { ...codex, status: 'switching', fiveHour: null, weekly: null, observedAt: null };
+      snapshot();
+      return true;
+    },
+    end() { accountChanging = false; },
+    changed(evidence) {
+      if (!live) return;
+      warmupSwitchUncertain = warmupAfterAccountSwitch(warmupSwitchUncertain, evidence);
+      codexRevision++; codexIdentity = null; warmupQuota = null; warmupPollAt = 0;
+      codex = { ...codex, status: 'loading', fiveHour: null, weekly: null, observedAt: null };
+      snapshot(); void pollCodex(true); scheduleWarmup();
+    },
+  });
   const preferencesStore = new PreferencesStore(prefsFile);
   let petStop = null;
   const applicationRuntime = () => live ? petStop?.applicationRuntime?.() : null;
@@ -461,6 +506,10 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       handler: accountIdentityHandler({ authorize: (req, res) => guard(routeCtx, req, res),
         read: () => live ? identityEvidence(codex, codexIdentity) : { status: 'unavailable' } }),
     }), 'simple-pet: private read-only account identity');
+    routeCtx.effect(() => routeCtx.webServer.register({
+      kind: 'exact', path: '/api/dsh-plugin-simple-pet/accounts',
+      handler: accountControlHandler(accountControl, (req, res) => guard(routeCtx, req, res)),
+    }), 'simple-pet: explicit confirmed shared account switch');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
       const method = req.method ?? 'GET';
@@ -469,7 +518,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       if (raw !== null && !/^(0|[1-9]\d*)$/.test(raw)) return json(res, 400, { error: 'invalid since' }, method);
       const since = raw === null ? sequence : Number(raw);
       if (!Number.isSafeInteger(since)) return json(res, 400, { error: 'invalid since' }, method);
-      json(res, 200, { seq: sequence, events: events.filter(e => e.seq > since), balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexQuotaRefreshSeconds: quotaPollSeconds, codexWarmup: warmup.view }, method);
+      json(res, 200, { seq: sequence, events: events.filter(e => e.seq > since), balance, balanceStatus, cacheHitRate, peak: isPeak(), stats: ledger, codex, codexStats: codexLedger, codexQuotaRefreshSeconds: quotaPollSeconds, codexWarmup: warmupView() }, method);
     } }), 'deepseek-pet: state route');
     for (const asset of ASSETS) {
       const path = `/api/dsh-plugin-simple-pet/asset/${asset}.png`;
@@ -509,7 +558,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     return () => { const stop = petStop; petStop = null; stop?.(); };
   }, 'deepseek-pet: window');
   ctx.effect(() => async () => {
-    live = false; clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
+    live = false; accountControl.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
     clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await warmup.stop(); await snapshotTask;
     if (warmupUsageDirty) {
       try {

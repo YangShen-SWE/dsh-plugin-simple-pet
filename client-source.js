@@ -109,6 +109,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const [previewPeak, setPreviewPeak] = useState(false);
     const [application, setApplication] = useState(null);
     const [account, setAccount] = useState(null);
+    const [accountList, setAccountList] = useState(null), [target, setTarget] = useState('');
+    const [confirmAccount, setConfirmAccount] = useState(false), [accountBusy, setAccountBusy] = useState(false);
+    const [accountNote, setAccountNote] = useState('');
+    const accountAction = useRef({ version: 0, busy: false, controller: null });
     const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
     const alive = useRef(false), draftRef = useRef(null), editVersion = useRef(0), saving = useRef(false);
     useEffect(() => {
@@ -133,7 +137,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       };
       void refresh();
       const timer = setInterval(refresh, 5000);
-      return () => { alive.current = false; controller.abort(); clearInterval(timer); };
+      return () => { alive.current = false; accountAction.current.version++; accountAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
     }, []);
     const change = (key, value) => {
       editVersion.current++;
@@ -170,6 +174,34 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       } catch (e) { if (alive.current) setError(e.status === 409 ? '设置已被其他页面修改，未覆盖。请重新读取后再编辑；当前草稿已保留。' : e.message); }
       finally { saving.current = false; if (alive.current) setBusy(false); }
     };
+    const listUsable = () => accountList?.enabled === true && Array.isArray(accountList.accounts) && accountList.accounts.length >= 2 &&
+      typeof accountList.token === 'string' && Number.isFinite(accountList.validForMs) && accountList.validForMs > 0 && accountList.validForMs <= 15000 &&
+      monotonicNow() - accountList.receivedAt >= 0 && monotonicNow() - accountList.receivedAt < accountList.validForMs;
+    const cancelAccount = () => {
+      if (accountAction.current.busy) return;
+      accountAction.current.version++; accountAction.current.authorized = null; accountAction.current.listToken = null; setAccountList(null); setTarget(''); setConfirmAccount(false); setAccountNote('已取消，未提交切号。');
+    };
+    const accountRequest = async action => {
+      if (!alive.current || accountAction.current.busy) return;
+      const authority = accountAction.current.authorized;
+      if (action === 'switch' && (!confirmAccount || !listUsable() || !target || target === accountList.current ||
+        !authority || authority.version !== accountAction.current.version || authority.token !== accountList.token || authority.target !== target || accountAction.current.listToken !== accountList.token)) return;
+      const body = action === 'list' ? { action } : { action, token: accountList.token, target, confirm: true };
+      const version = ++accountAction.current.version;
+      accountAction.current.authorized = null; accountAction.current.listToken = null;
+      const controller = new AbortController(); accountAction.current.controller = controller;
+      accountAction.current.busy = true; setAccountBusy(true); setAccountNote(''); setConfirmAccount(false); setTarget(''); setAccountList(null);
+      try {
+        const result = await request('accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+        if (!alive.current || version !== accountAction.current.version) return;
+        if (action === 'list') { accountAction.current.listToken = result.token; setAccountList({ ...result, receivedAt: monotonicNow() }); }
+        else { setAccount(null); setSnapshot(previous => previous ? { ...previous, codex: { status: 'loading' } } : null); setAccountNote('订阅插件已确认共享账号切换；正在等待新来源额度。切号 RPC 本身不调模型；原有预热设置保留，符合原条件时仍可能运行。'); }
+      } catch (e) {
+        if (alive.current && version === accountAction.current.version) setAccountNote(action === 'switch' ? '未获得切号成功确认；账号可能已改变。请重新读取核验，不会自动重试或切回；已发送写操作若结果不明，自动预热保持暂停，需在订阅插件核验后完整重启 DSH。' : e.message);
+      } finally {
+        if (version === accountAction.current.version) { accountAction.current.busy = false; if (alive.current) setAccountBusy(false); }
+      }
+    };
     const field = (key, label, options) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
       h('select', { name: key, value: draft[key] ?? (key === 'feedbackStyle' ? 'classic' : ''), disabled: busy, onChange: e => change(key, e.target.value) }, ...options.map(([value, text]) => h('option', { key: value, value }, text))));
     const number = (key, label, min, max) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
@@ -192,10 +224,20 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       h('div', { className: 'pet-settings-tabs', role: 'tablist', 'aria-label': '桌宠设置与统计' },
         ...[['settings','设置'],['stats','统计']].map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
       error && h('p', { role: 'alert', className: 'pet-settings-error' }, error), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
-      codex && group('Codex 账号识别（只读）',
+      codex && group('Codex 账号与共享切换',
         h('p', { className: 'pet-settings-hint', role: 'status', 'data-account-identity': true }, accountSummary(snapshot, account, account ? monotonicNow() - account.receivedAt : 0)),
-        h('p', { className: 'pet-settings-hint' }, '邮箱仅在此页面内存中脱敏显示，不写入桌宠快照。面板显示来源与匿名短标识。本版不提供切号按钮或多账号预热。'),
-        h('p', { className: 'pet-settings-hint' }, '后续切号按钮仅在受支持订阅插件已绑定至少两个有效 Codex 账号、公共列表新鲜可核验且支持切换时启用；单账号、未登录、列表未知或过期均禁用。请先在订阅插件管理账号，桌宠不代管登录。')),
+        h('p', { className: 'pet-settings-hint' }, '邮箱仅在此页面内存中脱敏显示。至少两个有效 Codex 账号且接口版本已验证才可切换。先主动读取新鲜列表，再选择目标并独立确认；与设置保存无关，不代管登录。切号会影响整个订阅插件及其它会话，不是仅切换桌宠显示。'),
+        h('button', { type: 'button', disabled: accountBusy, 'data-account-list': true, onClick: () => void accountRequest('list') }, accountBusy ? '正在核验…' : '读取可切换账号'),
+        accountList && h('p', { role: 'status', className: 'pet-settings-hint' }, listUsable() ? `来源 ${accountList.provider} · ${accountList.selection === 'active' ? '全局激活账号' : '默认账号'} · 列表短期有效` : (accountList.reason || '列表已过期或账号不足，请重新读取。')),
+        accountList && h('label', { className: 'pet-settings-row' }, h('span', null, '目标账号（脱敏）'), h('select', { 'data-account-target': true, value: target, disabled: accountBusy || !listUsable(), onChange: e => { accountAction.current.authorized = null; setTarget(e.target.value); setConfirmAccount(false); } },
+          h('option', { value: '' }, '请选择非当前账号'), ...(Array.isArray(accountList.accounts) ? accountList.accounts : []).map(row => h('option', { key: row.target, value: row.target, disabled: row.current === true }, row.label + (row.current ? ' · 当前' : ''))))),
+        h('button', { type: 'button', 'data-account-prepare': true, disabled: accountBusy || !listUsable() || !target || target === accountList?.current, onClick: () => { if (alive.current && listUsable() && target && target !== accountList.current && accountAction.current.listToken === accountList.token) { accountAction.current.authorized = { version: accountAction.current.version, token: accountList.token, target }; setConfirmAccount(true); } } }, '查看切号确认'),
+        confirmAccount && h('div', { role: 'alert', className: 'pet-settings-group' },
+          h('p', null, `确认将共享${accountList?.selection === 'active' ? '激活' : '默认'}账号切换到 ${accountList?.accounts?.find(row => row.target === target)?.label || '所选账号'}？其他会话也可能受影响。不会切换回来、不会发送模型请求；已有自动预热偏好不变。`),
+          h('button', { type: 'button', 'data-account-confirm': true, disabled: accountBusy || !listUsable(), onClick: () => void accountRequest('switch') }, '确认切换共享账号'),
+          h('button', { type: 'button', disabled: accountBusy, onClick: cancelAccount }, '取消切号')),
+        accountNote && h('p', { className: 'pet-settings-hint', role: 'status' }, accountNote),
+        h('p', { className: 'pet-settings-hint' }, '多账号 warm-up 未启用：本机公共接口未验证可将模型调用固定到指定账号，且未配置逐账号费用/次数预算。不会通过偷偷轮换全局账号模拟。原有当前激活账号预热设置保持不变。')),
       !draft ? h('div', null, h('p', null, error ? '设置不可用，未修改原文件。' : '正在读取桌宠设置…'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取')) :
       tab === 'settings' ? h('form', { onSubmit: e => { e.preventDefault(); void save(); } },
         group('陪伴与舒适',

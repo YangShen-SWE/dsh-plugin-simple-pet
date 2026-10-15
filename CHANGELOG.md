@@ -1,5 +1,17 @@
 # 更新记录 / Changelog
 
+## v0.8.0 — 明确确认的 Codex 共享账号切换（2026-10-15）
+
+- **更新原因：** 用户要求取消明日定时、今天完成第二任务的安全增量并发布；在只读身份基础上提供主动切号，不把公共共享账号写操作藏进保存偏好，不以后台轮换冒充账号绑定预热。
+- 原生设置页独立读取、选目标、影响确认。只对精确核验的 dsh-codex-subscription 2.6.8 / dsh-plugin-subscriptions 0.9.9 启用各自公共写 API；确认必须有同来源新鲜、有效去重、唯一选中的至少两个已绑定 Codex 账号。其他版本仅保留既有只读能力，不自动安装升级。
+- 15 秒一次性确认租约、整体 10 秒 RPC 超时；写前重新验证列表、来源代际、当前和目标。取消零写、一次确认最多一次写、成功重读验证；无 404 写源回退、无自动重试／回滚，失效身份及普通／预热额度的迟到写回。独立单调来源代际覆盖 A→B→A；旧 UI 确认在取消、换目标或卸载后不能提交。
+- 与本插件已有预热互斥。写已尝试但结果未知时，后续切号和自动预热保守暂停，直到用户在订阅插件核验并完整重启 DSH；读取新状态或迟到结果不能自动解除。超时不等于撤回上游写；外部插件切号仍无跨插件 CAS／全局在途锁保证。
+- 切号 RPC 本身不发模型请求，但已授权的旧预热计划在正常确认切换后仍可能运行，所有开关和去重 journal 保留。切号会影响共享连接／模型缓存，通用默认账号不是请求实际账号承诺。
+- 鉴权 accounts GET/HEAD 只读内存能力；POST 严格 8KB JSON schema／no-store，主动读取与确认才访问公共 status/select。浏览器仅接收遮罩标签、匿名标识和短时 opaque 目标；不保存原始 ID 或邮箱，不读 Codex 凭据。
+- 多账号 warm-up 明确 unavailable：本机无集成验证的公开账号绑定调用与逐账号预算授权；没有偷偷切全局账号、启用付费计划或伪称支持。多账号额度列表、完整邮箱展开和 WPF 卡片按钮仍暂缓，后者缺可信 IPC。原 2026-10-16 16:00 Europe/Copenhagen 定时已取消。
+- 源码定向通过 160 项 Node 检查及 1101 条原生断言（身份 887、回执 214）；仅 mock 公共服务、私有临时文件、真实隐藏 WPF。没有全量、真实账号操作、凭据读取、模型请求或自动重启；完整宿主与真实依赖仍未验收。
+- Add explicitly confirmed shared-account selection with fresh two-account and exact-version gates, one-shot leases, privacy-safe authenticated control, source-ABA invalidation and stale-handler revocation. Unknown writes quarantine subsequent control and automatic warm-up; never claim a timeout cancelled upstream work. Retain opt-in schedules and explicitly defer unverified account-bound multi-warm-up and WPF IPC. Deliver the second task's safe increment today; cancel the scheduled continuation.
+
 ## v0.7.0 — Codex 只读账号识别（2026-10-15）
 
 - **为什么更新：** 先让用户确认额度所属来源及账号，避免把默认账号当成实际请求账号；公共切号有共享连接副作用，多账号收费预热需要可靠绑定，不能为了按钮或版本号混成未经验证的写操作。
