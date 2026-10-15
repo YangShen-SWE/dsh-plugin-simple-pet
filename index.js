@@ -12,6 +12,7 @@ import { runCodexWarmup } from './warmup-call.js';
 import { PreferencesStore } from './preferences.js';
 import { preferencesHandler } from './preferences-route.js';
 import { applicationHandler } from './preferences-applied.js';
+import { identityEvidence, accountIdentityHandler } from './codex-identity.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -145,6 +146,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   try { storedCodexStats = JSON.parse(readFileSync(codexStatsFile, 'utf8')); } catch { /* independent new ledger */ }
   const codexLedger = loadLedger(storedCodexStats);
   let codex = { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
+  let codexIdentity = null; // Memory only: never included in snapshots, ledgers or preferences.
   let codexBridge = null;
   let codexBusy = false;
   let codexProvider = 'openai-codex';
@@ -203,17 +205,18 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     },
     async getQuota({ force, signal }) {
       if (!live || !codexBridge) throw new Error('subscription bridge unavailable');
-      const bridge = codexBridge, generation = bridgeRevision;
+      const bridge = codexBridge, generation = bridgeRevision, selectionGeneration = codexRevision;
       const now = warmupClock();
       if (!force && codex.provider === 'openai-codex' && codex.observedAt === warmupQuota?.observedAt) return warmupQuota;
       if (!force && codex.provider === 'openai-codex' && codex.observedAt > 0) return codex;
       if (!force && warmupQuota && now - warmupPollAt < quotaPollSeconds * 1000) return warmupQuota;
-      const current = await readCodexQuota(bridge, signal, now, 'openai-codex', { force });
-      if (!live || generation !== bridgeRevision || bridge !== codexBridge) throw new Error('subscription bridge changed');
+      let identity = null;
+      const current = await readCodexQuota(bridge, signal, now, 'openai-codex', { force, onIdentity(value) { identity = value; } });
+      if (!live || generation !== bridgeRevision || selectionGeneration !== codexRevision || bridge !== codexBridge) throw new Error('subscription bridge changed');
       warmupQuota = current; warmupPollAt = now;
       if (codexProvider === 'openai-codex') {
         for (const delta of quotaDeltas(codex, current)) push(delta);
-        codex = current; snapshot();
+        codex = current; codexIdentity = identity; snapshot();
       }
       return current;
     },
@@ -343,13 +346,15 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     const revision = codexRevision, bridgeGeneration = bridgeRevision;
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
+      let identity = null;
       const current = await readCodexQuota(codexBridge, signal, Date.now(), codexProvider,
-        { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked) });
+        { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked), onIdentity(value) { identity = value; } });
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
       for (const delta of quotaDeltas(codex, current)) push(delta);
-      codex = current;
+      codex = current; codexIdentity = identity;
     } catch {
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
+      codexIdentity = null;
       codex = { ...codex, status: codex.fiveHour || codex.weekly ? 'stale' : 'unavailable' };
     } finally {
       codexBusy = false;
@@ -362,6 +367,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     const bridge = quotaCtx.connection.createSharedFetchHandler('/api');
     bridgeRevision++;
     codexBridge = bridge;
+    codexIdentity = null;
     codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
     void pollCodex();
     clearInterval(quotaPollTimer);
@@ -370,7 +376,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       if (codexBridge === bridge) {
         clearInterval(quotaPollTimer); quotaPollTimer = null;
         bridgeRevision++;
-        codexBridge = null;
+        codexBridge = null; codexIdentity = null;
         warmup.active?.abort();
         warmupQuota = null; warmupPollAt = 0;
         codex = { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
@@ -394,6 +400,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       if (codexProvider !== source.provider) {
         codexProvider = source.provider;
         codexRevision++;
+        codexIdentity = null;
         codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
         void pollCodex();
       }
@@ -449,6 +456,11 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       handler: applicationHandler({ store: preferencesStore, receiptFile: join(dataDir, `settings-applied-${profile}.json`),
         profile, runtime: applicationRuntime, authorize: (req, res) => guard(routeCtx, req, res) }),
     }), 'simple-pet: local application receipt');
+    routeCtx.effect(() => routeCtx.webServer.register({
+      kind: 'exact', path: '/api/dsh-plugin-simple-pet/account',
+      handler: accountIdentityHandler({ authorize: (req, res) => guard(routeCtx, req, res),
+        read: () => live ? identityEvidence(codex, codexIdentity) : { status: 'unavailable' } }),
+    }), 'simple-pet: private read-only account identity');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
       const method = req.method ?? 'GET';

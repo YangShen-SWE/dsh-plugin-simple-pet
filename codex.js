@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import { selectedCodexAccount, codexIdentity } from './codex-identity.js';
 
 export const CODEX_PROVIDERS = new Set(['openai-codex', 'codex']);
 const WINDOWS = { fiveHour: 18_000, weekly: 604_800 };
@@ -38,33 +39,34 @@ export function normalizeCodexQuota(usage, accountKey, now = Date.now()) {
   return result;
 }
 
-export async function readCodexQuota(bridge, signal, now = Date.now(), provider = 'openai-codex', { force = false } = {}) {
-  if (provider === 'codex') return readSubscriptionsQuota(bridge, signal, now);
+export async function readCodexQuota(bridge, signal, now = Date.now(), provider = 'openai-codex', { force = false, onIdentity = () => {} } = {}) {
+  if (provider === 'codex') return readSubscriptionsQuota(bridge, signal, now, onIdentity);
   const before = await subscriptionRpc(bridge, 'codex-subscription/status', {}, signal);
-  if (before === null) return readSubscriptionsQuota(bridge, signal, now);
+  if (before === null) return readSubscriptionsQuota(bridge, signal, now, onIdentity);
   if (!before.authenticated) return { status: 'signed-out', fiveHour: null, weekly: null, observedAt: null };
-  const identity = status => {
-    const selected = status.accounts?.find(account => account.active === true);
-    return selected?.id ?? 'current-account';
-  };
-  const accountKey = createHash('sha256').update(String(identity(before))).digest('hex').slice(0, 16);
+  const selected = selectedCodexAccount(before, 'openai-codex');
+  if (!selected) return { status: 'unavailable', fiveHour: null, weekly: null, observedAt: null };
+  const accountKey = createHash('sha256').update(selected.id).digest('hex').slice(0, 16);
   const usage = await subscriptionRpc(bridge, 'codex-subscription/usage', { force: force === true }, signal);
   const after = await subscriptionRpc(bridge, 'codex-subscription/status', {}, signal);
-  if (!after?.authenticated || identity(before) !== identity(after)) {
+  const confirmed = selectedCodexAccount(after, 'openai-codex');
+  if (!confirmed || selected.id !== confirmed.id) {
     return { status: 'switching', fiveHour: null, weekly: null, observedAt: null };
   }
+  onIdentity(codexIdentity(confirmed, 'openai-codex', accountKey, now));
   return { ...normalizeCodexQuota(usage, accountKey, now), provider: 'openai-codex', selection: 'active', accountCount: Array.isArray(after.accounts) ? after.accounts.length : 0 };
 }
 
-async function readSubscriptionsQuota(bridge, signal, now) {
+async function readSubscriptionsQuota(bridge, signal, now, onIdentity) {
   const before = await subscriptionRpc(bridge, 'subscriptions-auth.status', {}, signal);
   if (before === null) return { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
-  const select = status => status?.providers?.codex?.accounts?.find(account => account.isDefault === true)?.key;
-  const key = select(before);
+  const selected = selectedCodexAccount(before, 'codex');
+  const key = selected?.id;
   if (!key) return { status: 'signed-out', fiveHour: null, weekly: null, observedAt: null };
   const usage = await subscriptionRpc(bridge, 'subscriptions-auth.usage', { provider: 'codex', account: key, force: false }, signal);
   const after = await subscriptionRpc(bridge, 'subscriptions-auth.status', {}, signal);
-  if (select(after) !== key) return { status: 'switching', fiveHour: null, weekly: null, observedAt: null };
+  const confirmed = selectedCodexAccount(after, 'codex');
+  if (confirmed?.id !== key) return { status: 'switching', fiveHour: null, weekly: null, observedAt: null };
   const result = { status: 'reported', provider: 'codex', selection: 'default', receivedAt: now, observedAt: null,
     accountKey: createHash('sha256').update(key).digest('hex').slice(0, 16),
     accountCount: after.providers.codex.accounts.length, fiveHour: null, weekly: null };
@@ -76,6 +78,7 @@ async function readSubscriptionsQuota(bridge, signal, now) {
     if (result[kind].resetAt !== null && result[kind].resetAt <= now) result.status = 'stale';
   }
   if (result.fiveHour === null && result.weekly === null) result.status = 'unavailable';
+  onIdentity(codexIdentity(confirmed, 'codex', result.accountKey, now));
   return result;
 }
 

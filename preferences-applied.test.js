@@ -183,7 +183,7 @@ test('settings polls local receipt, clears save evidence and preserves drafts on
   const status = () => ui.nodes().find(n => Object.hasOwn(n.props, 'data-application-status'));
   try {
     await settle(); ui.render(); assert.match(ui.text(status()), /最近确认桌宠已应用/);
-    assert.deepEqual(calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
+    assert.deepEqual(calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/account','api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
     ui.nodes().find(n => n.props.name === 'quietMode').props.onChange({ target: { checked: true } });
     ui.render(); assert.match(ui.text(status()), /草稿尚未应用/);
     ui.nodes().find(n => n.type === 'form').props.onSubmit({ preventDefault() {} });

@@ -200,7 +200,7 @@ $xaml = @'
                    Text="缓存命中 —" FontFamily="Microsoft YaHei" FontSize="10" Foreground="#A8EEFF"/>
       </Canvas>
       <Canvas Name="CodexPanel" Width="260" Height="154" Visibility="Collapsed">
-        <TextBlock Name="CodexHeader" Canvas.Left="13" Canvas.Top="25" Text="CODEX · 订阅额度" FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
+        <TextBlock Name="CodexHeader" Canvas.Left="13" Canvas.Top="25" Width="106" TextTrimming="CharacterEllipsis" Text="CODEX · 订阅额度" FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
         <TextBlock Name="QuotaStatus" Canvas.Left="122" Canvas.Top="26" Width="125" TextAlignment="Right" Text="等待 DSH 数据" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#ABD2E3" TextTrimming="CharacterEllipsis"/>
         <TextBlock Name="FiveHourLabel" Canvas.Left="13" Canvas.Top="51" Text="5 小时剩余" FontFamily="Microsoft YaHei" FontSize="11" Foreground="#C8EFFF"/>
         <TextBlock Name="FiveHourValue" Canvas.Left="147" Canvas.Top="42" Width="100" TextAlignment="Right" Text="—" FontFamily="Segoe UI" FontSize="23" FontWeight="Bold" Foreground="#7DE9FF"/>

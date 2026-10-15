@@ -63,7 +63,7 @@ Assert-True ($script:Sizes.tiny / $script:Sizes.small -ge 0.70 -and $script:Size
 foreach ($name in @('Save-Prefs', 'Set-PetSize', 'Format-Cost', 'Start-Event')) {
   Invoke-Expression (Get-FunctionText $petAst $name)
 }
-foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
+foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Get-QuotaIdentityLabel', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
   Invoke-Expression (Get-FunctionText $usageAst $name)
 }
 # Motion is irrelevant to sizing; real Start-Event still creates and attaches its float.

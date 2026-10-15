@@ -41,7 +41,7 @@ foreach ($variable in @('script:Prefs', 'script:Sizes')) {
 foreach ($name in @('Get-Peak', 'Set-PetPreferenceValues', 'Test-FinitePetCoordinate', 'Restore-PetPosition', 'Reload-PetPreferences', 'Save-Prefs', 'Set-PetSize')) {
   Invoke-Expression (Get-FunctionText $petAst $name)
 }
-foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
+foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Get-QuotaIdentityLabel', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
   Invoke-Expression (Get-FunctionText $usageAst $name)
 }
 $script:ProductionRefresh = ${function:Refresh-BillingMode}

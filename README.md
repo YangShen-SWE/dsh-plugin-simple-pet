@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.6.6 · 简洁模式与依赖说明](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.6)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.7.0 · Codex 只读账号识别](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：随手查看 DeepSeek 余额与峰谷价格、Codex 额度与重置时间。六款人物与五种信息框自由搭配，支持安静模式、温和反馈和 DSH 原生设置。
 
@@ -22,6 +22,20 @@ A quiet Windows anime desktop companion for DeepSeek balances and Codex quotas, 
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
 
+## v0.7.0 更新重点：先看清账号，再安全切换（2026-10-15）
+
+**更新原因：** 多账号用户需要知道额度属于哪个来源及账号；但切换公共订阅账号会影响 DSH 共享连接，收费预热还需要可靠账号绑定。经产品、UX、架构评审，本次先交付只读识别，不把高副作用操作藏进普通设置保存。
+
+- **面板：** Codex 卡片标题显示“激活 #匿名短标识”或“默认 #匿名短标识”，保留额度／重置状态、五主题、四尺寸与简洁模式；不显示完整或遮罩邮箱、不新增点击或右键行为。
+- **邮箱：** DSH → 设置 → 桌宠，选择 Codex 模式，可看到公共接口提供的脱敏邮箱；无有效邮箱显示“邮箱未提供”。例如 `a***@e***.com · #abcdef01`，不是完整邮箱。通用插件的“默认账号”不保证是某次模型请求的实际执行账号。
+- **隐私与正确性：** 复用既有额度查询，不新增上游轮询；只读鉴权内存接口显示邮箱，原始邮箱及遮罩都不进入桌宠快照、统计、偏好或日志。前后账号不一致、来源变化、过期／异常时不将旧邮箱配给新额度。不会根据标签或 opaque ID 猜邮箱。
+- **本版未实现：** 切号按钮、多账号额度列表、多账号 warm-up、完整邮箱展开。明天的任务继续安全切号与预热适配；不具备公共账号绑定或需用户决定时可以明确暂缓，不能后台循环切号替代。
+- **后续切号启用条件（用户要求）：只有先在受支持的其他订阅插件绑定至少两个 Codex 账号，按钮才可启用。** 还须有同来源新鲜、有效去重公共列表和切号接口，非 busy／本地预热中；单账号、未登录、缺插件、列表未知／过期／失败均禁用并解释，确认前再次核验。当前 v0.7.0 没有假可用按钮，桌宠不代管登录。
+- 已登记第二任务：**2026-10-16 16:00 Europe/Copenhagen（UTC+02:00）**，详见[两步计划与待决事项](ACCOUNT-ROADMAP.md)。定时继续实现不等于授权真实切号或收费调用，也不保证依赖缺失时强开功能。
+- 源码通过 **80 项新增／受影响 Node 检查、69757 条原生断言**。本次不跑全量，不发真实账号／模型请求、不重启。完整宿主页面、多 DPI 与真实账号集成仍待用户重启后验收；后续保存偏好沿用热应用。
+
+v0.7.0 delivers read-only Codex identity: anonymous active/default account IDs on the WPF panel and masked optional email in native DSH settings. Raw and masked emails remain outside persisted pet snapshots/ledgers/preferences/logs. Existing status/usage reads are reused; no extra upstream polling, account changes or LLM requests. A default account is not a guarantee of the account selected by a model pool. No switching button or multi-account warm-up ships yet. Future switching requires at least two Codex accounts already bound in a supported subscription addon, a fresh validated same-source list and a supported public mutation API. One/unknown/stale account state must disable the control. Follow-up is scheduled for 2026-10-16 16:00 Europe/Copenhagen; unsafe or undecided parts may stay unavailable with reasons.
+
 ## v0.6.6 更新重点：简洁模式与使用条件（2026-10-15）
 
 **为什么更新：** 希望只看余额／额度、不显示人物和动效；同时让安装前就能知道 Codex 数据来源，而不是把保存配置或安装桌宠误认为已经具备订阅查询能力。
@@ -32,7 +46,7 @@ A quiet Windows anime desktop companion for DeepSeek balances and Codex quotas, 
 - **Codex 额度：** 必须安装、启用并登录以下两个公共订阅插件之一：`dsh-codex-subscription` **或** `dsh-plugin-subscriptions`，并要求宿主提供公共进程内连接适配器。**二选一，不是必须同时安装**；两个受支持接口都不可用时无法查询。只登录 Codex CLI／只有 OAuth 模型不等于具备此额度接口。桌宠不自动安装依赖、不收集订阅令牌。
 - 首选前者的活动账号；仅其 status 接口不存在时尝试后者的默认账号（可能缓存），并非任意失败都切换来源。后者的默认账号不一定等于当前请求使用的账号。
 - **现有自动预热条件更严格：** 当前只接受 `dsh-codex-subscription` 的新鲜活动账号报告及可用的宿主 `openai-codex` 调用；仅第二个插件的默认／缓存额度不会触发预热。所有预热选项仍默认关闭，升级不启用。
-- 卡片切号按钮、邮箱展示和多账号预热目前均未实现；公共接口核查和安全限制见 [账号能力评估](MULTI-ACCOUNT-NOTES.md)。
+- v0.7.0 增加设置页脱敏邮箱与面板匿名标识；卡片切号按钮和多账号预热仍未实现。公共接口核查和安全限制见 [账号能力评估](MULTI-ACCOUNT-NOTES.md)。
 
 ### 简洁模式
 
@@ -128,10 +142,10 @@ v0.6.5 rationale: saving previously proved only a disk write, not successful nat
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。DeepSeek 凭据在 **DSH 内**配置；Codex 额度须安装、启用并登录 **`dsh-codex-subscription` 或 `dsh-plugin-subscriptions`（二选一）**，且宿主有公共连接接口，详见上方使用条件。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.6.6 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.6) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.7.0 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.0) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.6.6 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.7.0 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -255,7 +269,7 @@ Settings and statistics now live in **DSH → Settings → 桌宠**, using the h
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure DeepSeek in DSH; for Codex quota, install/enable and sign in to **either `dsh-codex-subscription` or `dsh-plugin-subscriptions`**, with the host public connection adapter available. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.6.6](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.6.6), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.7.0](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.0), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"

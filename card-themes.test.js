@@ -152,7 +152,7 @@ for (const mode of ['deepseek','codex']) test(`native ${mode} page shows five pa
     const selected=ui.find(n => n.props['data-card-theme-choice']==='paper'); assert.equal(selected.props['aria-checked'],true);
     const sprite=ui.find(n => n.props.className==='pet-combination-sprite'); assert(sprite.props.style.backgroundImage.includes('/star-valley.png'));
     assert.match(ui.text(ui.render()),/数字为示意/);
-    assert.equal(ui.calls.length,3); assert(ui.calls.every(c => !c.method || c.method==='GET'));
+    assert.equal(ui.calls.length,4); assert(ui.calls.every(c => !c.method || c.method==='GET'));
     ui.find(n => n.type==='form').props.onSubmit({preventDefault(){}}); await settle(); ui.render();
     const writes=ui.calls.filter(c => c.method==='PUT'); assert.equal(writes.length,1);
     assert.deepEqual(JSON.parse(writes[0].body).patch,{ skin:'star', cardTheme:'paper' });
@@ -173,7 +173,7 @@ test('DeepSeek peak combination preview changes visual only and Codex switches t
     assert(ui.find(n => n.props.className==='pet-combination-sprite').props.style.backgroundImage.includes('default-valley.png'));
     assert(!ui.nodes().some(n => n.type==='button' && ui.text(n)==='峰时预览'));
     const codex=ui.find(n => n.props['aria-label']==='所选人物与信息框组合示意'); assert.doesNotMatch(ui.text(codex),/峰|谷|¥/); assert.match(ui.text(codex),/5h|周/);
-    assert.equal(ui.calls.length,3);
+    assert.equal(ui.calls.length,4);
   } finally { ui.cleanup(); }
 });
 

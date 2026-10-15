@@ -87,7 +87,7 @@ test('native settings compact toggle is draft-only, preview hides character and 
     assert.deepEqual(JSON.parse(saves[0].body).patch, { compactMode: true });
     assert.equal(ui.accepted.values.skin, 'night'); assert.equal(ui.accepted.values.cardTheme, 'forest');
     assert.equal(ui.accepted.values.quietMode, false); assert.equal(ui.accepted.values.codexWarmupStartup, false);
-    assert(ui.calls.every(c => ['/preferences', '/state', '/application'].some(p => c.url.endsWith(p))));
+    assert(ui.calls.every(c => ['/preferences', '/state', '/application', '/account'].some(p => c.url.endsWith(p))));
     ui.find(n => n.props.name === 'compactMode').props.onChange({ target: { checked: false } }); ui.render();
     const restored = ui.find(n => n.props['aria-label'] === '所选人物与信息框组合示意');
     assert.equal(ui.nodes(restored).some(n => n.props.className === 'pet-combination-stage'), true);

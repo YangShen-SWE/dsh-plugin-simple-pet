@@ -49,7 +49,7 @@ foreach ($name in @('Prefs', 'Sizes', 'Cells')) { Invoke-Expression (Get-Assignm
 foreach ($name in @('Set-PetPreferenceValues', 'Reload-PetPreferences', 'Save-Prefs', 'Set-PetSize', 'Set-ModeVisual', 'Start-Track', 'Start-EventMotion', 'Get-Frame')) {
   Invoke-Expression (Get-FunctionText $petAst $name)
 }
-foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
+foreach ($name in @('Get-BillingMode', 'Format-QuotaPercent', 'Format-QuotaReset', 'Test-QuotaFresh', 'Get-QuotaStatus', 'Get-QuotaIdentityLabel', 'Update-PetUsageCard', 'Refresh-BillingMode')) {
   Invoke-Expression (Get-FunctionText $asts['usage-view.ps1'] $name)
 }
 # Freeze only the clock choice, not production preference/visual functions.

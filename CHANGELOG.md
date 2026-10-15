@@ -1,5 +1,17 @@
 # 更新记录 / Changelog
 
+## v0.7.0 — Codex 只读账号识别（2026-10-15）
+
+- **为什么更新：** 先让用户确认额度所属来源及账号，避免把默认账号当成实际请求账号；公共切号有共享连接副作用，多账号收费预热需要可靠绑定，不能为了按钮或版本号混成未经验证的写操作。
+- 产品方案评审团三位成员独立只读评审，主会话核验价值、体验和架构交接，拆成恰好两步；本版完成只读首期。评审不是测试，不编造采用率或工期。
+- WPF 面板显示“激活/默认 #匿名短标识”，不改变面板高度、额度/重置位置、经典/简洁模式、四尺寸、五主题、拖动和右键无交互。
+- 原生 DSH 设置在 Codex 模式显示可选脱敏邮箱和匿名标识；缺失不猜，默认账号与实际请求选择明确区分。前后 status 校验唯一、有效去重账号；账号/来源不一致或过期不确认身份。
+- 新鉴权 GET/HEAD account 路由仅返回内存遮罩，no-store；复用既有 status/usage，不新增上游轮询。原始邮箱、label、原始账号 ID 不转发；遮罩也不进入 state/统计/偏好/日志。来源切换清除身份，普通查询与预热写回都校验选择代际。
+- 不新增偏好、不改已有预热计划、不触发真实切号或模型调用。本版没有切号按钮、多账号预热、多账号额度列表或完整邮箱展开；详见 [两步计划](ACCOUNT-ROADMAP.md) 与[能力证据](MULTI-ACCOUNT-NOTES.md)。
+- 明日 2026-10-16 16:00 Europe/Copenhagen 继续切号与预热能力门控。**切号按钮只能在受支持订阅插件已绑定至少两个 Codex 账号、公共列表新鲜有效且支持切换时启用**；单账号/未登录/未知/过期禁用。缺可靠绑定或费用/共享副作用决策时暂缓，不后台轮换账号。
+- 源码通过 80 项新增／受影响 Node 检查及 69757 条原生断言（身份 887、主题 54702、简洁 4924、陪伴 8344、回执 214、尺寸 438、偏好 216、额度呈现 32）。仅模拟/私有临时文件/真实隐藏 WPF 定向验证；没有全量套件、真实账号请求、模型请求或自动宿主重启。完整宿主/多DPI/真实账号验收不在本轮结果之内。
+- Add read-only source-aware account identity, optional masked email in settings and anonymous IDs on the native panel. Reuse subscription reads, isolate presentation in memory behind an authenticated no-store endpoint, reject ambiguous/stale/mismatched identity and retain privacy and existing warm-up behavior. Defer shared-account mutations and account-bound paid warm-up to the scheduled second task with explicit capability and user-decision gates.
+
 ## v0.6.6 — 简洁模式与依赖说明（2026-10-15）
 
 - **更新原因：** 需要不带人物和动效的纯余额／额度面板；同时澄清 Codex 额度不是桌宠独立登录查询，而依赖两个受支持公共订阅插件中的一个及宿主公共连接。版本更新、市场简介审核和客户端升级是不同环节。

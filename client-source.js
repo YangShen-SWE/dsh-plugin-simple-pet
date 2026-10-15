@@ -31,6 +31,19 @@ export function quotaStatus(snapshot, now = Date.now()) {
   return ({ ready: '当前账号 · 官方报告', reported: '默认账号 · 可能缓存', loading: '查询额度中…', 'signed-out': '请在订阅插件登录', unsupported: '未发现支持的订阅接口', switching: '账号切换中…', stale: '上次额度 · 待更新' })[q.status] || '额度暂不可用';
 }
 
+export function accountSummary(snapshot, identity, elapsedMs = 0) {
+  const q = snapshot?.codex;
+  if (!identity || identity.status !== 'ready' || !q || !['ready', 'reported'].includes(q.status)
+    || identity.provider !== q.provider || identity.selection !== q.selection || identity.accountKey !== q.accountKey
+    || !(typeof identity.accountKey === 'string' && identity.accountKey.length === 16 && /^[a-f0-9]{16}$/.test(identity.accountKey)) || !Number.isFinite(elapsedMs) || elapsedMs < 0
+    || !(identity.validForMs > 0 && identity.validForMs <= 120000 && elapsedMs < identity.validForMs)) return '账号身份待确认；不会根据旧额度猜测邮箱。';
+  const source = identity.provider === 'openai-codex' && identity.selection === 'active' ? '激活账号（专用订阅插件）'
+    : identity.provider === 'codex' && identity.selection === 'default' ? '默认账号（通用订阅插件，Pool 可能另选账号）' : null;
+  if (!source) return '账号来源未确认';
+  const email = typeof identity.maskedEmail === 'string' && /^[A-Za-z0-9]\*{3}@[A-Za-z0-9]\*{3}\.[a-z]{2,24}$/.test(identity.maskedEmail) ? identity.maskedEmail : '邮箱未提供';
+  return `${source}：${email} · #${identity.accountKey.slice(0, 8)}。不代表每次模型请求的实际执行账号。`;
+}
+
 export function quotaReset(window, timeZone) {
   if (!Number.isFinite(window?.resetAt) || window.resetAt <= 0) return '重置时间未知';
   try { return '重置 ' + new Intl.DateTimeFormat('zh-CN', { timeZone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(window.resetAt)); }
@@ -80,7 +93,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     return h('div', { className: `pet-card-preview ${codex ? 'codex' : 'deepseek'}${compact ? ' compact' : ''}`, style: cardCssVariables(theme, mode, peak), 'data-pet-theme': theme, 'data-pet-mode': mode, 'data-preview-only': true },
       h('div', { className: 'pet-card-header' }, h('span', null, compact ? codex ? 'Codex' : 'DeepSeek' : codex ? 'CODEX · 订阅额度' : 'DEEPSEEK · API 余额'),
         !codex && h('span', { className: 'pet-card-badge' }, peak ? '☀ 峰值价' : '☾ 谷时价')),
-      codex ? h('div', { className: 'pet-card-quota' }, !compact && h('span', { className: 'pet-card-status' }, '当前账号 · 官方报告'), bar('5h 剩余', 82), bar('周剩余', 64, true)) :
+      codex ? h('div', { className: 'pet-card-quota' }, h('span', { className: 'pet-card-status' }, '激活 #a1b2c3d4 · 合成示意'), bar('5h 剩余', 82), bar('周剩余', 64, true)) :
         h('div', { className: 'pet-card-balance-row' }, h('strong', { className: 'pet-card-balance' }, '¥128.60'), h('span', { className: 'pet-card-hit' }, compact ? '命中 84%' : '缓存命中 84%')));
   };
   async function request(path, init = {}) {
@@ -95,6 +108,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const [tab, setTab] = useState('settings'), [range, setRange] = useState('week'), [chartUnit, setChartUnit] = useState('tokens');
     const [previewPeak, setPreviewPeak] = useState(false);
     const [application, setApplication] = useState(null);
+    const [account, setAccount] = useState(null);
     const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
     const alive = useRef(false), draftRef = useRef(null), editVersion = useRef(0), saving = useRef(false);
     useEffect(() => {
@@ -104,15 +118,18 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       let pending = false;
       const refresh = async () => {
         // Re-evaluate the short lease even when a previous local request is stalled.
-        if (alive.current) setApplication(previous => previous ? { ...previous } : null);
+        if (alive.current) { setApplication(previous => previous ? { ...previous } : null); setAccount(previous => previous ? { ...previous } : null); }
         if (pending) return;
         pending = true;
+        const identity = request('account', { signal: controller.signal })
+          .then(data => { if (alive.current) setAccount({ ...data, receivedAt: monotonicNow() }); })
+          .catch(() => { if (alive.current) setAccount(null); });
         const receipt = request('application', { signal: controller.signal })
           .then(data => { if (alive.current) setApplication({ ...data, receivedAt: monotonicNow() }); })
           .catch(() => { if (alive.current) setApplication(null); });
         try { const data = await request('state', { signal: controller.signal }); if (alive.current) setSnapshot(data); }
         catch { /* A temporary state failure never writes preferences or requests upstream data. */ }
-        finally { await receipt; pending = false; }
+        finally { await Promise.all([receipt, identity]); pending = false; }
       };
       void refresh();
       const timer = setInterval(refresh, 5000);
@@ -175,6 +192,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       h('div', { className: 'pet-settings-tabs', role: 'tablist', 'aria-label': '桌宠设置与统计' },
         ...[['settings','设置'],['stats','统计']].map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
       error && h('p', { role: 'alert', className: 'pet-settings-error' }, error), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
+      codex && group('Codex 账号识别（只读）',
+        h('p', { className: 'pet-settings-hint', role: 'status', 'data-account-identity': true }, accountSummary(snapshot, account, account ? monotonicNow() - account.receivedAt : 0)),
+        h('p', { className: 'pet-settings-hint' }, '邮箱仅在此页面内存中脱敏显示，不写入桌宠快照。面板显示来源与匿名短标识。本版不提供切号按钮或多账号预热。'),
+        h('p', { className: 'pet-settings-hint' }, '后续切号按钮仅在受支持订阅插件已绑定至少两个有效 Codex 账号、公共列表新鲜可核验且支持切换时启用；单账号、未登录、列表未知或过期均禁用。请先在订阅插件管理账号，桌宠不代管登录。')),
       !draft ? h('div', null, h('p', null, error ? '设置不可用，未修改原文件。' : '正在读取桌宠设置…'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取')) :
       tab === 'settings' ? h('form', { onSubmit: e => { e.preventDefault(); void save(); } },
         group('陪伴与舒适',

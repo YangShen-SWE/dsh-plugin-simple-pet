@@ -94,7 +94,7 @@ test('comfort controls are first, drafts remain local, and explicit save only pa
     ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); ui.render();
     const writes = ui.calls.filter(c => c.method === 'PUT'); assert.equal(writes.length, 1);
     assert.deepEqual(JSON.parse(writes[0].body).patch, { quietMode: true, feedbackStyle: 'gentle', reduceMotion: true, disableFlashes: true, disableFloats: true });
-    assert(ui.calls.every(c => /\/preferences$|\/state$|\/application$/.test(c.url)));
+    assert(ui.calls.every(c => /\/preferences$|\/state$|\/application$|\/account$/.test(c.url)));
     ui.find(n => n.props.name === 'quietMode').props.onChange({ target: { checked: false } }); ui.render();
     for (const key of ['reduceMotion', 'disableFlashes', 'disableFloats']) assert.equal(ui.find(n => n.props.name === key).props.checked, true);
     assert.equal(ui.find(n => n.props.name === 'feedbackStyle').props.value, 'gentle');

@@ -45,6 +45,12 @@ function Get-QuotaStatus($quota, $snapshot = $script:LastSnapshot) {
     default { return '额度暂不可用' }
   }
 }
+function Get-QuotaIdentityLabel($quota) {
+  if ($quota.status -notin @('ready', 'reported') -or $quota.accountKey -isnot [string] -or $quota.accountKey -cnotmatch '\A[a-f0-9]{16}\z') { return 'CODEX · 订阅额度' }
+  if ($quota.status -eq 'ready' -and -not (Test-QuotaFresh $quota)) { return 'CODEX · 订阅额度' }
+  $prefix = if ($quota.provider -eq 'openai-codex' -and $quota.selection -eq 'active') { '激活 #' } elseif ($quota.provider -eq 'codex' -and $quota.selection -eq 'default') { '默认 #' } else { return 'CODEX · 订阅额度' }
+  return $prefix + $quota.accountKey.Substring(0, 8)
+}
 function Update-PetUsageCard {
   if ($null -eq $script:Window) { return }
   $codexMode = (Get-BillingMode) -eq 'codex'
@@ -81,6 +87,8 @@ function Update-PetUsageCard {
     $status = Get-QuotaStatus $quota
     $stale = $status -eq '上次额度 · 待更新'
     if ($stale) { $status = '上次额度 · 待更新' }
+    $header = $script:Window.FindName('CodexHeader')
+    if ($header) { $header.Text = Get-QuotaIdentityLabel $quota }
     $script:QuotaStatus.Text = $status
     $script:CodexPanel.Opacity = if ($stale) { 0.72 } else { 1 }
     foreach ($kind in @('fiveHour', 'weekly')) {
