@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.8.0 · 明确确认的 Codex 共享账号切换](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.8.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.7.1 · 明确确认的 Codex 共享账号切换](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.1)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：随手查看 DeepSeek 余额与峰谷价格、Codex 额度与重置时间。六款人物与五种信息框自由搭配，支持安静模式、温和反馈和 DSH 原生设置。
 
@@ -22,7 +22,9 @@ A quiet Windows anime desktop companion for DeepSeek balances and Codex quotas, 
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
 
-## v0.8.0 更新重点：明确确认切号，能力不足不强开（2026-10-15）
+## v0.7.1 更新重点：明确确认切号，能力不足不强开（2026-10-15）
+
+> **版本号更正：** 此功能版本按用户要求从此前的 v0.8.0 调整为 v0.7.1；运行代码相同。本次仅校验版本、包内容及发布指向，不重复执行下述已通过的功能测试；旧标签仅保留历史。
 
 按用户新要求，第二任务提前到今天完成可安全交付的部分，**原 2026-10-16 16:00 Europe/Copenhagen 定时已取消**。
 
@@ -33,7 +35,7 @@ A quiet Windows anime desktop companion for DeepSeek balances and Codex quotas, 
 - **多账号 warm-up 仍不可用：** 已提供明确能力状态和原因；本机缺少经过集成验证的公开账号绑定调用及逐账号预算授权，不后台轮换共享账号模拟。多账号额度列表、WPF 卡片切号按钮与完整邮箱展开也未交付：WPF 尚无可信命令 IPC，设置页入口不冒充面板按钮。
 - **验证范围：** 源码通过 160 项新增／受影响 Node 检查、1101 条原生断言（身份 887、回执 214），仅 mock 公共 RPC、私有临时文件及隐藏 WPF。未跑全量、未真实切号／读凭据／调模型／自动重启。真实宿主、实际依赖账号和多 DPI 仍待明确授权的实机验收。
 
-v0.8.0 adds explicit, separately confirmed shared active/default account switching in native settings, gated on two fresh valid bound accounts and reviewed exact addon versions. It does not add a WPF action button or enable multi-account warm-up. Unknown write outcomes quarantine subsequent local switching and automatic warm-up until the user verifies upstream and fully restarts DSH; a timeout cannot cancel an already sent mutation. Existing opt-in schedules are preserved, and may resume after a successfully verified switch. The originally scheduled follow-up was cancelled and its safe increment delivered today. No live account/model tests or full-suite claim. See [scope and remaining decisions](ACCOUNT-ROADMAP.md).
+v0.7.1 adds explicit, separately confirmed shared active/default account switching in native settings, gated on two fresh valid bound accounts and reviewed exact addon versions. It does not add a WPF action button or enable multi-account warm-up. Unknown write outcomes quarantine subsequent local switching and automatic warm-up until the user verifies upstream and fully restarts DSH; a timeout cannot cancel an already sent mutation. Existing opt-in schedules are preserved, and may resume after a successfully verified switch. The originally scheduled follow-up was cancelled and its safe increment delivered today. No live account/model tests or full-suite claim. See [scope and remaining decisions](ACCOUNT-ROADMAP.md).
 
 ## v0.7.0 更新重点：先看清账号，再安全切换（2026-10-15，历史首期）
 
@@ -44,10 +46,10 @@ v0.8.0 adds explicit, separately confirmed shared active/default account switchi
 - **隐私与正确性：** 复用既有额度查询，不新增上游轮询；只读鉴权内存接口显示邮箱，原始邮箱及遮罩都不进入桌宠快照、统计、偏好或日志。前后账号不一致、来源变化、过期／异常时不将旧邮箱配给新额度。不会根据标签或 opaque ID 猜邮箱。
 - **本版未实现：** 切号按钮、多账号额度列表、多账号 warm-up、完整邮箱展开。明天的任务继续安全切号与预热适配；不具备公共账号绑定或需用户决定时可以明确暂缓，不能后台循环切号替代。
 - **后续切号启用条件（用户要求）：只有先在受支持的其他订阅插件绑定至少两个 Codex 账号，按钮才可启用。** 还须有同来源新鲜、有效去重公共列表和切号接口，非 busy／本地预热中；单账号、未登录、缺插件、列表未知／过期／失败均禁用并解释，确认前再次核验。当前 v0.7.0 没有假可用按钮，桌宠不代管登录。
-- 当时登记第二任务（后按用户要求取消并在 v0.8.0 提前交付安全增量）：**原 2026-10-16 16:00 Europe/Copenhagen（UTC+02:00）**，详见[两步计划与待决事项](ACCOUNT-ROADMAP.md)。定时继续实现不等于授权真实切号或收费调用，也不保证依赖缺失时强开功能。
+- 当时登记第二任务（后按用户要求取消并在 v0.7.1 提前交付安全增量）：**原 2026-10-16 16:00 Europe/Copenhagen（UTC+02:00）**，详见[两步计划与待决事项](ACCOUNT-ROADMAP.md)。定时继续实现不等于授权真实切号或收费调用，也不保证依赖缺失时强开功能。
 - 源码通过 **80 项新增／受影响 Node 检查、69757 条原生断言**。本次不跑全量，不发真实账号／模型请求、不重启。完整宿主页面、多 DPI 与真实账号集成仍待用户重启后验收；后续保存偏好沿用热应用。
 
-v0.7.0 delivers read-only Codex identity: anonymous active/default account IDs on the WPF panel and masked optional email in native DSH settings. Raw and masked emails remain outside persisted pet snapshots/ledgers/preferences/logs. Existing status/usage reads are reused; no extra upstream polling, account changes or LLM requests. A default account is not a guarantee of the account selected by a model pool. No switching button or multi-account warm-up ships yet. Future switching requires at least two Codex accounts already bound in a supported subscription addon, a fresh validated same-source list and a supported public mutation API. One/unknown/stale account state must disable the control. The original 2026-10-16 16:00 Europe/Copenhagen follow-up was subsequently cancelled; v0.8.0 delivers its safe increment early and keeps unsafe or undecided parts unavailable with reasons.
+v0.7.0 delivers read-only Codex identity: anonymous active/default account IDs on the WPF panel and masked optional email in native DSH settings. Raw and masked emails remain outside persisted pet snapshots/ledgers/preferences/logs. Existing status/usage reads are reused; no extra upstream polling, account changes or LLM requests. A default account is not a guarantee of the account selected by a model pool. No switching button or multi-account warm-up ships yet. Future switching requires at least two Codex accounts already bound in a supported subscription addon, a fresh validated same-source list and a supported public mutation API. One/unknown/stale account state must disable the control. The original 2026-10-16 16:00 Europe/Copenhagen follow-up was subsequently cancelled; v0.7.1 delivers its safe increment early and keeps unsafe or undecided parts unavailable with reasons.
 
 ## v0.6.6 更新重点：简洁模式与使用条件（2026-10-15）
 
@@ -155,10 +157,10 @@ v0.6.5 rationale: saving previously proved only a disk write, not successful nat
 ### 安装与升级
 
 1. 在 Windows 上安装 DSH。DeepSeek 凭据在 **DSH 内**配置；Codex 额度须安装、启用并登录 **`dsh-codex-subscription` 或 `dsh-plugin-subscriptions`（二选一）**，且宿主有公共连接接口，详见上方使用条件。凭据由 DSH / 订阅插件管理，无需填入桌宠。
-2. 从 [v0.8.0 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.8.0) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
+2. 从 [v0.7.1 发布页](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.1) 下载源码 ZIP 并解压到**长期保留的目录**，或运行：
 
    ```powershell
-   git clone --branch v0.8.0 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
+   git clone --branch v0.7.1 https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git
    ```
 
 3. 安装完整目录，将路径换成实际解压路径。不要只复制某个脚本；所有运行文件和 `assets/` 都需保留。
@@ -282,7 +284,7 @@ Settings and statistics now live in **DSH → Settings → 桌宠**, using the h
 ### Install or upgrade
 
 1. Use Windows and DSH. Configure DeepSeek in DSH; for Codex quota, install/enable and sign in to **either `dsh-codex-subscription` or `dsh-plugin-subscriptions`**, with the host public connection adapter available. Never give the pet Codex credentials.
-2. Download the source ZIP from [v0.8.0](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.8.0), or clone the tagged version to a permanent directory. Install the **whole directory**:
+2. Download the source ZIP from [v0.7.1](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.1), or clone the tagged version to a permanent directory. Install the **whole directory**:
 
    ```powershell
    dsh plugin --profile desktop add "file:C:/path/to/dsh-plugin-simple-pet"
