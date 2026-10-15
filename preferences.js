@@ -7,7 +7,7 @@ export const DEFAULT_PREFERENCES = Object.freeze({
   skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
   codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
   codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
-  quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
+  compactMode: false, quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
 });
 
 const enums = {
@@ -17,7 +17,7 @@ const enums = {
   billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'], feedbackStyle: ['classic', 'gentle'],
 };
 const bounds = { codexQuotaRefreshSeconds: [1, 3600], sleepMinutes: [1, 240] };
-const booleans = new Set(['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats']);
+const booleans = new Set(['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup', 'compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats']);
 const validTime = value => typeof value === 'string' && value.length === 5
   && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);

@@ -29,7 +29,7 @@ test('defaults are exact, frozen, fresh and do not expose unknown values', () =>
     skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
     codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
     codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
-    quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
+    compactMode: false, quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
   });
   assert.ok(Object.isFrozen(DEFAULT_PREFERENCES));
   for (const raw of [undefined, null, [], true, 5, 'night', { left: 1, top: 2, secret: 'private' }]) {

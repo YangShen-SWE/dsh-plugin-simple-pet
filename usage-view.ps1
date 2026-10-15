@@ -50,8 +50,31 @@ function Update-PetUsageCard {
   $codexMode = (Get-BillingMode) -eq 'codex'
   $script:DeepSeekPanel.Visibility = if ($codexMode) { 'Collapsed' } else { 'Visible' }
   $script:CodexPanel.Visibility = if ($codexMode) { 'Visible' } else { 'Collapsed' }
-  $script:Root.Height = if ($codexMode) { 360 } else { 296 }
+  $compact = $script:Prefs.compactMode -eq $true
   $script:Card.Height = if ($codexMode) { 156 } else { 92 }
+  $script:Root.Height = if ($compact) { $script:Card.Height + 10 } elseif ($codexMode) { 360 } else { 296 }
+  [Windows.Controls.Canvas]::SetTop($script:Card, $(if ($compact) { 5 } else { 199 }))
+  if ($script:SpriteLayer) { $script:SpriteLayer.Visibility = if ($compact) { 'Collapsed' } else { 'Visible' } }
+  # Native theme progress bars may glow even when determinate; compact must not.
+  if ($compact -and -not $script:CompactQuotaBarTemplate) {
+    $script:CompactQuotaBarTemplate = [Windows.Markup.XamlReader]::Parse(@'
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="{x:Type ProgressBar}">
+  <Grid x:Name="PART_Track" Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+    <Border x:Name="PART_Indicator" HorizontalAlignment="Left" Background="{TemplateBinding Foreground}"/>
+  </Grid>
+</ControlTemplate>
+'@)
+  }
+  foreach ($name in @('FiveHourBar', 'WeeklyBar')) {
+    $bar = $script:Window.FindName($name)
+    if ($null -eq $bar) { continue }
+    if ($compact) { $bar.Template = $script:CompactQuotaBarTemplate }
+    elseif ($script:CompactQuotaBarTemplate -and $bar.Template -eq $script:CompactQuotaBarTemplate) { $bar.ClearValue([Windows.Controls.Control]::TemplateProperty) }
+  }
+  if ($compact) {
+    if ($script:SleepMark) { $script:SleepMark.Visibility = 'Collapsed' }
+    if ($script:CriticalMark) { $script:CriticalMark.Visibility = 'Collapsed' }
+  }
   $snapshot = $script:LastSnapshot
   if ($codexMode) {
     $quota = $snapshot.codex

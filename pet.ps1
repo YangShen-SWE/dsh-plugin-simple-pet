@@ -27,16 +27,16 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
 function Set-PetPreferenceValues($saved) {
   # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
-  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
+  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
   foreach ($key in $defaults.Keys) {
     # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
     if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     else { $script:Prefs[$key] = $defaults[$key] }
   }
-  foreach ($key in @('quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
+  foreach ($key in @('compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
     if ($script:Prefs[$key] -isnot [bool]) { $script:Prefs[$key] = $false }
   }
   if ($script:Prefs.feedbackStyle -isnot [string] -or $script:Prefs.feedbackStyle -cnotin @('classic', 'gentle')) { $script:Prefs.feedbackStyle = 'classic' }
@@ -104,6 +104,7 @@ function Reload-PetPreferences([switch]$Force) {
     Invalidate-PetPreferencesApplication
     $oldMode = $script:Prefs.billingMode
     $oldSize = $script:Prefs.size
+    $oldCompact = $script:Prefs.compactMode
     $oldTheme = $script:Prefs.cardTheme
     Set-PetPreferenceValues $snapshot.Saved
     if ($null -ne $script:Window) {
@@ -112,7 +113,7 @@ function Reload-PetPreferences([switch]$Force) {
       $script:ApplyingPetPreferences = $true
       try {
         if ($script:Prefs.billingMode -ne $oldMode) { Refresh-BillingMode }
-        elseif ($retry -or $script:Prefs.size -ne $oldSize) { Set-PetSize }
+        elseif ($retry -or $script:Prefs.size -ne $oldSize -or $script:Prefs.compactMode -ne $oldCompact) { Set-PetSize }
         Update-PetUsageCard
         if ($script:CardThemeCatalog -and ($retry -or $script:Prefs.cardTheme -cne $oldTheme)) {
           $peak = if ((Get-BillingMode) -eq 'codex') { $false } else { Get-Peak }
@@ -268,7 +269,9 @@ $script:Sizes = @{ tiny = 0.625; small = 0.85; medium = 1.0; large = 1.25 }
 function Set-PetSize {
   $scale = [double]$script:Sizes[$script:Prefs.size]
   $script:Window.Width = 272 * $scale
-  $script:Window.Height = $(if ((Get-BillingMode) -eq 'codex') { 360 } else { 296 }) * $scale
+  $codexMode = (Get-BillingMode) -eq 'codex'
+  $height = if ($script:Prefs.compactMode -eq $true) { if ($codexMode) { 166 } else { 102 } } elseif ($codexMode) { 360 } else { 296 }
+  $script:Window.Height = $height * $scale
   if (-not $script:ApplyingPetPreferences) {
     $area = [Windows.SystemParameters]::WorkArea
     # Keep startup/preview resizing in bounds, but never move on host changes.

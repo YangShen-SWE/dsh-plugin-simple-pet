@@ -1,5 +1,18 @@
 # 更新记录 / Changelog
 
+## v0.6.6 — 简洁模式与依赖说明（2026-10-15）
+
+- **更新原因：** 需要不带人物和动效的纯余额／额度面板；同时澄清 Codex 额度不是桌宠独立登录查询，而依赖两个受支持公共订阅插件中的一个及宿主公共连接。版本更新、市场简介审核和客户端升级是不同环节。
+
+- 新增默认关闭的严格布尔偏好 `compactMode`，DSH 原生设置显式保存并支持可靠应用回执；组合预览同步隐藏人物。
+- 简洁模式只显示 DeepSeek 余额／Codex 额度卡片，缩短实际窗口与逻辑画布，不留下原人物的透明占位。保留五款信息框与四种尺寸，左键拖动和右键无交互不变。
+- 强制静态视觉策略，清除在播的角色、余额缩放、叠图、睡眠标记、闪光与飘字；恢复原模式时不补播旧事件。隐藏时不再更新人物帧，真实数据／事件游标／统计仍继续处理。
+- 不清空人物、主题、舒适偏好、坐标或已有预热选择；没有新增真实模型请求、账号切换或多账号预热。只做新／受影响测试，不跑全量套件或真实模型请求。按授权发布 v0.6.6、更新本地副本，不自动重启。
+- 补充当前 Codex 两条订阅插件依赖、多账号只读展示和账号绑定 warm-up 的可行性及安全边界，详见多账号说明；理论方案不是已经实现的能力。
+- 源码定向验证通过：58 项 Node 检查、14168 条原生断言（简洁 4924、陪伴 8344、回执 214、尺寸 438、偏好 216、额度呈现 32）。仅模拟服务、私有临时文件与真实隐藏 WPF；不代表所有宿主版本与账号已实机验收。
+- 明确两个 Codex 公共插件为二选一，DeepSeek 不依赖它们；现有自动预热要求更严格的新鲜活动账号报告。稳定 Release 的同名 latest 安装包自动跟随新版，简介修改仍在既有市场 PR #7391 审核，本机插件仍需执行更新。
+- Add opt-in panel-only compact mode with all visual effects suppressed, independent saved preferences, live data and proper window geometry. Document either supported Codex addon, distinguish stable-asset updates from catalogue metadata review and installed upgrades, and assess public account capabilities without implementing account changes or multi-account warm-up. Publish v0.6.6 after focused validation only.
+
 ## v0.6.5 — 可靠设置应用回执（2026-10-11）
 
 - **更新原因：** 原先「保存成功」只能证明设置写盘，无法证明正常桌宠已经加载并成功应用视觉配置；仅看 mtime 或提前缓存也可能遗漏同时间戳变更及失败后的重试。本次把草稿、保存和真实近期应用确认分离，避免错误的成功提示。

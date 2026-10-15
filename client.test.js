@@ -64,7 +64,8 @@ test('mount only reads local settings and state; defaults never enable warm-up',
     assert.equal(transport.calls.length, 3); assert(transport.calls.every(c => c.method !== 'PUT'));
     assert.deepEqual(transport.calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
     const checkboxes = ui.nodes().filter(n => n.type === 'input' && n.props.type === 'checkbox');
-    assert.equal(checkboxes.length, 7); assert(checkboxes.every(n => n.props.checked === false));
+    assert.equal(checkboxes.length, 8); assert(checkboxes.every(n => n.props.checked === false));
+    assert.equal(checkboxes.find(n => n.props.name === 'compactMode').props.checked, false);
     assert.equal(checkboxes.filter(n => n.props.name?.startsWith('codexWarmup')).length, 3);
     assert.equal(ui.nodes().filter(n => n.props.role === 'radio' && !n.props['data-card-theme-choice']).length, 6);
     assert(ui.text(ui.render()).includes('Europe/Copenhagen'));

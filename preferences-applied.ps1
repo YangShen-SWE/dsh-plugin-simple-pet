@@ -35,7 +35,7 @@ function Get-PetAppliedPreferenceValues {
   $values = [ordered]@{}
   foreach ($key in @('skin', 'cardTheme', 'unit', 'size', 'billingMode', 'codexUnit',
     'codexQuotaRefreshSeconds', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset',
-    'codexWarmupStartup', 'sleepMinutes', 'quietMode', 'feedbackStyle', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
+    'codexWarmupStartup', 'sleepMinutes', 'compactMode', 'quietMode', 'feedbackStyle', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
     $values[$key] = $script:Prefs[$key]
   }
   return $values

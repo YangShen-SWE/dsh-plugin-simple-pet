@@ -1,10 +1,10 @@
 ﻿# Pure WPF presentation controls. No timers, persistence, network, or model calls.
 function Get-PetFeedbackPolicy($prefs = $script:Prefs) {
   $quiet = $prefs.quietMode -eq $true
-  $static = $quiet -or ($prefs.reduceMotion -eq $true)
+  $static = ($prefs.compactMode -eq $true) -or $quiet -or ($prefs.reduceMotion -eq $true)
   $gentle = $prefs.feedbackStyle -ceq 'gentle'
   return [pscustomobject]@{
-    Quiet = $quiet; Static = $static; Gentle = $gentle
+    Compact = ($prefs.compactMode -eq $true); Quiet = $quiet; Static = $static; Gentle = $gentle
     Flash = -not ($static -or $gentle -or ($prefs.disableFlashes -eq $true))
     Floats = -not ($static -or ($prefs.disableFloats -eq $true))
   }
@@ -57,6 +57,10 @@ function Reset-PetFeedbackEffects([DateTime]$now) {
 
 function Update-PetSpriteFrame([bool]$peak) {
   if ($null -eq $script:Sprite -or $null -eq $script:OldSprite) { return }
+  if ($script:Prefs.compactMode -eq $true) {
+    $script:LastFrameKey = ''
+    return
+  }
   $policy = Get-PetFeedbackPolicy
   $mode = if ($peak) { 'peak' } else { 'valley' }
   $action = Get-PetVisualAction $script:Current
@@ -79,7 +83,7 @@ function Update-PetSpriteFrame([bool]$peak) {
 function Sync-PetFeedbackPolicy {
   if ($null -eq $script:Window -or $null -eq $script:Sprite -or $null -eq $script:OldSprite) { return }
   $policy = Get-PetFeedbackPolicy
-  $key = "$($policy.Quiet)|$($policy.Static)|$($policy.Gentle)|$($policy.Flash)|$($policy.Floats)"
+  $key = "$($policy.Compact)|$($policy.Quiet)|$($policy.Static)|$($policy.Gentle)|$($policy.Flash)|$($policy.Floats)"
   if ($key -ceq $script:AppliedFeedbackKey) { return }
   $previous = $script:AppliedFeedbackPolicy
   $now = [DateTime]::UtcNow
@@ -90,7 +94,7 @@ function Sync-PetFeedbackPolicy {
   }
   Reset-PetFeedbackEffects $now
   # Consume the current snapshot at both static-mode boundaries; never replay it.
-  if ($null -eq $previous -or $previous.Static -ne $policy.Static -or $previous.Quiet -ne $policy.Quiet) {
+  if ($null -eq $previous -or $previous.Static -ne $policy.Static -or $previous.Quiet -ne $policy.Quiet -or $previous.Compact -ne $policy.Compact) {
     $script:SkipPresentationSnapshot = $true
     $script:FileTicks = $null
   }

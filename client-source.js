@@ -38,6 +38,7 @@ export function quotaReset(window, timeZone) {
 }
 
 export function companionSummary(prefs = {}) {
+  if (prefs.compactMode === true) return '简洁模式：仅显示余额/额度面板，隐藏人物，全部视觉动效关闭；闪光/暴击关闭；用量飘字关闭。余额、额度与统计继续更新。';
   const quiet = prefs.quietMode === true, reduced = prefs.reduceMotion === true, gentle = prefs.feedbackStyle === 'gentle';
   const motion = quiet ? '安静模式：角色静止；保持到关闭并保存' : reduced ? '减少动态：保留静态待机/睡姿，不播放动态反馈' : gentle ? '温和反馈：中性姿态、轻量确认，连续事件合并展示' : '经典反馈：保留原有角色动作';
   const flashes = !quiet && !reduced && !gentle && prefs.disableFlashes !== true;
@@ -177,6 +178,8 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       !draft ? h('div', null, h('p', null, error ? '设置不可用，未修改原文件。' : '正在读取桌宠设置…'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取')) :
       tab === 'settings' ? h('form', { onSubmit: e => { e.preventDefault(); void save(); } },
         group('陪伴与舒适',
+          toggle('compactMode', '简洁模式：仅显示余额/额度面板（隐藏人物，关闭全部动效）'),
+          draft.compactMode && h('p', { className: 'pet-settings-hint' }, '简洁模式覆盖下方所有视觉动效选项，退出后恢复原偏好；人物选择、信息框主题与预热开关不会被改写。'),
           h('p', { className: 'pet-settings-hint' }, '只改变桌宠视觉表现，不停止额度检测、统计或已开启的自动预热，也不屏蔽原有预热失败安全提醒。更改是草稿，保存后才应用。'),
           toggle('quietMode', '安静模式（关闭后保存，恢复下方偏好；不补播旧事件）'),
           field('feedbackStyle', '反馈风格', [['classic','经典：保留原有动作'],['gentle','温和：中性姿态与轻量确认']]),
@@ -198,10 +201,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
             'data-card-theme-choice': theme.id, onClick: () => change('cardTheme', theme.id),
           }, h('span', { className: 'pet-theme-name' }, theme.name), h('span', { className: 'pet-theme-pair', 'aria-hidden': true }, cardPreview(theme.id, 'deepseek', { compact: true }), cardPreview(theme.id, 'codex', { compact: true })), h('span', { className: 'pet-theme-description' }, theme.description))))),
         group('组合预览',
-          h('div', { className: 'pet-combination-caption' }, `${skins.find(([id]) => id === draft.skin)?.[1] || skins[0][1]} × ${CARD_THEMES.find(theme => theme.id === (draft.cardTheme || 'default'))?.name || CARD_THEMES[0].name}`),
+          h('div', { className: 'pet-combination-caption' }, `${draft.compactMode ? '简洁面板' : skins.find(([id]) => id === draft.skin)?.[1] || skins[0][1]} × ${CARD_THEMES.find(theme => theme.id === (draft.cardTheme || 'default'))?.name || CARD_THEMES[0].name}`),
           !codex && h('div', { className: 'pet-settings-actions', 'aria-label': '组合预览峰谷姿态' }, ...[[false,'谷时预览'],[true,'峰时预览']].map(([peak, label]) => h('button', { type: 'button', key: label, 'aria-pressed': previewPeak === peak, onClick: () => setPreviewPeak(peak) }, label))),
-          h('div', { className: 'pet-combination-preview', 'aria-label': '所选人物与信息框组合示意' },
-            h('div', { className: 'pet-combination-stage', 'aria-hidden': true }, h('div', { className: 'pet-combination-sprite', style: { backgroundImage: `url(${base}/asset/${draft.skin}-${!codex && previewPeak ? 'peak' : 'valley'}.png)` } })),
+          h('div', { className: `pet-combination-preview${draft.compactMode ? ' pet-combination-compact' : ''}`, 'aria-label': draft.compactMode ? '简洁面板示意（无人物与动效）' : '所选人物与信息框组合示意' },
+            !draft.compactMode && h('div', { className: 'pet-combination-stage', 'aria-hidden': true }, h('div', { className: 'pet-combination-sprite', style: { backgroundImage: `url(${base}/asset/${draft.skin}-${!codex && previewPeak ? 'peak' : 'valley'}.png)` } })),
             cardPreview(draft.cardTheme || 'default', codex ? 'codex' : 'deepseek', { peak: !codex && previewPeak })),
           h('p', { className: 'pet-settings-hint' }, '仅预览外观，数字为示意。切换人物不会更改主题；切换主题不会更改人物。点击保存后桌宠应用，两种模式自动使用对应样式。')),
         group('显示与休眠',
