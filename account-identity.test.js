@@ -112,7 +112,7 @@ function harness(send) {
   render(); return { render, nodes, text, cleanup() { cleanups.forEach(fn => fn?.()); } };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
-test('settings identity stays local-only; explicit switching is disabled before a fresh list', async t => {
+test('settings identity stays local-only and switching controls exist only on native panel', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] }); let elapsed = 0; t.mock.method(performance, 'now', () => elapsed);
   const calls = [], q = { status: 'ready', provider: 'openai-codex', selection: 'active', accountKey: KEY };
   let stall = false;
@@ -125,9 +125,9 @@ test('settings identity stays local-only; explicit switching is disabled before 
   });
   try {
     await settle(); ui.render(); const row = () => ui.nodes().find(n => n.props['data-account-identity']);
-    assert.match(ui.text(row()), /a\*\*\*@/); assert.match(ui.text(ui.render()), /至少两个有效 Codex 账号/);
+    assert.match(ui.text(row()), /a\*\*\*@/); assert.match(ui.text(ui.render()), /至少两个有效绑定账号/);
     assert.equal(calls.length, 4); assert(calls.every(c => !c.method || c.method === 'GET'));
-    assert.equal(ui.nodes().find(n => n.props['data-account-prepare']).props.disabled, true);
+    assert(!ui.nodes().some(n => n.props['data-account-prepare'] || n.props['data-account-list']));
     assert(!ui.nodes().some(n => n.props['data-account-confirm']));
     stall = true; elapsed = 1100; t.mock.timers.tick(5000); await settle(); ui.render(); assert.doesNotMatch(ui.text(row()), /a\*\*\*@/);
     const count = calls.length; t.mock.timers.tick(5000); await settle(); assert.equal(calls.length, count, 'no overlapping local polls');

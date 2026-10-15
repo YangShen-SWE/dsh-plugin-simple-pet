@@ -121,8 +121,9 @@ test('real backend registers guarded receipt route and binds only its own launch
   try {
     const data = join(root, 'DshSimpleDesktopPet'); await fs.mkdir(data, { recursive: true });
     const settings = join(data, 'settings.json'); await fs.writeFile(settings, JSON.stringify(DEFAULT_PREFERENCES));
-    apply(ctx, { petLauncher(options) { args = options; const stop = () => { running = false; };
+    apply(ctx, { panelStarter: async () => ({ url: 'http://127.0.0.1:1/panel', token: 'a'.repeat(64), close() {} }), petLauncher(options) { args = options; const stop = () => { running = false; };
       stop.applicationRuntime = () => ({ active: running, pid: 4321, runId: options.runId }); return stop; } });
+    await new Promise(resolve => setImmediate(resolve));
     assert.match(args.runId, /^[a-f0-9-]{36}$/);
     const store = new PreferencesStore(settings), saved = await store.read(), time = Date.now();
     await fs.writeFile(join(data, 'settings-applied-desktop.json'), JSON.stringify(receipt({ runId: args.runId,

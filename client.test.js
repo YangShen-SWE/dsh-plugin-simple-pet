@@ -107,7 +107,7 @@ test('Codex selection shows percent option but chart is correctly locked to Toke
     const previews = ui.nodes().filter(n => n.props.className === 'pet-settings-sprite');
     assert.equal(previews.length, 6);
     assert(previews.every(n => n.props.title === '形象预览'));
-    ui.find(n => n.props.role === 'tab' && ui.text(n) === '统计').props.onClick(); ui.render();
+    ui.find(n => n.props.role === 'tab' && ui.text(n) === '用量统计').props.onClick(); ui.render();
     assert.equal(ui.find(n => n.type === 'select' && n.props.disabled === true).props.value, 'tokens');
     assert.match(ui.text(ui.render()), /5 小时额度剩余/);
     assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
@@ -139,6 +139,62 @@ test('quota reset labels use the host timezone and reject invalid timestamps', (
   for (const window of [undefined,{}, {resetAt:NaN},{resetAt:Infinity},{resetAt:0},{resetAt:-1}]) assert.equal(quotaReset(window,'Asia/Shanghai'),'重置时间未知');
   assert.equal(quotaReset({resetAt},'invalid/timezone'),'重置时间未知');
 });
+test('top navigation partitions all setting groups without extra requests or writes', async () => {
+  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
+  const ui = harness(transport.send);
+  try {
+    await settle(); ui.render();
+    const tabs = () => ui.nodes().filter(n => n.props.role === 'tab');
+    assert.deepEqual(tabs().map(ui.text), ['常规', '外观与动效', '账号管理', '自动预热', '用量统计']);
+    for (const id of ['settings','appearance','accounts','warmup','stats','settings']) {
+      ui.find(n => n.props['data-pet-tab'] === id).props.onClick(); ui.render();
+      assert.equal(tabs().filter(n => n.props['aria-selected']).length, 1);
+      assert.equal(tabs().filter(n => n.props.tabIndex === 0).length, 1);
+      assert.equal(ui.find(n => n.props.role === 'tabpanel').props['aria-labelledby'], `pet-tab-${id}`);
+      const visible = ui.nodes().filter(n => n.props['data-pet-page'] && !n.props.hidden);
+      assert(visible.every(n => n.props['data-pet-page'] === id));
+      if (id !== 'stats') assert(visible.length > 0, id);
+      assert.equal(ui.nodes().some(n => n.type === 'form'), id !== 'stats');
+    }
+    assert.equal(transport.calls.length, 4);
+  } finally { ui.cleanup(); }
+});
+test('navigation keeps cross-page drafts and commits a single explicit preference patch', async () => {
+  const transport = mockTransport(), ui = harness(transport.send);
+  try {
+    await settle(); ui.render();
+    ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
+    ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
+    ui.find(n => n.props.name === 'compactMode').props.onChange({ target: { checked: true } });
+    ui.find(n => n.props['data-pet-tab'] === 'stats').props.onClick(); ui.render();
+    ui.find(n => n.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render();
+    assert.equal(ui.find(n => n.props.name === 'compactMode').props.checked, true);
+    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'tiny');
+    assert.equal(transport.calls.length, 4);
+    const form = ui.find(n => n.type === 'form'); assert.equal(form.props.noValidate, true);
+    form.props.onSubmit({ preventDefault() {} }); await settle(); ui.render();
+    assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, { size: 'tiny', compactMode: true });
+    assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 1);
+    assert(!transport.calls.some(c => c.url.endsWith('/multi-warmup')));
+  } finally { ui.cleanup(); }
+});
+test('navigation keyboard wraps arrows and Home/End with roving focus', async () => {
+  const ui = harness(mockTransport().send);
+  try {
+    await settle(); ui.render(); let focused = -1, prevented = 0;
+    const press = key => { ui.find(n => n.props.role === 'tablist').props.onKeyDown({ key, preventDefault() { prevented++; }, currentTarget: { querySelectorAll() { return Array.from({ length: 5 }, (_, i) => ({ focus() { focused = i; } })); } } }); ui.render(); };
+    press('ArrowLeft'); assert.equal(focused, 4);
+    press('ArrowRight'); assert.equal(focused, 0);
+    press('End'); assert.equal(focused, 4);
+    press('Home'); assert.equal(focused, 0);
+    press('ArrowRight'); assert.equal(focused, 1);
+    press('Escape'); assert.equal(prevented, 5);
+  } finally { ui.cleanup(); }
+});
+test('DeepSeek account subpage explains the Codex prerequisite without installing or reading accounts', async () => {
+  const transport = mockTransport(), ui = harness(transport.send);
+  try { await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render(); assert.match(ui.text(ui.render()), /请先在「常规」/); assert(!ui.nodes().some(n => n.props['data-dependency-install'])); assert.equal(transport.calls.length, 4); } finally { ui.cleanup(); }
+});
 test('built bundle follows the real host factory contract and owns native settings registration/CSS lifecycle', () => {
   let factory, added = 0, removed = 0, registration;
   const effects = [], React = { createElement() {}, useState() {}, useEffect() {}, useRef() {} };
@@ -146,7 +202,7 @@ test('built bundle follows the real host factory contract and owns native settin
   const sandbox = { window: { __ModuleLoader__: { load(row) { assert.equal(row.id,'dsh-plugin-simple-pet'); factory = row.factory; } } }, document };
   vm.runInNewContext(readFileSync(new URL('./lib/client.js', import.meta.url), 'utf8'), sandbox);
   const plugin = factory(id => { assert.equal(id, 'react'); return React; });
-  assert.deepEqual([...plugin.inject], ['slots']);
+  assert.deepEqual([...plugin.inject], ['slots', 'remote']);
   plugin.apply({ effect(fn) { effects.push(fn()); }, slots: { inject(name, fn) { assert.equal(name, 'settings.section'); effects.push(fn()); }, register(options, Component) { registration = { options, Component }; return () => {}; } } });
   assert.equal(registration.options.id, 'simple-desktop-pet'); assert.equal(registration.options.label(), '桌宠');
   assert.equal(typeof registration.Component, 'function'); assert.equal(added,1);

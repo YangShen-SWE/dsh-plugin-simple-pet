@@ -2,6 +2,10 @@
 
 ## 中文
 
+- **v0.7.2 面板多账号管理：** 显式开关默认关闭。开启后，公共 DTO 中已验证的邮箱可完整显示于桌宠信息框／悬停提示；仅在内存经随机 Bearer 能力保护的临时 `127.0.0.1` 通道传给自有 WPF 进程，不写邮箱或通道密钥到设置、state、统计、日志或命令行。通道拒绝浏览器 Origin、代理、重定向及非法负载；不承诺防御同用户恶意本机进程。过期／撤销／退出清除。面板一键切换不再二次确认，改变共享激活／默认账号且可能影响连接和已授权预热；至少两个有效绑定账号、写前复核、未知结果隔离仍生效。浏览器设置继续只显示遮罩，不提供原始邮箱展开；旧 accounts 写入口退休。用户明确确认安装时通过宿主 pluginManager 获取和执行订阅插件代码，可能访问 npm 注册源；已有同名插件不自动变更，不默认授权构建脚本。宿主没有原子 ifAbsent，不能保证并发管理同名包时零替换。此前 v0.7.1 的设置确认／无面板邮箱描述以下保留历史，不适用于 v0.7.2 当前行为。
+
+- **v0.7.2 多账号预热：** 通过通用订阅插件已公开的独立账号模型条目发送固定短提示，不读取凭据、不切换默认／激活账号，不回退其他账号。独立授权默认关闭；每账号每日一次逻辑请求，额度新鲜度未知需额外同意，不能视为 HTTP／Token／费用硬上限。公共状态和完整绑定模型 ID 只瞬时匹配，`multi-warmup.json` 仅保存账号短哈希、精确模型 SHA-256、显式授权、日期和尝试／终态；遮罩邮箱仅页面内存。请求跨发送边界后失败、超时或崩溃认领会持久暂停，保存配置不能清除。执行中授权变更同样保守暂停；不自动重试、回退或补发，不保证宿主中间件不改路由／重试。本轮验证没有真实模型调用。
+
 - 插件处理 DSH 中 `deepseek-official`、`deepseek-account`、`openai-codex` 与 `codex` 路由的模型用量事件。事件包含模型名、时间、Token 类别和数量；插件不读取或保存用户提问、回复正文。启用自动预热时只发送固定短提示 `Reply only OK.`，瞬时检查该请求的非空回复，不保存回复文本，也不读取用户会话历史。
 - API Key 路由查询余额时，插件通过 DSH 的 credentials 机制取得 API Key，并且仅向 `https://api.deepseek.com/user/balance` 发送；账号登录路由通过 DSH 的 `deepseekAccount.getBalance` 服务查询钱包，插件不接触账号令牌。两种凭据都不写入本插件的状态、统计或设置文件。
 - Codex 额度仅通过 DSH 公共的进程内连接适配器调用订阅插件的状态 / 用量接口；不读取 Codex 凭据文件、不取得 access / refresh token、不自行登录。v0.7.1 仅在用户主动读取并明确确认后调用公共共享账号选择接口；仅对已核验版本及至少两个有效已绑定账号启用，可能改变 DSH 共享连接／缓存，不是局部显示选项。一次性目标和列表只在内存与受保护请求中短时存在，不写原始账号 ID 或邮箱；未知写结果暂停本插件后续切号和预热，需在订阅插件核验后完整重启。公共 DTO 的邮箱瞬时用于构建遮罩，原始邮箱/标签不转发；设置页通过独立鉴权 no-store 内存接口显示遮罩，原始及遮罩邮箱都不写入桌宠快照、偏好、统计或日志，也不提供完整展开。原生面板及落盘仅使用账号 ID 的短哈希以隔离不同账号的额度变化。订阅插件可能自行请求其官方用量接口，桌宠不会自行携带 Codex 凭据联网。
@@ -13,6 +17,10 @@
 - 发布仓库不包含本机状态、会话日志、API Key 或 `work/` 中的开发检查文件。卸载插件不会自动删除本机数据；如需清除，请先退出 DSH 和桌宠，再自行删除上述目录。
 
 ## English
+
+- **v0.7.2 panel account management:** explicit default-off consent enables full public email display only in WPF memory, delivered over an ephemeral IPv4 loopback capability channel. No email/channel secret is persisted or put on the command line. Browser origins, proxies and redirects are rejected; this does not isolate malicious processes running as the same OS user. Settings still show only masked email. A panel click immediately cycles the shared active/default account without another dialog, retaining fresh two-account checks, pre-write verification and unknown-result quarantine. Explicit dependency installation uses the host's public pluginManager, may contact package registries and execute installed plugin code, never automatically changes an existing same-name addon or approves build scripts. The host has no atomic ifAbsent guarantee against concurrent third-party package changes. The historical v0.7.1 behavior below is superseded by v0.7.2.
+
+- **v0.7.2 multi-account warm-up:** separate default-off grants use reviewed public independent model entries, not shared-account rotation. Account/model identities are persisted only as hashes with consent, dates and attempt outcomes; masked email stays in page memory. Unknown quota freshness requires extra per-account consent. At most one logical request/account/day is not a hard HTTP/token/cost limit. Claims precede dispatch; unknown or crashed claims pause all automation persistently, including after disabling the feature. Legacy and multi-account daily claims conservatively block each other; unreadable journals are preserved and disable automation. No automatic retry, fallback, startup catch-up or live-account validation was performed.
 
 - The plugin processes usage events from DSH's `deepseek-official`, `deepseek-account`, `openai-codex`, and `codex` routes. It uses model names, timestamps, and token categories/counts, and does not read or store user prompt or response text. Opt-in automatic warm-up sends only the fixed prompt `Reply only OK.` and transiently checks its own nonblank response, without storing it or reading conversation history.
 - For the API-key route, it obtains the key through DSH credentials solely to request the official balance at `https://api.deepseek.com/user/balance`. For the sign-in route, it asks DSH's `deepseekAccount.getBalance` service for the wallet and never accesses the account token. Neither credential is written to its state, statistics, or settings files.

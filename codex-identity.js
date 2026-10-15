@@ -25,8 +25,13 @@ export function maskCodexEmail(value) {
 }
 
 export function codexIdentity(selected, provider, accountKey, checkedAt) {
-  return Object.freeze({ provider, selection: provider === 'codex' ? 'default' : 'active', accountKey,
-    maskedEmail: maskCodexEmail(provider === 'codex' ? selected.row.account : selected.row.email), checkedAt });
+  const candidate = provider === 'codex' ? selected.row.account : selected.row.email;
+  const identity = { provider, selection: provider === 'codex' ? 'default' : 'active', accountKey,
+    maskedEmail: maskCodexEmail(candidate), checkedAt };
+  // Full email is reachable only in-process by the opt-in capability channel.
+  // Never enumerable: accidental JSON snapshots still cannot persist the full address.
+  Object.defineProperty(identity, 'panelEmail', { value: identity.maskedEmail ? candidate : null });
+  return Object.freeze(identity);
 }
 
 export function identityEvidence(quota, identity, now = Date.now()) {
@@ -42,6 +47,19 @@ export function identityEvidence(quota, identity, now = Date.now()) {
     ...[quota.fiveHour, quota.weekly].filter(window => Number.isFinite(window?.resetAt)).map(window => window.resetAt)];
   return { status: 'ready', provider: identity.provider, selection: identity.selection, accountKey: identity.accountKey,
     maskedEmail: identity.maskedEmail, validForMs: Math.min(...deadlines) - now };
+}
+
+// A recently confirmed status identity remains useful when usage is unavailable or
+// a quota window expired. It is not evidence of fresh quota or a warm-up grant.
+export function panelIdentityEvidence(quota, identity, now = Date.now()) {
+  if (!identity || !quota || !['ready', 'reported', 'stale', 'unavailable'].includes(quota.status)
+    || quota.provider !== identity.provider || quota.selection !== identity.selection || quota.accountKey !== identity.accountKey
+    || !['openai-codex', 'codex'].includes(identity.provider)
+    || typeof identity.accountKey !== 'string' || identity.accountKey.length !== 16 || !/^[a-f0-9]{16}$/.test(identity.accountKey)
+    || !Number.isSafeInteger(identity.checkedAt) || identity.checkedAt > now || now - identity.checkedAt >= LEASE_MS)
+    return { status: 'unavailable' };
+  return { status: 'ready', selection: identity.selection, accountKey: identity.accountKey,
+    validForMs: LEASE_MS - (now - identity.checkedAt) };
 }
 
 export function accountIdentityHandler({ read, authorize }) {

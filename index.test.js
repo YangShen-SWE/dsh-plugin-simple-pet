@@ -172,11 +172,12 @@ test('both DeepSeek provider routes enter, while unrelated providers stay out', 
   };
   let petStarted = false;
   let petStopped = false;
-  apply(ctx, { petLauncher({ profile }) {
+  apply(ctx, { panelStarter: async () => ({ url: 'http://127.0.0.1:1/panel', token: 'a'.repeat(64), close() {} }), petLauncher({ profile }) {
     assert.equal(profile, 'desktop');
     petStarted = true;
     return () => { petStopped = true; };
   } });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(petStarted, true);
   const emit = listeners.get('session/event');
   const makeEvent = (seq, provider) => ({ seq, type:'assistant/message', time:'2026-09-29T01:00:00Z', data:{

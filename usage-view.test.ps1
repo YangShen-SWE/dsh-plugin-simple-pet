@@ -93,6 +93,11 @@ try {
   Assert-Equal $script:Window.FindName('WeeklyValue').Text '—' 'unknown weekly quota is not zero or full'
   Assert-Equal $script:Window.FindName('FiveHourReset').Text '重置时间未知' 'unknown reset explicit'
   Assert-Equal (Get-QuotaStatus ([pscustomobject]@{ status = 'reported' })) '默认账号 · 可能缓存' 'pooled/default account freshness not invented'
+  foreach ($status in @('ready', 'reported', 'loading', 'signed-out', 'unsupported', 'switching', 'stale', 'unavailable')) {
+    $script:LastSnapshot.codex = [pscustomobject]@{ status = $status; provider = 'openai-codex'; selection = 'active'; accountKey = 'f2f740cc12345678'; observedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+    Update-PetUsageCard
+    Assert-Equal $script:Window.FindName('CodexHeader').Text 'CODEX · 订阅额度' 'account/status never replaces Codex panel title'
+  }
   $script:Prefs.billingMode = 'deepseek'
   Update-PetUsageCard
   Assert-Equal (Test-PetEventVisible ([pscustomobject]@{ kind = 'output' })) $true 'legacy events remain DeepSeek-compatible'

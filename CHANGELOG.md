@@ -1,5 +1,42 @@
 # 更新记录 / Changelog
 
+## v0.7.2 — 分区设置、面板账号与每日多账号预热（2026-10-16）
+
+**更新原因：** 设置过长、账号操作入口分散，且已完成本地验证的多账号每日预热未进入公开稳定版。本次整合发布：分区导航、面板邮箱一键切号、用户主动依赖安装和默认关闭的每日账号绑定预热。启动／5h 满额多账号触发因上游证据不足仍不可用。
+
+### 设置分区与能力说明
+
+- 顶部导航拆分常规、外观与动效、账号管理、自动预热、用量统计；只有当前页面分区显示，窄屏换行，无横向拖动条。增加方向键、Home/End 与选中/焦点语义；跨页保留通用与多账号草稿，不触发保存、安装或绑定枚举。
+- 通用保存与多账号独立保存继续隔离；隐藏页面输入由后台严格校验，避免浏览器因不可见字段无法聚焦而阻止提交。原单账号三个预热开关保留，不冒充多账号启动/刷新功能。
+- 多账号接口只读返回触发能力：每日可用，启动满额/5h 刷新暂不可用；设置以禁用项和具体原因呈现，不允许保存无效的空开关。伪造 startup/reset 字段仍拒绝，未知额度额外授权不扩张。
+- 静态核验通用订阅 0.9.9 固定源码：force 失败可能返回 lastSnapshot；公共 usage 缺 fetchedAt、缓存/失败状态、账号回显和窗口原始时长，session 还可能按位置回退分类。故不据收到时间、100% 或 resetAt 变化自动调用；未新增实时多账号额度查询。
+- 发布前源码定向回归通过 437 项 Node 检查 / 76,414 项隔离 WPF 断言；独立 Edge + 真实 React 合成数据页面通过（包含 380px 外层容器、逐页可见性和切页零新增请求）。不是正在运行宿主或真实账号的验证。
+- 本次发布验证未真实查询账号/额度、切号、安装依赖、调模型或重启；完整宿主和真实账号仍待验收。
+- Partitioned navigation with persistent drafts and explicit fail-closed multi-account trigger capabilities; no false startup/reset automation or broader billing consent.
+
+### 面板多账号管理
+
+- 修正 Codex 主标题被「激活／默认 #匿名账号」替换的问题：各种账号来源及额度状态下均固定显示「CODEX · 订阅额度」，账号信息仅保留于独立管理栏。
+
+- 新增严格布尔 `multiAccountManagement`，默认关闭，原生设置显式保存并纳入实际应用回执。设置移除旧读取／选目标／确认切号流程，只保留开关、依赖说明和主动安装入口。
+- Codex 卡片增加邮箱和直接「切换」，按当前公共列表顺序轮换、无二次确认；仍以至少两个有效绑定账号、唯一当前、精确支持版本、未预热及未知结果隔离为前提，写前复核、成功回读、不重试回滚。
+- 原生异步内存 IPC 使用临时回环端口及随机 Bearer 能力、拒绝 Origin/重定向/代理并限制负载；关闭与失效清理。完整邮箱仅本地面板内存展示，不进入 state/偏好/统计/日志；设置 API 保持遮罩。不是对同用户恶意进程的防护。
+- 账号状态身份与额度新鲜度独立，过期/不支持的额度不伪装可用，但不会锁死已确认身份的切号入口。经典／简洁布局仅增 28 逻辑像素、保留主题/尺寸/位置/右键无交互。
+- 通过公开宿主 Remote 提供明确确认的 `dsh-plugin-subscriptions@0.9.9` 安装；同名依赖存在即停止，不自动升级/降级/启用，不默认批准构建脚本，未应用/需重启不伪报成功。宿主 install 无原子 ifAbsent，跨插件并发安装仍需避免。
+- 开发与发布验证未真实安装、切号、调模型、重启或跑全量测试；仅新增/受影响模拟和隐藏 WPF 验证。精确测试证据见本地面板验证记录。
+- Opt-in panel account cycling and full-email display via a capability-authenticated memory channel; explicit host dependency installation with no same-name replacement or build approval. Retain two-account, race, warm-up exclusion and unknown-outcome safety; no live-host claim.
+
+### 独立绑定的多账号每日预热
+
+- 尝试实现此前缺失的多账号 warm-up：仅支持静态核验的通用订阅插件 0.9.9 公共独立账号模型入口与宿主模型 API；不是轮换激活／默认账号，不回退其他账号或 Pool，不安装依赖。
+- 设置页主动读取、逐账号／模型授权、独立 CAS 保存，默认关闭。最多八账号、串行、每日每账号一次逻辑请求；额度原始新鲜度无法证明时默认跳过，需逐账号额外同意。不是 HTTP／Token／费用硬上限，不保证启动用量窗口。
+- 原子认领先于发送，跨实例文件锁、同日账号去重、模型变更不绕过、未来记录与时钟回拨保守阻止；启动／开启／休眠错过的 occurrence 不在下一 tick 补发。失败不自动重试，未知或遗留认领持久暂停全部自动预热，配置保存不清除。
+- 与旧单账号计划及本插件共享切号互斥，原有三个开关不改写；多账号启用时暂停单账号计划，执行中变更授权／模式保守中止并暂停。普通额度刷新、偏好、位置及视觉功能保留。
+- 只保存账号与完整模型 ID 的哈希、授权、日期／结果；遮罩邮箱仅内存。鉴权 no-store 新接口有严格 schema、读写大小限制、独立错误品牌，外部错误不能伪造 status 泄漏原文。
+- 独立复审发现并修复连接失效后的迟到调用、未知结果解除暂停、旧 journal 不可读时被覆盖及跨计划重启去重风险；源读取／时钟／模式更改均保守阻止自动补发。旧单账号合法 null 时间戳仍兼容，损坏日志保持原字节且明确告警，不使正常轮询失效。
+- 源码定向通过 358 项新增／直接受影响 Node 检查及 1101 条原生断言（身份 887、回执 214），仅 mock、竞态和私有 Temp。未跑全量、未调用真实账号／模型、未自动重启。实际依赖未安装时应显示不可用，不声称实机验收。
+- Default-off daily account-bound warm-up with explicit per-account consent, durable pre-dispatch claims, no account rotation/fallback and persistent unknown-result quarantine. Only public reviewed bindings, synthetic tests and isolated files; not a physical-request/token/cost cap or live validation.
+
 ## v0.7.1 — 明确确认的 Codex 共享账号切换（2026-10-15）
 
 - **版本号更正：** 按用户要求，将此前标记为 v0.8.0 的同一功能版本调整为 v0.7.1。仅修改版本及说明，不变更运行代码；原有测试结果为该相同代码的既有证据，本次只重新核验元数据、安装包和发布指向，不重复运行功能测试。已公开的旧标签保留历史，不作为最新版本。

@@ -79,7 +79,29 @@ export function applicationSummary(savedRevision, evidence, dirty = false, elaps
   return draft + '已保存版本：未获得有效回执。首次更新代码需完整退出并重启 DSH。';
 }
 
-export function createSimplePetClient(React, send = (url, init) => (globalThis.__DSH_TRANSPORT__?.fetch ?? globalThis.fetch)(url, init)) {
+export async function installPanelDependency(manager, authorized = () => true) {
+  const name = 'dsh-plugin-subscriptions', version = '0.9.9', spec = `${name}@${version}`;
+  if (!manager || ['listBundles', 'inspect', 'installBundle'].some(key => typeof manager[key] !== 'function')) return '本机宿主不支持应用内安装，请到 DSH 插件管理手动安装 ' + spec;
+  const check = () => { if (!authorized()) throw new Error('cancelled'); };
+  const present = rows => { if (!Array.isArray(rows) || rows.some(row => typeof row?.name !== 'string')) throw new Error('invalid'); return rows.some(row => row.name === name); };
+  try {
+    check(); if (present(await manager.listBundles())) return '已检测到同名插件：不会重复安装、升级、降级或自动启用；请到 DSH 插件管理核验版本与状态。';
+    check(); const inspected = await manager.inspect(spec, {}); check();
+    if (inspected?.status !== 'accepted' || inspected.kind !== 'registry' || inspected.name !== name || inspected.version !== version || inspected.bundle !== true) return '依赖检查未通过；未安装。请到 DSH 插件管理查看兼容性、网络或现有安装。';
+    if (present(await manager.listBundles())) return '检测到并发安装，已停止本次操作；不会主动更改已有插件。';
+    check(); const result = await manager.installBundle(spec, { enabled: true, approvedBuilds: [] }); check();
+    if (result?.pendingBuilds?.length) return '依赖含待批准构建脚本，未自动批准。请到 DSH 插件管理核验；不要盲目重试。';
+    if (result?.application === 'restart-required') return '宿主报告依赖已安装，需完整重启 DSH 才能加载；随后在订阅插件登录绑定账号。';
+    if (result?.application !== 'applied') return '依赖未确认成功加载，请到 DSH 插件管理核验；不会自动重试或批准脚本。';
+    const rows = await manager.listBundles(); check();
+    const row = Array.isArray(rows) && rows.find(row => row.name === name);
+    return row?.version === version && row.enabled === true && row.installed === true
+      ? '依赖已安装并启用；这不代表已登录。请到订阅插件登录绑定至少两个 Codex 账号，再保存开启多账号管理。'
+      : '宿主返回已应用，但依赖状态尚未确认；请到 DSH 插件管理核验，不会自动重试。';
+  } catch { return '依赖安装状态未确认，请到 DSH 插件管理核验；不会自动重试、批准构建脚本或显示内部日志。'; }
+}
+
+export function createSimplePetClient(React, send = (url, init) => (globalThis.__DSH_TRANSPORT__?.fetch ?? globalThis.fetch)(url, init), services = {}) {
   const h = React.createElement;
   const { useState, useEffect, useRef } = React;
   const base = 'api/dsh-plugin-simple-pet';
@@ -109,10 +131,11 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const [previewPeak, setPreviewPeak] = useState(false);
     const [application, setApplication] = useState(null);
     const [account, setAccount] = useState(null);
-    const [accountList, setAccountList] = useState(null), [target, setTarget] = useState('');
-    const [confirmAccount, setConfirmAccount] = useState(false), [accountBusy, setAccountBusy] = useState(false);
-    const [accountNote, setAccountNote] = useState('');
-    const accountAction = useRef({ version: 0, busy: false, controller: null });
+    const [dependencyNote, setDependencyNote] = useState(''), [dependencyBusy, setDependencyBusy] = useState(false);
+    const dependencyAction = useRef(false);
+    const [multiLoaded, setMultiLoaded] = useState(null), [multiDraft, setMultiDraft] = useState(null), [boundAccounts, setBoundAccounts] = useState(null);
+    const [multiBusy, setMultiBusy] = useState(false), [multiNote, setMultiNote] = useState('');
+    const multiAction = useRef({ busy: false, controller: null }), multiDraftRef = useRef(null), multiLoadedRef = useRef(null);
     const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
     const alive = useRef(false), draftRef = useRef(null), editVersion = useRef(0), saving = useRef(false);
     useEffect(() => {
@@ -137,8 +160,48 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       };
       void refresh();
       const timer = setInterval(refresh, 5000);
-      return () => { alive.current = false; accountAction.current.version++; accountAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
+      return () => { alive.current = false; multiAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
     }, []);
+    const changeMulti = (patch, accountKey = null) => {
+      const previous = multiDraftRef.current;
+      if (!previous || multiAction.current.busy) return;
+      const next = accountKey ? { ...previous, accounts: previous.accounts.map(row => row.accountKey === accountKey ? { ...row, ...patch } : row) } : { ...previous, ...patch };
+      multiDraftRef.current = next; setMultiDraft(next); setMultiNote('尚未保存多账号设置；不会因此发送请求。');
+    };
+    const multiRequest = async saveConfig => {
+      if (!alive.current || multiAction.current.busy || (saveConfig && !multiLoadedRef.current)) return;
+      if (!saveConfig && multiDraftRef.current && JSON.stringify(multiDraftRef.current) !== JSON.stringify(multiLoadedRef.current?.config)) {
+        setMultiNote('存在未保存草稿，请先保存，或明确放弃草稿再重新读取；不会偷偷变更保存基线。'); return;
+      }
+      const controller = new AbortController(); multiAction.current = { busy: true, controller }; setMultiBusy(true); setMultiNote('');
+      try {
+        if (saveConfig) {
+          const current = multiDraftRef.current, loaded = multiLoadedRef.current;
+          const value = await request('multi-warmup', { method: 'PUT', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: current, revision: loaded.revision }) });
+          if (!alive.current) return;
+          multiLoadedRef.current = value; multiDraftRef.current = value.config;
+          setMultiLoaded(value); setMultiDraft(value.config); setMultiNote('已保存。仅在以后准时触发且通过绑定/认领检查时发送；本次保存不执行预热。');
+        } else {
+          const value = await request('multi-warmup', { signal: controller.signal });
+          if (!alive.current) return;
+          multiLoadedRef.current = value; setMultiLoaded(value);
+          // Dirty rereads are rejected above; a clean draft MUST follow the new
+          // baseline, or saving could restore grants revoked by another editor.
+          multiDraftRef.current = value.config; setMultiDraft(value.config);
+          const catalogue = await request('multi-warmup', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'discover' }) });
+          if (!alive.current) return;
+          setBoundAccounts(catalogue.accounts || []); setMultiNote('已读取公共绑定目录；没有发送预热请求。已有草稿保留。');
+        }
+      } catch (cause) { if (alive.current) setMultiNote(cause.status === 409 ? '设置或能力已变化，请重新读取；草稿保留，不自动覆盖或重试。' : cause.message); }
+      finally { multiAction.current.busy = false; if (alive.current) setMultiBusy(false); }
+    };
+    const selectMultiAccount = (account, enabled) => {
+      const previous = multiDraftRef.current;
+      if (!previous || multiAction.current.busy) return;
+      if (previous.accounts.some(row => row.accountKey === account.accountKey)) { changeMulti({ enabled }, account.accountKey); return; }
+      if (!enabled || !account.models?.length || previous.accounts.length >= 8) { setMultiNote('最多配置八个账号；新账号需要可用的绑定模型。'); return; }
+      changeMulti({ accounts: [...previous.accounts, { accountKey: account.accountKey, modelKey: account.models[0].modelKey, enabled: true, allowUnverifiedQuota: false }] });
+    };
     const change = (key, value) => {
       editVersion.current++;
       const next = { ...draftRef.current, [key]: value };
@@ -174,41 +237,27 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       } catch (e) { if (alive.current) setError(e.status === 409 ? '设置已被其他页面修改，未覆盖。请重新读取后再编辑；当前草稿已保留。' : e.message); }
       finally { saving.current = false; if (alive.current) setBusy(false); }
     };
-    const listUsable = () => accountList?.enabled === true && Array.isArray(accountList.accounts) && accountList.accounts.length >= 2 &&
-      typeof accountList.token === 'string' && Number.isFinite(accountList.validForMs) && accountList.validForMs > 0 && accountList.validForMs <= 15000 &&
-      monotonicNow() - accountList.receivedAt >= 0 && monotonicNow() - accountList.receivedAt < accountList.validForMs;
-    const cancelAccount = () => {
-      if (accountAction.current.busy) return;
-      accountAction.current.version++; accountAction.current.authorized = null; accountAction.current.listToken = null; setAccountList(null); setTarget(''); setConfirmAccount(false); setAccountNote('已取消，未提交切号。');
-    };
-    const accountRequest = async action => {
-      if (!alive.current || accountAction.current.busy) return;
-      const authority = accountAction.current.authorized;
-      if (action === 'switch' && (!confirmAccount || !listUsable() || !target || target === accountList.current ||
-        !authority || authority.version !== accountAction.current.version || authority.token !== accountList.token || authority.target !== target || accountAction.current.listToken !== accountList.token)) return;
-      const body = action === 'list' ? { action } : { action, token: accountList.token, target, confirm: true };
-      const version = ++accountAction.current.version;
-      accountAction.current.authorized = null; accountAction.current.listToken = null;
-      const controller = new AbortController(); accountAction.current.controller = controller;
-      accountAction.current.busy = true; setAccountBusy(true); setAccountNote(''); setConfirmAccount(false); setTarget(''); setAccountList(null);
-      try {
-        const result = await request('accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
-        if (!alive.current || version !== accountAction.current.version) return;
-        if (action === 'list') { accountAction.current.listToken = result.token; setAccountList({ ...result, receivedAt: monotonicNow() }); }
-        else { setAccount(null); setSnapshot(previous => previous ? { ...previous, codex: { status: 'loading' } } : null); setAccountNote('订阅插件已确认共享账号切换；正在等待新来源额度。切号 RPC 本身不调模型；原有预热设置保留，符合原条件时仍可能运行。'); }
-      } catch (e) {
-        if (alive.current && version === accountAction.current.version) setAccountNote(action === 'switch' ? '未获得切号成功确认；账号可能已改变。请重新读取核验，不会自动重试或切回；已发送写操作若结果不明，自动预热保持暂停，需在订阅插件核验后完整重启 DSH。' : e.message);
-      } finally {
-        if (version === accountAction.current.version) { accountAction.current.busy = false; if (alive.current) setAccountBusy(false); }
-      }
-    };
     const field = (key, label, options) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
       h('select', { name: key, value: draft[key] ?? (key === 'feedbackStyle' ? 'classic' : ''), disabled: busy, onChange: e => change(key, e.target.value) }, ...options.map(([value, text]) => h('option', { key: value, value }, text))));
     const number = (key, label, min, max) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
       h('input', { type: 'number', min, max, step: 1, value: draft[key], disabled: busy, onChange: e => change(key, e.target.value === '' ? '' : Number(e.target.value)) }));
     const toggle = (key, label) => h('label', { className: 'pet-settings-toggle', key },
       h('input', { name: key, type: 'checkbox', checked: draft[key] === true, disabled: busy, onChange: e => change(key, e.target.checked) }), h('span', null, label));
-    const group = (title, ...children) => h('section', { className: 'pet-settings-group' }, h('h3', null, title), ...children);
+    const dependencyControls = () => h('div', null,
+      h('p', { className: 'pet-settings-hint' }, '点击下方按钮即授权宿主为当前配置安装并启用通用订阅 0.9.9（会执行插件代码）；不自动批准构建脚本、不登录、不请求模型、不主动替换已安装同名插件。请勿同时在其他页面安装同名依赖；宿主没有原子“仅不存在时安装”接口。'),
+      h('button', { type: 'button', 'data-dependency-install': true, disabled: dependencyBusy, onClick: async () => {
+        if (!alive.current || dependencyAction.current) return;
+        dependencyAction.current = true; setDependencyBusy(true); setDependencyNote('正在检查依赖；不会登录或请求模型。');
+        try { const message = await installPanelDependency(services.pluginManager, () => alive.current); if (alive.current) setDependencyNote(message); }
+        finally { dependencyAction.current = false; if (alive.current) setDependencyBusy(false); }
+      } }, dependencyBusy ? '依赖操作中…' : '一键安装并启用通用订阅 0.9.9'),
+      h('p', { role: 'status', className: 'pet-settings-hint', 'data-dependency-status': true }, dependencyNote));
+    const pages = [['settings', '常规'], ['appearance', '外观与动效'], ['accounts', '账号管理'], ['warmup', '自动预热'], ['stats', '用量统计']];
+    const groupPages = { '显示与休眠': 'settings', '陪伴与舒适': 'appearance', '形象': 'appearance', '信息框主题': 'appearance', '组合预览': 'appearance', '多账号管理（桌宠面板切换）': 'accounts', '多账号定时预热（独立保存，默认关闭）': 'warmup', 'Codex 配额与自动预热': 'warmup' };
+    const group = (title, ...children) => {
+      const page = groupPages[title] || 'appearance';
+      return h('section', { className: 'pet-settings-group', hidden: tab !== page, 'data-pet-page': page, 'aria-label': title }, h('h3', null, title), ...children);
+    };
     const codex = draft?.billingMode === 'codex';
     const today = calendarDate(loaded?.timeZone), key = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
     const ledger = codex ? snapshot?.codexStats : snapshot?.stats;
@@ -221,25 +270,54 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const dirty = loaded && draft && Object.keys(draft).some(k => draft[k] !== loaded.values[k]);
     return h('div', { className: 'pet-settings', 'data-pet-settings': true },
       h('h2', null, '桌宠'), h('p', { className: 'pet-settings-hint' }, '设置与统计已集成到 DSH，沿用原来的偏好和历史。更改后点击保存，不会因打开此页发送模型请求。'),
-      h('div', { className: 'pet-settings-tabs', role: 'tablist', 'aria-label': '桌宠设置与统计' },
-        ...[['settings','设置'],['stats','统计']].map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
+      h('div', { className: 'pet-settings-tabs pet-settings-page-nav', role: 'tablist', 'aria-label': '桌宠子页面', onKeyDown: event => {
+        const index = pages.findIndex(([id]) => id === tab);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? pages.length - 1 : event.key === 'ArrowRight' ? (index + 1) % pages.length : event.key === 'ArrowLeft' ? (index + pages.length - 1) % pages.length : -1;
+        if (next < 0) return;
+        event.preventDefault(); setTab(pages[next][0]); event.currentTarget.querySelectorAll('[role="tab"]')[next]?.focus();
+      } }, ...pages.map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, id: `pet-tab-${id}`, 'data-pet-tab': id, 'aria-controls': 'pet-settings-page-content', tabIndex: tab === id ? 0 : -1, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
+      h('p', { className: 'pet-settings-hint', 'data-page-save-hint': true }, '跨页切换保留草稿，不自动保存或发送预热。常规、外观和账号开关统一保存；多账号预热授权独立保存。'),
+      h('div', { id: 'pet-settings-page-content', role: 'tabpanel', 'aria-labelledby': `pet-tab-${tab}` },
+      tab === 'accounts' && !codex && h('p', { className: 'pet-settings-hint' }, '请先在「常规」将计费显示模式切换为 Codex，再配置多账号管理。'),
       error && h('p', { role: 'alert', className: 'pet-settings-error' }, error), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
-      codex && group('Codex 账号与共享切换',
+      codex && group('多账号管理（桌宠面板切换）',
         h('p', { className: 'pet-settings-hint', role: 'status', 'data-account-identity': true }, accountSummary(snapshot, account, account ? monotonicNow() - account.receivedAt : 0)),
-        h('p', { className: 'pet-settings-hint' }, '邮箱仅在此页面内存中脱敏显示。至少两个有效 Codex 账号且接口版本已验证才可切换。先主动读取新鲜列表，再选择目标并独立确认；与设置保存无关，不代管登录。切号会影响整个订阅插件及其它会话，不是仅切换桌宠显示。'),
-        h('button', { type: 'button', disabled: accountBusy, 'data-account-list': true, onClick: () => void accountRequest('list') }, accountBusy ? '正在核验…' : '读取可切换账号'),
-        accountList && h('p', { role: 'status', className: 'pet-settings-hint' }, listUsable() ? `来源 ${accountList.provider} · ${accountList.selection === 'active' ? '全局激活账号' : '默认账号'} · 列表短期有效` : (accountList.reason || '列表已过期或账号不足，请重新读取。')),
-        accountList && h('label', { className: 'pet-settings-row' }, h('span', null, '目标账号（脱敏）'), h('select', { 'data-account-target': true, value: target, disabled: accountBusy || !listUsable(), onChange: e => { accountAction.current.authorized = null; setTarget(e.target.value); setConfirmAccount(false); } },
-          h('option', { value: '' }, '请选择非当前账号'), ...(Array.isArray(accountList.accounts) ? accountList.accounts : []).map(row => h('option', { key: row.target, value: row.target, disabled: row.current === true }, row.label + (row.current ? ' · 当前' : ''))))),
-        h('button', { type: 'button', 'data-account-prepare': true, disabled: accountBusy || !listUsable() || !target || target === accountList?.current, onClick: () => { if (alive.current && listUsable() && target && target !== accountList.current && accountAction.current.listToken === accountList.token) { accountAction.current.authorized = { version: accountAction.current.version, token: accountList.token, target }; setConfirmAccount(true); } } }, '查看切号确认'),
-        confirmAccount && h('div', { role: 'alert', className: 'pet-settings-group' },
-          h('p', null, `确认将共享${accountList?.selection === 'active' ? '激活' : '默认'}账号切换到 ${accountList?.accounts?.find(row => row.target === target)?.label || '所选账号'}？其他会话也可能受影响。不会切换回来、不会发送模型请求；已有自动预热偏好不变。`),
-          h('button', { type: 'button', 'data-account-confirm': true, disabled: accountBusy || !listUsable(), onClick: () => void accountRequest('switch') }, '确认切换共享账号'),
-          h('button', { type: 'button', disabled: accountBusy, onClick: cancelAccount }, '取消切号')),
-        accountNote && h('p', { className: 'pet-settings-hint', role: 'status' }, accountNote),
-        h('p', { className: 'pet-settings-hint' }, '多账号 warm-up 未启用：本机公共接口未验证可将模型调用固定到指定账号，且未配置逐账号费用/次数预算。不会通过偷偷轮换全局账号模拟。原有当前激活账号预热设置保持不变。')),
+        draft && toggle('multiAccountManagement', '开启多账号管理：在桌宠信息框显示邮箱与一键切号按钮'),
+        h('p', { className: 'pet-settings-hint' }, '保存开启后，Codex 信息框新增邮箱与切换按钮。点击直接轮换至下一已绑定账号，不再二次确认；影响 DSH 共享激活／默认账号及其他会话，Pool 不保证实际请求身份。至少两个有效绑定账号、支持版本及空闲状态才可切换。完整邮箱会显示在桌面（过长可悬停查看），注意截图和共享屏幕隐私；不写入状态或统计文件。'),
+        h('p', { className: 'pet-settings-hint' }, '依赖任选其一：通用订阅 dsh-plugin-subscriptions 0.9.9，或专用订阅 dsh-codex-subscription 2.6.8。多账号独立预热仅支持前者的独立模型入口，安装后需在依赖中自行登录绑定账号。未知版本保守禁用切换。'),
+        dependencyControls(),
+        h('p', { className: 'pet-settings-hint' }, '切号入口已从设置移至桌宠。结果未知不会重试或自动切回，后续切号及自动预热暂停。多账号预热仍需下方另行授权。')),
+      codex && group('多账号定时预热（独立保存，默认关闭）',
+        h('p', { className: 'pet-settings-hint' }, '仅支持已验证的通用订阅插件 0.9.9 公共独立模型目录。需在该插件为各账号开启独立模型入口；不会代为开启、不切换默认账号，也不安装依赖。每账号每天最多一次逻辑请求，最多八个账号；不是 HTTP、Token 或费用硬上限。'),
+        h('div', { className: 'pet-settings-trigger-support', 'aria-label': '多账号自动预热触发能力' },
+          h('p', { className: 'pet-settings-hint' }, '每日定时：已支持，需兼容依赖、独立模型入口及逐账号明确授权。以下两项与单账号开关独立，当前依赖不支持。'),
+          h('label', { className: 'pet-settings-toggle' }, h('input', { type: 'checkbox', disabled: true, checked: false, 'data-multi-trigger': 'startup', 'aria-describedby': 'pet-multi-trigger-limit' }), '启动 DSH 时检测各账号 5h 满额并预热（暂不可用）'),
+          h('label', { className: 'pet-settings-toggle' }, h('input', { type: 'checkbox', disabled: true, checked: false, 'data-multi-trigger': 'reset', 'aria-describedby': 'pet-multi-trigger-limit' }), '检测各账号 5h 额度刷新为满额时自动预热（暂不可用）'),
+          h('p', { id: 'pet-multi-trigger-limit', className: 'pet-settings-hint', 'data-multi-trigger-limit': true }, '当前通用订阅 0.9.9 的额度查询没有可核验的获取时间、5h 窗口时长和账号回显；force 失败也可能返回旧缓存。收到时间、100% 或重置时间变化都不能证明新鲜。额外额度授权只适用于每日次数预算，不能开启这两个触发器。')),
+        h('button', { type: 'button', disabled: multiBusy, 'data-multi-read': true, onClick: () => void multiRequest(false) }, '读取设置与绑定账号（不预热）'),
+        h('button', { type: 'button', disabled: multiBusy || !multiDraft, 'data-multi-discard': true, onClick: () => {
+          if (!alive.current || multiAction.current.busy) return;
+          multiDraftRef.current = null; multiLoadedRef.current = null; setMultiDraft(null); setMultiLoaded(null); void multiRequest(false);
+        } }, '放弃多账号草稿并重新读取'),
+        multiDraft && h('div', null,
+          h('label', { className: 'pet-settings-toggle' }, h('input', { type: 'checkbox', 'data-multi-enabled': true, checked: multiDraft.enabled, disabled: multiBusy, onChange: e => changeMulti({ enabled: e.target.checked }) }), '开启多账号每日定时预热（暂停原单账号计划，原开关不改写）'),
+          h('label', { className: 'pet-settings-row' }, h('span', null, '电脑本地时间 HH:mm'), h('input', { type: 'text', maxLength: 5, value: multiDraft.time, disabled: multiBusy, 'data-multi-time': true, onChange: e => changeMulti({ time: e.target.value }) })),
+          ...(boundAccounts || []).map(account => {
+            const row = multiDraft.accounts.find(item => item.accountKey === account.accountKey);
+            return h('div', { key: account.accountKey, className: 'pet-settings-group' },
+              h('label', { className: 'pet-settings-toggle' }, h('input', { type: 'checkbox', disabled: multiBusy, 'data-multi-account': account.accountKey, checked: row?.enabled === true, onChange: e => selectMultiAccount(account, e.target.checked) }), `${account.maskedEmail || '邮箱未提供'} · #${account.accountKey.slice(0, 8)}：授权每日一次逻辑请求`),
+              row && h('label', { className: 'pet-settings-row' }, h('span', null, '固定账号模型'), h('select', { value: row.modelKey, disabled: multiBusy, 'data-multi-model': account.accountKey, onChange: e => changeMulti({ modelKey: e.target.value, allowUnverifiedQuota: false }, account.accountKey) },
+                !account.models.some(model => model.modelKey === row.modelKey) && h('option', { value: row.modelKey }, '已保存模型已不可用，不会自动回退'),
+                ...account.models.map(model => h('option', { key: model.modelKey, value: model.modelKey }, model.modelName)))),
+              row && h('label', { className: 'pet-settings-toggle' }, h('input', { type: 'checkbox', disabled: multiBusy || !row.enabled, checked: row.allowUnverifiedQuota, 'data-multi-unverified': account.accountKey, onChange: e => changeMulti({ allowUnverifiedQuota: e.target.checked }, account.accountKey) }), '额外授权：额度新鲜度无法证明时，仍按上述每日次数预算尝试（可能失败或消耗额度）'));
+          }),
+          multiDraft.accounts.some(row => !(boundAccounts || []).some(account => account.accountKey === row.accountKey)) && h('p', { className: 'pet-settings-hint' }, '部分已保存账号未在当前目录提供，将被跳过；可放弃草稿后核验，或关闭整个多账号计划。'),
+          h('button', { type: 'button', 'data-multi-save': true, disabled: multiBusy || !multiLoaded, onClick: () => void multiRequest(true) }, '单独保存多账号授权（不立即预热）')),
+        h('p', { className: 'pet-settings-hint' }, '公共额度即使 force 刷新也可能是旧缓存：不据此推断新鲜额度或重置窗口，未勾额外授权的账号直接跳过。只做每日定时，不做开机补发或按重置补发；失败不自动重试，结果未知或崩溃遗留认领会持久暂停。底层插件可能同账号重试，其他中间件可能影响路由。'),
+        h('p', { className: 'pet-settings-hint', role: 'status', 'data-multi-status': true }, multiNote || snapshot?.codexMultiWarmup?.detail || '多账号预热未授权；打开页面不会发送请求。'),
+        multiLoaded?.paused && h('p', { role: 'alert', className: 'pet-settings-error' }, '记录含未知结果/未完成认领；设置保存不能清除暂停。请先核验请求与持久记录，不要删除去重记录来重复预热。')),
       !draft ? h('div', null, h('p', null, error ? '设置不可用，未修改原文件。' : '正在读取桌宠设置…'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取')) :
-      tab === 'settings' ? h('form', { onSubmit: e => { e.preventDefault(); void save(); } },
+      tab !== 'stats' ? h('form', { noValidate: true, onSubmit: e => { e.preventDefault(); void save(); } },
         group('陪伴与舒适',
           toggle('compactMode', '简洁模式：仅显示余额/额度面板（隐藏人物，关闭全部动效）'),
           draft.compactMode && h('p', { className: 'pet-settings-hint' }, '简洁模式覆盖下方所有视觉动效选项，退出后恢复原偏好；人物选择、信息框主题与预热开关不会被改写。'),
@@ -275,7 +353,9 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
           field('size', '桌宠尺寸', [['tiny','超小'],['small','小'],['medium','中'],['large','大']]),
           codex ? field('codexUnit', 'Codex 飘字单位', [['token','Token'],['percent','额度百分比']]) : field('unit', 'DeepSeek 飘字单位', [['cny','人民币'],['token','Token']]),
           number('sleepMinutes','空闲休眠（分钟）',1,240)),
-        group('Codex 配额与自动预热', number('codexQuotaRefreshSeconds','额度检测间隔（秒）',1,3600),
+        group('Codex 配额与自动预热',
+          h('p', { className: 'pet-settings-hint' }, '以下为原单账号计划：只针对可证明新鲜额度的当前激活账号。启用上方多账号计划时本组暂停，原开关保留；不能用本组启动／5h 开关替代多账号授权。'),
+          number('codexQuotaRefreshSeconds','额度检测间隔（秒）',1,3600),
           h('p', { className: 'pet-settings-hint' }, '需要已登录且兼容的 Codex 订阅插件与宿主接口。检测间隔为 1–3600 秒，默认 5 秒。以下三个开关独立、默认关闭，切换显示模式或退出桌宠不会停止已开启的后端计划。'),
           toggle('codexWarmupDaily','每天按电脑本地时间自动预热'),
           h('label', { className: 'pet-settings-row' }, h('span', null, '每日预热时间（HH:mm）'), h('input', { type: 'text', inputMode: 'numeric', pattern: '(?:[01][0-9]|2[0-3]):[0-5][0-9]', maxLength: 5, value: draft.codexWarmupTime, disabled: busy, onChange: e => change('codexWarmupTime', e.target.value) })),
@@ -283,8 +363,8 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
           h('p', { className: 'pet-settings-hint' }, '预热会发送真实请求并消耗订阅额度；保存开启才生效，不改变账号或模型选择。电脑本地时区：' + (loaded?.timeZone || warmup?.timezone || '等待后端时区') + '。DSH 停止或电脑休眠时不唤醒、不补执行错过的每日任务。'),
           h('p', { className: 'pet-settings-hint' }, '同一已知窗口只尝试一次；100% 可能是四舍五入，仅依据新鲜 5h 报告。只在确认未发送时有限重试，最多 3 次、间隔 5 秒；发送后结果不明则停止。不保证固定 Token、窗口起点或调用期间账号锁定；底层传输仍可能重试。'),
           h('p', { className: 'pet-settings-hint', role: 'status' }, warmup ? `后端预热状态：${warmup.detail || warmup.status || '等待'}${warmup.lastSuccessAt ? ' · 最近成功：' + new Date(warmup.lastSuccessAt).toLocaleString() : ''}${warmup.nextDailyAt ? ' · 下次每日预热：' + new Date(warmup.nextDailyAt).toLocaleString() : ''}` : '等待后端状态。')),
-        h('div', { className: 'pet-settings-actions' }, h('button', { type: 'submit', disabled: busy || !dirty }, busy ? '保存中…' : '保存设置'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取（放弃草稿）')),
-        h('p', { className: 'pet-settings-hint' }, '首次安装本次集成需完整退出并重启 DSH，之后保存即时生效。预热时间与开关会在同一次保存中提交。')) :
+        h('div', { className: 'pet-settings-actions pet-settings-savebar' }, h('button', { type: 'submit', disabled: busy || !dirty }, busy ? '保存中…' : '保存设置'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取（放弃草稿）')),
+        h('p', { className: 'pet-settings-hint' }, '此处保存通用偏好及原单账号计划；多账号预热授权需在其分区单独保存。跨页草稿保持，后台严格校验输入。首次更新代码需完整退出并重启 DSH，之后保存等待应用回执。')) :
       h('section', { 'aria-label': '桌宠用量统计' },
         h('p', { className: 'pet-settings-hint' }, `当前显示 ${codex ? 'Codex' : 'DeepSeek'} 统计（按已选显示模式）。`),
         h('div', { className: 'pet-settings-cards' }, ...[
@@ -300,11 +380,12 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         codex && h('p', { className: 'pet-settings-hint', role: 'status' }, `${quotaStatus(snapshot)}；5h ${quotaReset(snapshot?.codex?.fiveHour, loaded?.timeZone)}；周 ${quotaReset(snapshot?.codex?.weekly, loaded?.timeZone)}。`),
         h('p', { className: 'pet-settings-hint' }, codex ? '额度由订阅插件报告，不按 Token 折算；图表仅统计 DSH 调用。配额可能过期或暂不可用，非实时保证。' : '人民币为用量估算，未知模型价格不计入；统计从插件启用后开始，升级前历史可能不完整。'),
         ledger?.partialSince && h('p', { className:'pet-settings-hint' }, '历史包含补录的最近事件，更早记录可能缺失。'),
-        !ledger && h('p', { className:'pet-settings-hint' }, '等待后端统计；未读取到数据时不假设为零。')));
+        !ledger && h('p', { className:'pet-settings-hint' }, '等待后端统计；未读取到数据时不假设为零。'))));
   }
   return {
-    inject: ['slots'],
+    inject: ['slots', 'remote'],
     apply(ctx) {
+      services.pluginManager = ctx.remote?.pluginManager;
       ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'simple-desktop-pet', order: 75, label: () => '桌宠' }, SimplePetSettings));
     },
     SimplePetSettings,

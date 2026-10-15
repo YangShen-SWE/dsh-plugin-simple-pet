@@ -5,6 +5,9 @@
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 $ErrorActionPreference = 'Stop'
+$script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $script:ProjectRoot 'panel-accounts.ps1')
+Initialize-PetPanelAccounts
 $created = $false
 $mutexName = if ($Preview) { 'Local\DshSimpleDesktopPetPreview' } else { 'Local\DshSimpleDesktopPet' }
 $script:SingleInstance = New-Object Threading.Mutex($true, $mutexName, [ref]$created)
@@ -27,16 +30,16 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10; left = $null; top = $null }
 function Set-PetPreferenceValues($saved) {
   # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
-  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; sleepMinutes = 10 }
+  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10 }
   foreach ($key in $defaults.Keys) {
     # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
     if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     else { $script:Prefs[$key] = $defaults[$key] }
   }
-  foreach ($key in @('compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
+  foreach ($key in @('compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats', 'multiAccountManagement')) {
     if ($script:Prefs[$key] -isnot [bool]) { $script:Prefs[$key] = $false }
   }
   if ($script:Prefs.feedbackStyle -isnot [string] -or $script:Prefs.feedbackStyle -cnotin @('classic', 'gentle')) { $script:Prefs.feedbackStyle = 'classic' }
@@ -105,15 +108,18 @@ function Reload-PetPreferences([switch]$Force) {
     $oldMode = $script:Prefs.billingMode
     $oldSize = $script:Prefs.size
     $oldCompact = $script:Prefs.compactMode
+    $oldAccounts = $script:Prefs.multiAccountManagement
     $oldTheme = $script:Prefs.cardTheme
     Set-PetPreferenceValues $snapshot.Saved
+    if (($script:Prefs.billingMode -cne 'codex' -or -not $script:Prefs.multiAccountManagement) -and
+        (Get-Command Reset-PetPanelAccounts -ErrorAction SilentlyContinue)) { Reset-PetPanelAccounts }
     if ($null -ne $script:Window) {
       # Refresh-BillingMode still owns real mode transitions; retry only repairs
       # presentation, without moving/saving coordinates or restarting activity.
       $script:ApplyingPetPreferences = $true
       try {
         if ($script:Prefs.billingMode -ne $oldMode) { Refresh-BillingMode }
-        elseif ($retry -or $script:Prefs.size -ne $oldSize -or $script:Prefs.compactMode -ne $oldCompact) { Set-PetSize }
+        elseif ($retry -or $script:Prefs.size -ne $oldSize -or $script:Prefs.compactMode -ne $oldCompact -or $script:Prefs.multiAccountManagement -ne $oldAccounts) { Set-PetSize }
         Update-PetUsageCard
         if ($script:CardThemeCatalog -and ($retry -or $script:Prefs.cardTheme -cne $oldTheme)) {
           $peak = if ((Get-BillingMode) -eq 'codex') { $false } else { Get-Peak }
@@ -134,6 +140,8 @@ function Reload-PetPreferences([switch]$Force) {
     $script:Prefs.codexWarmupDaily = $false
     $script:Prefs.codexWarmupReset = $false
     $script:Prefs.codexWarmupStartup = $false
+    $script:Prefs.multiAccountManagement = $false
+    if (Get-Command Reset-PetPanelAccounts -ErrorAction SilentlyContinue) { Reset-PetPanelAccounts }
   }
 }
 
@@ -184,7 +192,7 @@ $xaml = @'
       <Border.Effect>
         <DropShadowEffect Color="#092A46" BlurRadius="15" ShadowDepth="5" Opacity="0.32"/>
       </Border.Effect>
-      <Canvas Width="260" Height="154">
+      <Canvas Width="260" Height="182">
       <Canvas Name="DeepSeekPanel" Width="260" Height="90">
         <TextBlock Name="CardHeader" Canvas.Left="13" Canvas.Top="26" Text="DEEPSEEK · API 余额"
                    FontFamily="Microsoft YaHei" FontSize="10" FontWeight="SemiBold" Foreground="#C8EFFF"/>
@@ -210,6 +218,28 @@ $xaml = @'
         <TextBlock Name="WeeklyValue" Canvas.Left="147" Canvas.Top="99" Width="100" TextAlignment="Right" Text="—" FontFamily="Segoe UI" FontSize="23" FontWeight="Bold" Foreground="#B7ABFF"/>
         <ProgressBar Name="WeeklyBar" Canvas.Left="13" Canvas.Top="128" Width="234" Height="5" Minimum="0" Maximum="100" Value="0" Foreground="#B7ABFF" Background="#234B66" BorderThickness="0"/>
         <TextBlock Name="WeeklyReset" Canvas.Left="13" Canvas.Top="137" Width="234" Text="重置时间未知" FontFamily="Microsoft YaHei" FontSize="9" Foreground="#A9CEE2"/>
+      </Canvas>
+      <Canvas Name="PanelAccountArea" Canvas.Top="154" Width="260" Height="28" Visibility="Collapsed">
+        <TextBlock Name="PanelAccountEmail" Canvas.Left="13" Canvas.Top="5" Width="168" Height="18"
+                   FontFamily="Microsoft YaHei" FontSize="10" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"
+                   Foreground="{Binding Foreground, ElementName=CardHeader}"/>
+        <Button Name="PanelAccountSwitch" Canvas.Left="187" Canvas.Top="2" Width="60" Height="22"
+                Content="切换" FontFamily="Microsoft YaHei" FontSize="10" Cursor="Hand" IsEnabled="False"
+                Foreground="{Binding Foreground, ElementName=CardHeader}"
+                Background="{Binding Background, ElementName=Card}" BorderBrush="{Binding BorderBrush, ElementName=Card}"
+                BorderThickness="1" FocusVisualStyle="{x:Null}">
+          <Button.Template>
+            <ControlTemplate TargetType="{x:Type Button}">
+              <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                      BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Button.Template>
+        </Button>
       </Canvas>
       </Canvas>
     </Border>
@@ -247,6 +277,10 @@ $script:PriceBadge = $script:Window.FindName('PriceBadge')
 $script:DeepSeekPanel = $script:Window.FindName('DeepSeekPanel')
 $script:CodexPanel = $script:Window.FindName('CodexPanel')
 $script:QuotaStatus = $script:Window.FindName('QuotaStatus')
+$script:PanelAccountArea = $script:Window.FindName('PanelAccountArea')
+$script:PanelAccountEmail = $script:Window.FindName('PanelAccountEmail')
+$script:PanelAccountSwitch = $script:Window.FindName('PanelAccountSwitch')
+Connect-PetPanelAccounts
 $script:CriticalMark = $script:Window.FindName('CriticalMark')
 $script:SleepMark = $script:Window.FindName('SleepMark')
 foreach ($name in @('Root', 'Card', 'CardHeader', 'SpriteLayer', 'Sprite', 'OldSprite', 'Balance', 'Rate', 'ModeLabel', 'PriceBadge', 'CriticalMark', 'SleepMark')) {
@@ -271,6 +305,7 @@ function Set-PetSize {
   $script:Window.Width = 272 * $scale
   $codexMode = (Get-BillingMode) -eq 'codex'
   $height = if ($script:Prefs.compactMode -eq $true) { if ($codexMode) { 166 } else { 102 } } elseif ($codexMode) { 360 } else { 296 }
+  if ($codexMode -and $script:Prefs.multiAccountManagement -eq $true) { $height += 28 }
   $script:Window.Height = $height * $scale
   if (-not $script:ApplyingPetPreferences) {
     $area = [Windows.SystemParameters]::WorkArea
@@ -696,6 +731,7 @@ $script:Timer.Add_Tick({
   } else {
     Reload-PetPreferences
     Read-PetState
+    if (Get-Command Update-PetPanelAccounts -ErrorAction SilentlyContinue) { Update-PetPanelAccounts }
     if ($script:LastUpdate -eq [DateTime]::MinValue -or ($now - $script:LastUpdate).TotalSeconds -gt 90) {
       $script:Balance.Text = '等待 DSH…'
       $script:Rate.Text = '缓存命中 —'
@@ -766,6 +802,7 @@ $script:SpriteLayer.Add_MouseLeftButtonDown($dragHandler)
 $script:Window.Add_Loaded({ Start-PetPreferencesReceipt })
 $script:Window.Add_Closed({
   $script:Timer.Stop()
+  if (Get-Command Close-PetPanelAccounts -ErrorAction SilentlyContinue) { Close-PetPanelAccounts }
   Stop-PetPreferencesReceipt
   $script:SingleInstance.ReleaseMutex(); $script:SingleInstance.Dispose()
 })

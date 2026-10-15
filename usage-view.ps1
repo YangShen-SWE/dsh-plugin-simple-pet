@@ -46,10 +46,8 @@ function Get-QuotaStatus($quota, $snapshot = $script:LastSnapshot) {
   }
 }
 function Get-QuotaIdentityLabel($quota) {
-  if ($quota.status -notin @('ready', 'reported') -or $quota.accountKey -isnot [string] -or $quota.accountKey -cnotmatch '\A[a-f0-9]{16}\z') { return 'CODEX · 订阅额度' }
-  if ($quota.status -eq 'ready' -and -not (Test-QuotaFresh $quota)) { return 'CODEX · 订阅额度' }
-  $prefix = if ($quota.provider -eq 'openai-codex' -and $quota.selection -eq 'active') { '激活 #' } elseif ($quota.provider -eq 'codex' -and $quota.selection -eq 'default') { '默认 #' } else { return 'CODEX · 订阅额度' }
-  return $prefix + $quota.accountKey.Substring(0, 8)
+  # Keep the panel title stable; account details belong in the opt-in footer.
+  return 'CODEX · 订阅额度'
 }
 function Update-PetUsageCard {
   if ($null -eq $script:Window) { return }
@@ -57,8 +55,10 @@ function Update-PetUsageCard {
   $script:DeepSeekPanel.Visibility = if ($codexMode) { 'Collapsed' } else { 'Visible' }
   $script:CodexPanel.Visibility = if ($codexMode) { 'Visible' } else { 'Collapsed' }
   $compact = $script:Prefs.compactMode -eq $true
-  $script:Card.Height = if ($codexMode) { 156 } else { 92 }
-  $script:Root.Height = if ($compact) { $script:Card.Height + 10 } elseif ($codexMode) { 360 } else { 296 }
+  $accountExtra = if ($codexMode -and $script:Prefs.multiAccountManagement -eq $true) { 28 } else { 0 }
+  $script:Card.Height = if ($codexMode) { 156 + $accountExtra } else { 92 }
+  $script:Root.Height = if ($compact) { $script:Card.Height + 10 } elseif ($codexMode) { 360 + $accountExtra } else { 296 }
+  if ($script:PanelAccountArea) { $script:PanelAccountArea.Visibility = if ($accountExtra) { 'Visible' } else { 'Collapsed' } }
   [Windows.Controls.Canvas]::SetTop($script:Card, $(if ($compact) { 5 } else { 199 }))
   if ($script:SpriteLayer) { $script:SpriteLayer.Visibility = if ($compact) { 'Collapsed' } else { 'Visible' } }
   # Native theme progress bars may glow even when determinate; compact must not.

@@ -12,13 +12,12 @@ $script:ApplyingPetPreferences = $true
 try {
   foreach ($provider in @('openai-codex', 'codex')) { foreach ($compact in @($false, $true)) { foreach ($size in @('tiny','small','medium','large')) { foreach ($theme in $script:CardThemeCatalog.id) {
     $selection = if ($provider -eq 'codex') { 'default' } else { 'active' }
-    $prefix = if ($provider -eq 'codex') { '默认 #' } else { '激活 #' }
     $script:Prefs.billingMode = 'codex'; $script:Prefs.compactMode = $compact; $script:Prefs.size = $size; $script:Prefs.cardTheme = $theme
     $script:LastSnapshot = [pscustomobject]@{ codex = [pscustomobject]@{ status = if ($provider -eq 'codex') { 'reported' } else { 'ready' }; provider = $provider; selection = $selection; accountKey = 'abcdef0123456789'; observedAt = $now;
       fiveHour = [pscustomobject]@{ remainingPercent = 82; resetAt = $now + 3600000 }; weekly = [pscustomobject]@{ remainingPercent = 64; resetAt = $now + 86400000 } } }
     Update-PetUsageCard; Set-PetSize; Update-PetCardTheme $false
     $header = $script:Window.FindName('CodexHeader')
-    Assert-Equal $header.Text ($prefix + 'abcdef01') 'source semantics and anonymous key visible'
+    Assert-Equal $header.Text 'CODEX · 订阅额度' 'panel title stays stable across sources and layouts'
     Assert-Equal $header.Width 106 'identity cannot overlap status'
     Assert-Equal $script:Window.FindName('FiveHourValue').Text '82%' 'five hour value preserved'
     Assert-Equal $script:Window.FindName('WeeklyValue').Text '64%' 'weekly value preserved'
