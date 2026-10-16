@@ -1,5 +1,20 @@
 # 更新记录 / Changelog
 
+## v0.7.4：账号服务通道修复与简洁账号页（2026-10-16）
+
+**更新原因：** 独立服务只注册了浏览器 HTTP 路由，而桌宠通过宿主进程内 Shared Fetch 注册表访问；两套注册表相互独立，导致插件已安装仍读取失败。本次同时发布桌宠 **0.7.4** 与独立账号服务 **0.1.1**，补齐真实内部通道，不以安装成功冒充已能登录。
+
+- **通道与错误：** 在同一宿主 Connection 上注册内部 Fetch 和鉴权 HTTP 路由；随所属上下文卸载清理。浏览器仍鉴权优先；内部调用沿用 owner/admission 边界，不能当成公开无鉴权端点。固定区分未启用/404、权限、目录锁和暂时写入故障，不回显上游私密错误，也不自动重试 OAuth、额度或模型操作。
+- **更简单的账号页：** 账号来源、刷新、添加账号、账号列表、默认/移除与额度查询集中显示，详细风险折叠但保留。登录方式使用浏览器/设备码官方交互；只有明确开始登录后才每两秒读取进度，GET 不重新提交登录。相同 prompt 保留已输入回调，完成、取消、换来源或卸载即停止；旧回调经来源往返切换也不能重新发送。
+- **顶部保存：** 通用保存/重新读取与导航固定于可滚动区域顶部，窄屏换行并保持可见。跨页保留草稿；统计页也可提交通用草稿，多账号每日预热仍独立保存，不悄悄扩大授权。
+- **取消与目录：** 正文读取期间取消不得首次分发登录、额度或预热；已经分发的操作不假称未发送。Windows 短暂共享冲突只有限重试同一份元数据原子 rename，最多十次，不重试任何账号/模型工作。
+- **保持边界：** 默认仍为旧订阅路径，不迁移 grant、账号或预热授权；官方路径需分别安装两包。精确满额启动/5h 触发仍禁用。昵称不是官方邮箱，已保存与实际应用保持区分。本次不自动登录、查询真实额度、切账号或发模型请求。
+
+定向验收与公开下载/本地复制证据写入本次 Release；仅合成账号、私有 Temp、真实公开宿主接口契约 mock，以及真实 React + 隔离 Edge 页面。没有执行完整测试套件，也不把这些结果当作真实 OAuth/运行宿主验收。界面截图中的账号和额度全部为合成数据。
+
+**Update rationale:** the HTTP-only account service was absent from DSH's separate in-process Fetch registry. Desktop 0.7.4 + account service 0.1.1 register both transports with correct admission/lifecycle, harden cancellation and stale callbacks, simplify account management, and keep save/navigation visible at the top. Login polling is GET-only after explicit consent; budgets, defaults and full-trigger restrictions remain unchanged. Synthetic incremental tests and isolated browser checks are not live-account validation.
+
+
 ## v0.7.3 — 官方组件独立账号服务（2026-10-16）
 
 **更新原因：** 默认官方 Codex OAuth 的单账号槽位不等于框架不能支持多账号；此前桌宠账号/额度/每日预热必须借助第三方订阅插件。本次新增独立插件 `dsh-plugin-codex-accounts@0.1.0`，复用官方公开 OAuth/适配器组件完成自有账号目录、账号固定请求和桌宠生产接线，不把 OpenAI Platform API Key 计费当成 ChatGPT 订阅额度。

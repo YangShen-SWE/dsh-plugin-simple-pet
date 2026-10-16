@@ -1,5 +1,7 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { Readable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import { AccountDirectory, createAccountService, PROVIDER, isAccountError } from './service.js';
 import { createOfficialDriver, createBoundAdapter } from './official-driver.js';
 
@@ -11,21 +13,29 @@ export function accountServiceHandler(service, authorize) {
     const method = req.method || 'GET';
     const reply = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(method === 'HEAD' ? undefined : JSON.stringify(data)); };
     if (!['GET', 'HEAD', 'POST'].includes(method)) { reply(405, { error: 'METHOD_NOT_ALLOWED' }); return; }
+    const disconnected = new AbortController();
+    res.once?.('close', () => disconnected.abort());
+    const sourceSignal = req.signal ? AbortSignal.any([req.signal, disconnected.signal]) : disconnected.signal;
+    const cancelled = () => { if (!sourceSignal.aborted) return false; reply(503, { error: 'REQUEST_ABORTED', requestNotSent: true }); return true; };
+    let dispatched = false;
     try {
-      if (method === 'GET' || method === 'HEAD') { reply(200, await service.catalogue()); return; }
+      if (cancelled()) return;
+      if (method === 'HEAD') { reply(200, { available: true }); return; }
+      if (method === 'GET') { reply(200, await service.catalogue()); return; }
       const contentType = typeof req.headers?.get === 'function' ? req.headers.get('content-type') : req.headers?.['content-type'];
       if (!/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/i.test(contentType || '')) { reply(415, { error: 'JSON_REQUIRED' }); return; }
       const chunks = []; let size = 0;
       for await (const chunk of req) { size += Buffer.byteLength(chunk); if (size > 8192) { reply(413, { error: 'REQUEST_TOO_LARGE' }); return; } chunks.push(Buffer.from(chunk)); }
+      if (cancelled()) return;
       let body;
       try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); } catch { reply(400, { error: 'INVALID_JSON' }); return; }
       const schema = { 'login.start': ['label'], 'login.cancel': ['id'], 'login.respond': ['id', 'promptId', 'value'], 'account.remove': ['accountKey'], 'account.select': ['accountKey', 'expectedGeneration'], 'quota.read': ['accountKey'], bindings: [], 'warmup.run': ['accountKey', 'modelKey'] };
       const keys = schema[body?.action];
       if (!keys || !body || Array.isArray(body) || Object.keys(body).sort().join(',') !== ['action', ...keys].sort().join(',')) { reply(400, { error: 'INVALID_ACTION' }); return; }
-      const disconnected = new AbortController();
-      res.once?.('close', () => disconnected.abort());
-      const signal = AbortSignal.any([disconnected.signal, AbortSignal.timeout(body.action === 'warmup.run' ? 90000 : 20000)]);
+      const signal = AbortSignal.any([sourceSignal, AbortSignal.timeout(body.action === 'warmup.run' ? 90000 : 20000)]);
+      if (cancelled()) return;
       let result;
+      dispatched = true;
       switch (body.action) {
         case 'login.start': result = await service.beginLogin(body.label); break;
         case 'login.cancel': result = await service.cancelLogin(body.id); break;
@@ -38,11 +48,32 @@ export function accountServiceHandler(service, authorize) {
       }
       reply(200, result);
     } catch (error) {
+      if (!dispatched && cancelled()) return;
       // No upstream exception, stack, token, account ID, headers or OAuth input.
       const known = isAccountError(error);
       reply(known && [400,409,410,503].includes(error.status) ? error.status : 503, { error: known ? error.code : 'ACCOUNT_SERVICE_UNAVAILABLE', requestNotSent: known && error.requestNotSent === true,
         ...(known && error.code === 'WARMUP_UNCONFIRMED' && error.usage ? { usage: error.usage, modelName: error.modelName } : {}) });
     }
+  };
+}
+// Shared Fetch is an operator-side channel, NOT the webServer HTTP registry.
+// The host Connection /api bridge performs browser Host/Origin/auth admission.
+// Direct HTTP retains its separate auth-first handler below. Do not re-check a
+// browser cookie on an internal Request: there is no browser cookie to forward.
+export function accountServiceFetchHandler(service) {
+  const handler = accountServiceHandler(service, () => true);
+  return async request => {
+    const unavailable = () => Response.json({ error: 'REQUEST_ABORTED', requestNotSent: true }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
+    if (request.signal.aborted) return unavailable();
+    const input = request.body ? Readable.fromWeb(request.body) : Readable.from([]);
+    input.method = request.method; input.headers = Object.fromEntries(request.headers); input.signal = request.signal;
+    const output = new EventEmitter(); let result, status = 200, headers = {};
+    output.writeHead = (code, values = {}) => { status = code; headers = values; };
+    output.end = body => { result = new Response(body ?? null, { status, headers }); };
+    const abort = () => { output.emit('close'); input.destroy(); };
+    request.signal.addEventListener('abort', abort, { once: true });
+    try { await handler(input, output); return result || unavailable(); }
+    finally { request.signal.removeEventListener('abort', abort); input.destroy(); }
   };
 }
 export async function apply(ctx, { directoryFile, driver = createOfficialDriver, fetchImpl } = {}) {
@@ -59,6 +90,9 @@ export async function apply(ctx, { directoryFile, driver = createOfficialDriver,
       res.writeHead(rejection === 401 ? 401 : 403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify({ error: 'UNAUTHORIZED' })); return false;
     };
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: '/api/dsh-plugin-codex-accounts', handler: accountServiceHandler(service, authorize) }), 'codex-accounts: authenticated service');
+    if (typeof routeCtx.connection.fetch?.register === 'function') {
+      routeCtx.connection.fetch.register({ path: '/api/dsh-plugin-codex-accounts', methods: ['GET', 'HEAD', 'POST'], requestBody: 'buffered', fetch: accountServiceFetchHandler(service) });
+    }
   });
   ctx.effect(() => () => service.dispose(), 'codex-accounts: lifetime');
   return service;

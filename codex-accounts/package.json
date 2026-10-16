@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-codex-accounts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Account-isolated ChatGPT Codex OAuth service for DeepSeek Harness; not an OpenAI product.",
   "type": "module",
   "license": "MIT",

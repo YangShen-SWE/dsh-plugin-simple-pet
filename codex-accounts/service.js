@@ -56,7 +56,7 @@ export class AccountDirectory {
         for (let attempt = 0; ; attempt++) {
           try { await fs.rename(tmp, this.file); break; }
           catch (error) {
-            if (process.platform !== 'win32' || !['EPERM','EACCES','EBUSY'].includes(error.code) || attempt >= 5) throw error;
+            if (process.platform !== 'win32' || !['EPERM','EACCES','EBUSY'].includes(error.code) || attempt >= 9) throw fail('DIRECTORY_WRITE_UNAVAILABLE', 503);
             await delay(20 * (attempt + 1));
           }
         }

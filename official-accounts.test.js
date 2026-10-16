@@ -188,8 +188,13 @@ test('metadata alone cannot grant a valid binding or two-account panel capabilit
 });
 test('Windows transient metadata replace contention retries only the same local rename',async t=>{
  if(process.platform!=='win32')return;const f=await fixture(t),original=fs.rename;let attempts=0;
- fs.rename=async(...args)=>{if(args[1]===f.directory.file&&attempts++<2)throw Object.assign(Error('synthetic sharing violation'),{code:'EPERM'});return original(...args);};
- try{await f.directory.update(()=>{});assert.equal(attempts,3);assert.equal((await f.directory.read()).version,1);assert.equal(f.streams.length,0);assert.equal(f.quotaCalls.length,0);}finally{fs.rename=original;}
+ fs.rename=async(...args)=>{if(args[1]===f.directory.file&&attempts++<7)throw Object.assign(Error('synthetic sharing violation'),{code:'EPERM'});return original(...args);};
+ try{await f.directory.update(()=>{});assert.equal(attempts,8);assert.equal((await f.directory.read()).version,1);assert.equal(f.streams.length,0);assert.equal(f.quotaCalls.length,0);}finally{fs.rename=original;}
+});
+test('persistent Windows replace failure stays bounded, private and cannot send account work',async t=>{
+ if(process.platform!=='win32')return;const f=await fixture(t),original=fs.rename;let attempts=0;
+ fs.rename=async(...args)=>{if(args[1]===f.directory.file){attempts++;throw Object.assign(Error('PRIVATE_PATH must not escape'),{code:'EPERM'});}return original(...args);};
+ try{await assert.rejects(f.directory.update(()=>{}),e=>e.code==='DIRECTORY_WRITE_UNAVAILABLE'&&!e.message.includes('PRIVATE_PATH'));assert.equal(attempts,10);assert.equal(f.streams.length,0);assert.equal(f.quotaCalls.length,0);assert(! (await fs.readdir(path.dirname(f.directory.file))).some(name=>name.endsWith('.tmp')||name.endsWith('.lock')));}finally{fs.rename=original;}
 });
 test('official quota rejects source ABA or lost binding without publishing an identity',async()=>{
  const key='a'.repeat(16);for(const lost of [false,true]){let reads=0,identities=0;const bridge={fetch:async req=>{if(req.method==='GET'){reads++;return Response.json({generation:lost?1:(reads===1?1:3),defaultKey:key,accounts:[{accountKey:key,epoch:1,bound:!(lost&&reads>1)}]});}return Response.json({status:'reported',fiveHour:{remainingPercent:80}});}};const result=await readOfficialQuota(bridge,AbortSignal.timeout(1000),()=>identities++);assert.equal(result.status,'switching');assert.equal(identities,0);}

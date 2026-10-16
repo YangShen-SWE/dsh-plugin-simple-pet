@@ -1,5 +1,11 @@
 # Privacy / 隐私说明
 
+## v0.7.4 / 账号服务 0.1.1 通道补充（2026-10-16）
+
+浏览器 HTTP 仍由宿主连接校验；新增进程内 Shared Fetch 由注册所属 Connection 的 owner/admission 边界保护，不重复索取浏览器 Cookie，不作为免鉴权公共 HTTP。两种注册随上下文卸载清理。明确开始 OAuth 后的两秒轮询只读取进度；不自动开始登录、刷新额度或调用模型，结束/取消/换后端/卸载停止。回调输入只在本次页面内存，prompt 改变即清空；取消在分发前生效，不能把已分发请求伪称未发送。错误使用固定公开分类，不转发私密上游异常。旧备份不新增，用户数据/凭据不作本次验证输入。
+
+HTTP admission remains authenticated; the new in-process route is owner-scoped, not a public unauthenticated endpoint. Explicit-login progress polling is read-only and lifecycle-bound. Tests use synthetic data and do not authenticate a real user or query live quotas/models.
+
 ## v0.7.3 独立官方账号后端补充（2026-10-16）
 
 新增社区账号插件复用官方 ChatGPT Codex OAuth，不是 API Key 方案或 OpenAI 官方产品。只有用户显式选择后端、添加账号/发起授权时才启动登录；登录使用官方浏览器/设备码流程。桌宠只处理安全目录、昵称、额度与不透明账号/模型键，不接收 access/refresh token。OAuth grant 通过独立插件自有 `codex-accounts/account-*` CredentialStore 交给宿主公开 credentials 服务；不承诺宿主加密，不读取/复制全局 llm-pi-ai、~/.codex 或第三方凭据。

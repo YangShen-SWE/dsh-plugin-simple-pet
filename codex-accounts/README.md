@@ -1,12 +1,16 @@
 # Codex Accounts for DeepSeek Harness
 
-独立账号服务插件 **dsh-plugin-codex-accounts 0.1.0**。非 OpenAI 官方产品；复用 DSH 官方 `PiAiAdapter` 与 pi-ai 的 **ChatGPT Codex OAuth**，不是 OpenAI Platform API Key 计费接口，也不依赖第三方订阅插件。
+独立账号服务插件 **dsh-plugin-codex-accounts 0.1.1**。非 OpenAI 官方产品；复用 DSH 官方 `PiAiAdapter` 与 pi-ai 的 **ChatGPT Codex OAuth**，不是 OpenAI Platform API Key 计费接口，也不依赖第三方订阅插件。
+
+## 0.1.1 修复说明
+
+修复仅有 HTTP 注册、桌宠 Shared Fetch 无路由的读取失败。内部通道按宿主 Connection owner 生命周期注册；浏览器入口仍鉴权优先，卸载后两种路由均撤回。正文尚未分发时取消不会启动操作，已经分发则不误报未发送。Windows 元数据短暂共享冲突只重试原子文件替换，不重试登录、额度或模型。错误仅返回固定可诊断分类，不暴露私密路径或上游文本。
 
 ## 安装与使用
 
 从本仓库 Release 下载 `dsh-plugin-codex-accounts.tgz`，在 DSH 插件管理安装并启用；需要公共官方组件 `@deepseek-ai/dsh-llm-pi-ai@0.2.0-rc.2`、`@earendil-works/pi-ai@0.87.1`，包中明确声明依赖，不访问宿主私有安装路径。SDK 不兼容时拒绝操作，不猜测内部实现。
 
-搭配桌宠 **0.7.3+**：DSH → 设置 → 桌宠 → 账号管理，选择「官方组件独立账号服务」并保存，再显式添加 ChatGPT 订阅账号、读取登录进度和额度。登录页面只能是官方授权域名；可选择浏览器回调或设备码。不要在插件中输入密码、API Key、access/refresh token。取消/卸载会取消本次登录，迟到结果不能重新绑定账号。
+搭配桌宠 **0.7.4+**：DSH → 设置 → 桌宠 → 账号管理，选择「官方组件独立账号服务」并保存，再显式添加 ChatGPT 订阅账号、读取登录进度和额度。登录页面只能是官方授权域名；可选择浏览器回调或设备码。不要在插件中输入密码、API Key、access/refresh token。取消/卸载会取消本次登录，迟到结果不能重新绑定账号。
 
 本包自己提供账号服务、鉴权 API 和 `codex-accounts` 模型路由；管理界面由桌宠提供，并不是安装后自动接管宿主原来的 `openai-codex` 账号。
 
@@ -29,7 +33,7 @@
 
 ## 管理 API
 
-鉴权复用 DSH 同源 `connection.requestRejection`，响应 `no-store`：`GET/HEAD /api/dsh-plugin-codex-accounts` 读取目录/登录进度；POST 的独立动作是 `login.start`、`login.respond`、`login.cancel`、`account.select`、`account.remove`、`quota.read`、`bindings`、`warmup.run`。只读不会发送模型请求。桌宠的管理代理不允许 `warmup.run`，预热由独立授权调度器调用。API 不返回 OAuth grant 或模型回答文本。
+浏览器 HTTP 鉴权复用 DSH 同源 `connection.requestRejection`；进程内 `connection.fetch.register` 复用 owner/admission 可信边界（不再检查浏览器 Cookie），不能直接暴露为免鉴权 HTTP。两者响应 `no-store`：`GET/HEAD /api/dsh-plugin-codex-accounts` 读取目录/登录进度；POST 的独立动作是 `login.start`、`login.respond`、`login.cancel`、`account.select`、`account.remove`、`quota.read`、`bindings`、`warmup.run`。只读不会发送模型请求。桌宠的管理代理不允许 `warmup.run`，预热由独立授权调度器调用。API 不返回 OAuth grant 或模型回答文本。
 
 ## 验证与故障恢复
 

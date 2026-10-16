@@ -191,9 +191,9 @@ test('navigation keyboard wraps arrows and Home/End with roving focus', async ()
     press('Escape'); assert.equal(prevented, 5);
   } finally { ui.cleanup(); }
 });
-test('DeepSeek account subpage explains the Codex prerequisite without installing or reading accounts', async () => {
+test('DeepSeek account subpage permits account setup without installing or reading accounts', async () => {
   const transport = mockTransport(), ui = harness(transport.send);
-  try { await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render(); assert.match(ui.text(ui.render()), /请先在「常规」/); assert(!ui.nodes().some(n => n.props['data-dependency-install'])); assert.equal(transport.calls.length, 4); } finally { ui.cleanup(); }
+  try { await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render(); assert.match(ui.text(ui.render()), /可在此管理订阅账号/); assert(ui.find(n => n.props.name === 'codexAccountBackend')); assert(!ui.nodes().some(n => n.props['data-dependency-install'])); assert.equal(transport.calls.length, 4); } finally { ui.cleanup(); }
 });
 test('built bundle follows the real host factory contract and owns native settings registration/CSS lifecycle', () => {
   let factory, added = 0, removed = 0, registration;

@@ -82,7 +82,7 @@ test('comfort controls are first, drafts remain local, and explicit save only pa
   const ui = harness();
   try {
     await settle(); ui.render();
-    assert.equal(ui.text(ui.find(n => n.type === 'h3')), '陪伴与舒适');
+    assert.equal(ui.text(ui.nodes(ui.find(n => n.type === 'form')).find(n => n.type === 'h3')), '陪伴与舒适');
     for (const key of keys) {
       const control = ui.find(n => n.props.name === key);
       control.props.onChange({ target: key === 'feedbackStyle' ? { value: 'gentle' } : { checked: true } }); ui.render();

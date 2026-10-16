@@ -1,15 +1,32 @@
 // Desktop-pet side: safe DTOs only; this module never sees a Codex grant.
 export const OFFICIAL_PROVIDER = 'codex-accounts';
+const messages = Object.freeze({
+  OFFICIAL_ROUTE_MISSING: '独立账号服务未接入宿主通道。请完整退出 DSH（含托盘）后重开，以加载更新后的账号插件。',
+  OFFICIAL_ACCESS_DENIED: '宿主未授权本次读取。请刷新 DSH 页面后重试，不要重复添加账号。',
+  DIRECTORY_UNAVAILABLE: '账号目录暂不可读。请检查本机目录权限或文件状态；不要删除授权或去重记录。',
+  DIRECTORY_LOCKED: '账号目录正被另一操作占用，请稍后点击刷新。',
+  DIRECTORY_WRITE_UNAVAILABLE: '账号目录暂时无法完成原子写入。请稍后重试；不会自动重复登录、额度或模型操作。',
+  LOGIN_BUSY: '已有登录正在进行，请刷新查看进度或取消该次登录。',
+  SOURCE_CHANGED: '账号列表已经变化，请刷新后重新选择。',
+  OAUTH_REQUIRED: '该账号授权不可用，请移除本插件中的失效记录后重新绑定。',
+  OFFICIAL_SERVICE_UNAVAILABLE: '账号服务暂不可用。请确认独立账号插件已启用；操作未自动重试。',
+});
+const serviceError = (code, requestNotSent = false) => {
+  const safe = typeof code === 'string' && Object.hasOwn(messages, code) ? code : 'OFFICIAL_SERVICE_UNAVAILABLE';
+  return Object.assign(new Error(messages[safe]), { code: safe, requestNotSent });
+};
 export async function officialAccountRpc(bridge, action, payload = {}, signal) {
-  if (!bridge?.fetch) throw Object.assign(new Error('Official account service unavailable'), { requestNotSent: true });
+  if (!bridge?.fetch) throw serviceError('OFFICIAL_SERVICE_UNAVAILABLE', true);
   const response = await bridge.fetch(new Request('http://localhost/api/dsh-plugin-codex-accounts', {
     method: action ? 'POST' : 'GET', signal, headers: action ? { 'Content-Type': 'application/json' } : undefined,
     ...(action ? { body: JSON.stringify({ action, ...payload }) } : {}),
   }));
-  if (response.status === 404) throw Object.assign(new Error('Official account plugin is not enabled'), { requestNotSent: true });
-  const data = await response.json();
-  if (!response.ok) throw Object.assign(new Error('Official account operation unavailable'), { requestNotSent: data?.requestNotSent === true,
-    ...(data?.error === 'WARMUP_UNCONFIRMED' && data.usage ? { usage: data.usage, modelName: data.modelName } : {}) });
+  if (response.status === 404) throw serviceError('OFFICIAL_ROUTE_MISSING', true);
+  if (response.status === 401 || response.status === 403) throw serviceError('OFFICIAL_ACCESS_DENIED', true);
+  let data;
+  try { data = await response.json(); } catch { throw serviceError('OFFICIAL_SERVICE_UNAVAILABLE'); }
+  if (!response.ok) throw Object.assign(serviceError(data?.error, data?.requestNotSent === true),
+    data?.error === 'WARMUP_UNCONFIRMED' && data.usage ? { usage: data.usage, modelName: data.modelName } : {});
   return data;
 }
 export async function readOfficialQuota(bridge, signal, onIdentity = () => {}) {
@@ -63,6 +80,9 @@ export function officialAccountsProxy({ bridge, authorize }) {
       const result = await officialAccountRpc(current, action, payload, AbortSignal.timeout(20000));
       if (bridge() !== current) throw new Error('source changed');
       reply(200, result);
-    } catch { reply(503, { error: '账号服务不可用或授权已变化；未自动重试。' }); }
+    } catch (error) {
+      const known = serviceError(error?.code);
+      reply(503, { error: known.message, code: known.code });
+    }
   };
 }
