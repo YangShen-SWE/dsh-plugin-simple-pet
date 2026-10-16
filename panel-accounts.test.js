@@ -80,7 +80,8 @@ test('actual backend keeps full email memory only, panel opt-in gates writes and
  try{apply(ctx,{switchSupported:()=>true,petLauncher:()=>Object.assign(()=>{}, {applicationRuntime:()=>({active:runtime})}),panelStarter:async options=>{panel=options;return {url:'http://127.0.0.1:1/panel',token:'a'.repeat(64),close(){}};}});
  let view;for(let i=0;i<100;i++){await new Promise(resolve=>setTimeout(resolve,5));if(panel){view=await panel.read();if(view.canSwitch)break;}}assert(panel);assert.equal(view.email,'full.A@example.com');assert.equal(view.canSwitch,true,JSON.stringify(view));assert.equal((await invoke('/api/dsh-plugin-simple-pet/accounts','POST')).code,410);
  const publicState=await invoke('/api/dsh-plugin-simple-pet/state');assert(!JSON.stringify(publicState).includes('full.A'));assert(!JSON.stringify(await invoke('/api/dsh-plugin-simple-pet/account')).includes('full.A'));
- await panel.cycle(view.grant);assert.equal(writes,1);for(let i=0;i<10;i++)await settle();assert.equal((await panel.read()).email,'full.B@example.com');
+ for(let i=0;i<100;i++){view=await panel.read();if(view.canSwitch)break;await new Promise(resolve=>setTimeout(resolve,5));}
+  await panel.cycle(view.grant);assert.equal(writes,1);for(let i=0;i<10;i++)await settle();assert.equal((await panel.read()).email,'full.B@example.com');
  const old=(await panel.read()).grant;await writeFile(prefs,JSON.stringify({billingMode:'codex',multiAccountManagement:false}));assert.equal((await panel.read()).enabled,false);await assert.rejects(panel.cycle(old));assert.equal(writes,1);
  runtime=false;assert.equal(panel.runtime().active,false);
  }finally{for(const c of cleanups.reverse())await c?.();for(const [key,val]of Object.entries(before)){if(val===undefined)delete process.env[key];else process.env[key]=val;}assert(root.startsWith(join(tmpdir(),'DshPanelHost-')));await rm(root,{recursive:true,force:true});}

@@ -1,10 +1,10 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.7.2 · 分区设置、面板账号与每日多账号预热](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.2)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v0.7.3 · 官方组件独立账号服务](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.3)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
-陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，需兼容订阅插件。
+陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或新增官方组件独立账号服务。
 
-A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up require compatible subscription addons; both default off.
+A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the new independent official-component account service; both default off.
 
 ## 界面展示 / Screenshots
 
@@ -22,9 +22,25 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 
 市场展示顺序由仓库根目录的 [screenshots.json](screenshots.json) 声明；图片更新在市场下一次目录构建与客户端刷新后显示。The catalogue discovers these images from the repository declaration on its next build.
 
-> **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主提供公共进程内连接适配器，并安装、启用支持的订阅插件；不能仅凭 DSH 版本号保证额度接口可用。This is an unofficial community project, not a DeepSeek product.
+> **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径需显式安装本次独立账号服务及其公开组件。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v0.7.3：官方组件独立账号服务（2026-10-16）
+
+**更新原因：** 默认官方 Codex OAuth 的单账号槽位不等于框架不能支持多账号；此前桌宠账号/额度/每日预热必须借助第三方订阅插件。本次新增独立插件 `dsh-plugin-codex-accounts@0.1.0`，复用官方公开 OAuth/适配器组件完成自有账号目录、账号固定请求和桌宠生产接线，不把 OpenAI Platform API Key 计费当成 ChatGPT 订阅额度。
+
+- **两个独立包：** 安装并启用本次 Release 的 `dsh-plugin-codex-accounts.tgz` 与桌宠 `dsh-plugin-simple-pet.tgz`。账号服务显式依赖 `@deepseek-ai/dsh-llm-pi-ai@0.2.0-rc.2` 和 `@earendil-works/pi-ai@0.87.1`；不依赖第三方订阅插件，但不是零库依赖。桌宠自身仍无生产依赖，安装桌宠不会隐式安装/启用账号服务。
+- **明确选择与登录：** 设置 → 桌宠 → 账号管理选择“官方组件独立账号服务”并保存，再主动读取目录、添加官方浏览器/设备码 OAuth、查询额度、选择新请求默认账号或撤销本地绑定。旧订阅路径仍为默认，不导入旧 grant、账号或预热授权。账号管理不受 DeepSeek/Codex 展示模式限制；查看账号与默认路由分开。
+- **凭据和绑定：** grant 只经独立插件的固定账号 CredentialStore 进入宿主 credentials 服务，桌宠不接收令牌。刷新整个 mutation 受宿主锁保护；缺 grant、撤销、epoch/身份变化拒绝，不回退环境 Key、全局账号或其他账号。目录仅含不透明键、身份哈希、用户昵称及撤销/默认引用，不承诺宿主加密。昵称不是官方邮箱。
+- **订阅额度：** 兼容 Codex 客户端的只读 GET，绑定 OAuth 账号头，失败保留旧采样时间并显示 stale；不调用模型或 reset-credit 消费接口。`clientObservedAt` 不是服务器采样证明，缺失账号回显、分钟/百分比舍入及后端延迟不伪装成精确满额。启动满额/5h 满额自动预热仍禁用。
+- **默认与面板：** `codex-accounts` 独立模型路由的默认只影响后续新请求；在途 A 请求固定 A，不改宿主/第三方的 `openai-codex` 激活账号。面板仍需显式开启管理和至少两个可读 OAuth 绑定，点击轮换本服务新请求默认，显示用户昵称。旧后端的面板邮箱/全局切号语义保持原样。
+- **每日预热：** 沿用默认关闭的独立逐账号授权，最多八个账号、每天每账号一次逻辑请求，未知额度仍需额外同意。官方发送前另检查普通用量权限和已知耗尽情况，固定账号、SSE、无工具及库重试0；实际 usage 只结算一次。不是 HTTP exactly-once/Token/费用硬上限。同订阅重绑预算键稳定，同日跨后端认领拒绝重放，unknown/崩溃认领仍暂停自动化；不恢复旧单账号计划或悄悄迁移授权。
+- **架构与计划：** 将三项既有预热安全策略原样提取为 `warmup-safety.js`，旧导出不变。此前每日16:00任务已取消，未建立新定时。新增服务分离 OAuth/目录/额度/官方 driver，避免继续把账号存储塞进桌宠入口。后台新暂停优先于旧“保存成功”文案。
+
+验证只用合成账号、私有 Temp、公开库假 OAuth 和双插件真实接线 mock；未真实登录/读取账号额度、调用模型、安装依赖、升级运行宿主或重启，也未跑全量测试。发布前源码定向通过 **499 项 Node 检查与 76,414 项隔离 WPF 断言**；源码/模拟通过不等于真实账号/完整宿主验收。兼容额度端点与 OAuth 资格仍受上游变更及政策约束，不能承诺一定开启新5h窗口。安装与安全边界见 [独立账号插件说明](codex-accounts/README.md)。
+
+Official-component account service: this community plugin uses ChatGPT Codex subscription OAuth, not a Platform API key. Install the independent account-service asset explicitly; choose the saved official backend without migrating existing credentials or automation grants. Account-fixed refresh/request isolation, reported quota observations and opt-in daily warm-up are wired to the desktop client. Existing third-party paths remain the default. Exact-full startup/reset triggers remain unavailable. Validation used mocks/private temporary data only, not live authentication, billing calls or host restarts.
 
 ## v0.7.2：顶部子页面与多账号触发能力（2026-10-16）
 

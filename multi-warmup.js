@@ -46,7 +46,8 @@ function decode(bytes) {
     if (!record(item) || typeof item.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(item.day)
       || !hash(item.accountKey, 16) || !hash(item.modelKey, 64) || !['claimed','succeeded','unknown','unsent'].includes(item.status)
       || !Number.isSafeInteger(item.attemptedAt) || item.attemptedAt <= 0
-      || Reflect.ownKeys(item).some(key => !['day','accountKey','modelKey','status','attemptedAt','finishedAt'].includes(key))
+      || Reflect.ownKeys(item).some(key => !['day','accountKey','modelKey','status','attemptedAt','finishedAt','backend'].includes(key))
+      || (Object.hasOwn(item, 'backend') && !['legacy','official'].includes(item.backend))
       || (Object.hasOwn(item, 'finishedAt') && (!Number.isSafeInteger(item.finishedAt) || item.finishedAt < item.attemptedAt))
       || seen.has(`${item.day}:${item.accountKey}`)) throw error(503, '多账号预热去重记录不可用，已停止。');
     seen.add(`${item.day}:${item.accountKey}`);
@@ -120,17 +121,18 @@ export class MultiWarmupStore {
       return { ...current.data, config: valid };
     });
   }
-  async claim(account, day, now, expectedConfig) {
+  async claim(account, day, now, expectedConfig, backend = 'legacy') {
     let claimed = false;
     await this.transaction(({ data }) => {
-      if (!Number.isSafeInteger(now) || now <= 0 || day !== dayOf(now)
+      if (!['legacy','official'].includes(backend) || data.attempts.some(row => row.day >= day && (row.backend ?? 'legacy') !== backend)
+        || !Number.isSafeInteger(now) || now <= 0 || day !== dayOf(now)
         || data.attempts.some(row => row.day > day || row.attemptedAt > now || (row.finishedAt ?? 0) > now)
         || data.paused || JSON.stringify(data.config) !== JSON.stringify(expectedConfig)
         || !data.config.enabled || !data.config.accounts.some(row => row.enabled && row.accountKey === account.accountKey && row.modelKey === account.modelKey && row.allowUnverifiedQuota)
         || data.attempts.some(row => row.day === day && row.accountKey === account.accountKey)) return null;
       const attempts = data.attempts.filter(row => row.day >= day || ['claimed','unknown'].includes(row.status));
       if (attempts.length >= 512) throw error(503, '去重记录已满，已停止。');
-      attempts.push({ day, accountKey: account.accountKey, modelKey: account.modelKey, status: 'claimed', attemptedAt: now });
+      attempts.push({ day, accountKey: account.accountKey, modelKey: account.modelKey, status: 'claimed', attemptedAt: now, ...(backend === 'official' ? { backend } : {}) });
       claimed = true; return { ...data, attempts };
     });
     return claimed;
@@ -210,7 +212,7 @@ export class MultiWarmupScheduler {
         }
         if (context.singleAttemptToday) { results.push({ accountKey: row.accountKey, status: 'skipped', detail: '今天已有旧单账号预热认领，保守避免重复' }); continue; }
         if (!this.claimLease()) throw new Error('another scheduler owns automation');
-        if (!await this.store.claim(row, day, this.clock(), data.config)) { results.push({ accountKey: row.accountKey, status: 'skipped', detail: '今天已认领、记录变化或已暂停' }); continue; }
+        if (!await this.store.claim(row, day, this.clock(), data.config, context.backend ?? 'legacy')) { results.push({ accountKey: row.accountKey, status: 'skipped', detail: '今天已认领、记录变化或已暂停' }); continue; }
         let status = 'unknown';
         try {
           signal.throwIfAborted(); if (!same()) throw Object.assign(new Error('context changed'), { requestNotSent: true });

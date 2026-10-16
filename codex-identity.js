@@ -38,7 +38,7 @@ export function identityEvidence(quota, identity, now = Date.now()) {
   const unavailable = { status: 'unavailable' };
   if (!identity || !quota || !['ready', 'reported'].includes(quota.status)
     || quota.provider !== identity.provider || quota.selection !== identity.selection || quota.accountKey !== identity.accountKey
-    || !['openai-codex', 'codex'].includes(identity.provider) || !(typeof identity.accountKey === 'string' && identity.accountKey.length === 16 && /^[a-f0-9]{16}$/.test(identity.accountKey))
+    || !['openai-codex', 'codex', 'codex-accounts'].includes(identity.provider) || !(typeof identity.accountKey === 'string' && identity.accountKey.length === 16 && /^[a-f0-9]{16}$/.test(identity.accountKey))
     || !Number.isSafeInteger(identity.checkedAt) || identity.checkedAt > now || now - identity.checkedAt >= LEASE_MS
     || (quota.status === 'ready' && (!Number.isSafeInteger(quota.observedAt) || quota.observedAt > now + 5000 || now - quota.observedAt > LEASE_MS))
     || [quota.fiveHour, quota.weekly].some(window => Number.isFinite(window?.resetAt) && window.resetAt <= now)) return unavailable;
@@ -54,7 +54,7 @@ export function identityEvidence(quota, identity, now = Date.now()) {
 export function panelIdentityEvidence(quota, identity, now = Date.now()) {
   if (!identity || !quota || !['ready', 'reported', 'stale', 'unavailable'].includes(quota.status)
     || quota.provider !== identity.provider || quota.selection !== identity.selection || quota.accountKey !== identity.accountKey
-    || !['openai-codex', 'codex'].includes(identity.provider)
+    || !['openai-codex', 'codex', 'codex-accounts'].includes(identity.provider)
     || typeof identity.accountKey !== 'string' || identity.accountKey.length !== 16 || !/^[a-f0-9]{16}$/.test(identity.accountKey)
     || !Number.isSafeInteger(identity.checkedAt) || identity.checkedAt > now || now - identity.checkedAt >= LEASE_MS)
     return { status: 'unavailable' };

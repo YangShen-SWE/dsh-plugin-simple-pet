@@ -1,0 +1,14 @@
+{
+  "name": "dsh-plugin-codex-accounts",
+  "version": "0.1.0",
+  "description": "Account-isolated ChatGPT Codex OAuth service for DeepSeek Harness; not an OpenAI product.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git", "directory": "codex-accounts" },
+  "exports": { ".": "./index.js", "./package.json": "./package.json" },
+  "files": ["index.js", "service.js", "official-driver.js", "quota.js", "cordis.patch.yml", "README.md", "LICENSE", "service.test.js"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "engines": { "node": ">=22.19.0" },
+  "dependencies": { "@earendil-works/pi-ai": "0.87.1", "@deepseek-ai/dsh-llm-pi-ai": "0.2.0-rc.2" },
+  "scripts": { "test": "node --test --test-isolation=none service.test.js" }
+}

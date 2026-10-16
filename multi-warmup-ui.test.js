@@ -44,7 +44,7 @@ test('unsupported startup/reset controls remain disabled before and after daily 
     assert.deepEqual(controls.map(n => n.props['data-multi-trigger']), ['startup','reset']);
     assert(controls.every(n => n.props.disabled === true && n.props.checked === false && !n.props.onChange));
     assert.match(ui.text(), /额外额度授权只适用于每日次数预算/);
-    assert.match(ui.text(), /force 失败也可能返回旧缓存/);
+    assert.match(ui.text(), /旧通用插件可能返回缓存/);
     assert.equal(ui.calls.filter(c => c.method === 'PUT').length, 0);
   } finally { ui.cleanup(); }
 });

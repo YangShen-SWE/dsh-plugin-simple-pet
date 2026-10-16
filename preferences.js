@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { CARD_THEME_IDS } from './card-themes.js';
 
 export const DEFAULT_PREFERENCES = Object.freeze({
-  skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
+  skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token', codexAccountBackend: 'legacy',
   codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
   codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
   multiAccountManagement: false, compactMode: false, quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
@@ -14,7 +14,7 @@ const enums = {
   skin: ['default', 'night', 'snow', 'mint', 'cherry', 'star'],
   cardTheme: CARD_THEME_IDS,
   unit: ['cny', 'token'], size: ['tiny', 'small', 'medium', 'large'],
-  billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'], feedbackStyle: ['classic', 'gentle'],
+  billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'], codexAccountBackend: ['legacy', 'official'], feedbackStyle: ['classic', 'gentle'],
 };
 const bounds = { codexQuotaRefreshSeconds: [1, 3600], sleepMinutes: [1, 240] };
 const booleans = new Set(['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup', 'multiAccountManagement', 'compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats']);

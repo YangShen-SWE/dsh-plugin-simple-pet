@@ -30,10 +30,10 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexAccountBackend = 'legacy'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10; left = $null; top = $null }
 function Set-PetPreferenceValues($saved) {
   # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
-  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10 }
+  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexAccountBackend = 'legacy'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10 }
   foreach ($key in $defaults.Keys) {
     # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
     if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
@@ -52,6 +52,7 @@ function Set-PetPreferenceValues($saved) {
   if ($script:Prefs.unit -notin @('cny', 'token')) { $script:Prefs.unit = 'cny' }
   if ($script:Prefs.billingMode -notin @('deepseek', 'codex')) { $script:Prefs.billingMode = 'deepseek' }
   if ($script:Prefs.codexUnit -notin @('token', 'percent')) { $script:Prefs.codexUnit = 'token' }
+  if ($script:Prefs.codexAccountBackend -isnot [string] -or $script:Prefs.codexAccountBackend -cnotin @('legacy', 'official')) { $script:Prefs.codexAccountBackend = 'legacy' }
   if (($script:Prefs.codexQuotaRefreshSeconds -isnot [int] -and $script:Prefs.codexQuotaRefreshSeconds -isnot [long]) -or $script:Prefs.codexQuotaRefreshSeconds -lt 1 -or $script:Prefs.codexQuotaRefreshSeconds -gt 3600) { $script:Prefs.codexQuotaRefreshSeconds = 5 }
   if ($script:Prefs.codexWarmupDaily -isnot [bool] -or -not $savedWarmupTimeValid) { $script:Prefs.codexWarmupDaily = $false }
   if ($script:Prefs.codexWarmupReset -isnot [bool]) { $script:Prefs.codexWarmupReset = $false }

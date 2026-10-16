@@ -26,7 +26,7 @@ async function unchanged(file, bytes, operation, expected = 400) {
 
 test('defaults are exact, frozen, fresh and do not expose unknown values', () => {
   assert.deepEqual(DEFAULT_PREFERENCES, {
-    skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token',
+    skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token', codexAccountBackend: 'legacy',
     codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
     codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
     compactMode: false, multiAccountManagement: false, quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
@@ -41,7 +41,7 @@ test('defaults are exact, frozen, fresh and do not expose unknown values', () =>
 
 test('every exact enum is accepted and near matches fail closed', () => {
   const choices = { skin: ['default', 'night', 'snow', 'mint', 'cherry', 'star'], unit: ['cny', 'token'],
-    size: ['tiny', 'small', 'medium', 'large'], billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'] };
+    size: ['tiny', 'small', 'medium', 'large'], billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'], codexAccountBackend: ['legacy', 'official'] };
   for (const [key, allowed] of Object.entries(choices)) {
     for (const value of allowed) assert.equal(preferenceValues({ [key]: value })[key], value);
     for (const value of [allowed[0].toUpperCase(), ` ${allowed[0]}`, `${allowed[0]} `, '', 'unknown', 0, {}, [], null]) {
@@ -137,7 +137,7 @@ test('every enum and inclusive numeric endpoint is valid in patches', async t =>
   const f = await fixture(t);
   let revision = 'missing';
   const choices = { skin: ['default', 'night', 'snow', 'mint', 'cherry', 'star'], unit: ['cny', 'token'],
-    size: ['tiny', 'small', 'medium', 'large'], billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'],
+    size: ['tiny', 'small', 'medium', 'large'], billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'], codexAccountBackend: ['legacy', 'official'],
     codexQuotaRefreshSeconds: [1, 3600], sleepMinutes: [1, 240], codexWarmupReset: [true, false], codexWarmupStartup: [true, false] };
   for (const [key, values] of Object.entries(choices)) for (const value of values) {
     const result = await f.store.update({ [key]: value }, revision);

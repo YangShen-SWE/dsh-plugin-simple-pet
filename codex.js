@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { selectedCodexAccount, codexIdentity } from './codex-identity.js';
 
-export const CODEX_PROVIDERS = new Set(['openai-codex', 'codex']);
+export const CODEX_PROVIDERS = new Set(['openai-codex', 'codex', 'codex-accounts']);
 const WINDOWS = { fiveHour: 18_000, weekly: 604_800 };
 const FRESH_MS = 120_000;
 

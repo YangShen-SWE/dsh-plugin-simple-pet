@@ -19,6 +19,7 @@ import { identityEvidence, panelIdentityEvidence, accountIdentityHandler } from 
 import { createAccountControl } from './account-control.js';
 import { MultiWarmupStore, MultiWarmupScheduler, multiWarmupHandler } from './multi-warmup.js';
 import { discoverBoundAccounts, runBoundWarmup } from './multi-warmup-provider.js';
+import { officialAccountRpc, readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy } from './official-accounts.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -175,6 +176,22 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let codexBridge = null;
   let codexBusy = false;
   let codexProvider = 'openai-codex';
+  let accountBackend = 'legacy';
+  try { accountBackend = JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, '')).codexAccountBackend === 'official' ? 'official' : 'legacy'; } catch { /* opt-in only */ }
+  function configureAccountBackend(raw) {
+    if (!raw || typeof raw !== 'object') return;
+    const next = raw.codexAccountBackend === 'official' ? 'official' : 'legacy';
+    if (next === accountBackend) return;
+    if (warmup.active || multiWarmup.active) warmupModeUncertain = true;
+    warmup.active?.abort(); multiWarmup.active?.abort();
+    accountBackend = next; accountSourceGeneration++; codexRevision++; codexIdentity = null; warmupQuota = null;
+    codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
+  }
+  function refreshAccountBackend() {
+    try { configureAccountBackend(JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, ''))); } catch { /* never fall back on a malformed file */ }
+    return accountBackend;
+  }
+  const discoverAccounts = options => options.backend === 'official' ? discoverOfficialAccounts(options) : discoverBoundAccounts(options);
   let codexRevision = 0;
   let bridgeRevision = 0;
   let accountSourceGeneration = 0;
@@ -231,7 +248,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       await rename(temporary, warmupFile);
     },
     async getQuota({ force, signal }) {
-      if (!live || !codexBridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
+      if (!live || refreshAccountBackend() === 'official' || !codexBridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
       const bridge = codexBridge, generation = bridgeRevision, selectionGeneration = codexRevision;
       const now = warmupClock();
       if (!force && codex.provider === 'openai-codex' && codex.observedAt === warmupQuota?.observedAt) return warmupQuota;
@@ -250,7 +267,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     },
     async run({ quota, signal }) {
       const bridge = codexBridge, generation = bridgeRevision;
-      if (!live || !bridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
+      if (!live || refreshAccountBackend() === 'official' || !bridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
       const result = await runCodexWarmup({ llm: ctx.llm, bridge, quota, signal,
         onUsage(usage, model) {
           const items = codexTokenItems(usage), at = warmupClock();
@@ -271,12 +288,15 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   });
   const multiStore = new MultiWarmupStore(join(dataDir, 'multi-warmup.json'));
   let multiEnabled = false, warmupModeUncertain = false, multiReadable = true, legacyResumePaused = false, legacyDayBlocked = false;
-  const multiContext = () => live && warmupJournalReadable && codexBridge && !accountChanging && !warmupSwitchUncertain && !warmupModeUncertain
-    && !warmup.active && typeof ctx.llm?.listModels === 'function' && typeof ctx.llm?.resolveModelInfo === 'function' && typeof ctx.llm?.stream === 'function'
-    && switchSupported('codex') && (!WARMUP_OWNERS.has(warmupFile) || WARMUP_OWNERS.get(warmupFile) === instance)
-    ? { llm: ctx.llm, bridge: codexBridge, generation: `${bridgeRevision}:${accountSourceGeneration}`,
-      singleAttemptToday: legacyBlocksMulti(warmup.journal, warmupClock()) } : null;
-  const multiWarmup = new MultiWarmupScheduler({ store: multiStore, context: multiContext, discover: discoverBoundAccounts,
+  const multiContext = () => {
+    const backend = refreshAccountBackend();
+    return live && warmupJournalReadable && codexBridge && !accountChanging && !warmupSwitchUncertain && !warmupModeUncertain && !warmup.active
+      && (backend === 'official' || (typeof ctx.llm?.listModels === 'function' && typeof ctx.llm?.resolveModelInfo === 'function' && typeof ctx.llm?.stream === 'function' && switchSupported('codex')))
+      && (!WARMUP_OWNERS.has(warmupFile) || WARMUP_OWNERS.get(warmupFile) === instance)
+      ? { llm: ctx.llm, bridge: codexBridge, backend, generation: `${bridgeRevision}:${accountSourceGeneration}:${backend}`,
+        singleAttemptToday: legacyBlocksMulti(warmup.journal, warmupClock()) } : null;
+  };
+  const multiWarmup = new MultiWarmupScheduler({ store: multiStore, context: multiContext, discover: discoverAccounts,
     signal: controller.signal, clock: warmupClock, onChange() { if (live) snapshot(); },
     claimLease() {
       if (!WARMUP_OWNERS.has(warmupFile)) WARMUP_OWNERS.set(warmupFile, instance);
@@ -287,7 +307,8 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       return !legacyBlocksMulti(warmup.journal, warmupClock());
     },
     async run(options) {
-      return runBoundWarmup({ ...options, llm: ctx.llm,
+      const run = options.backend === 'official' ? runOfficialWarmup : runBoundWarmup;
+      return run({ ...options, llm: ctx.llm,
         onUsage(usage, model) {
           const items = codexTokenItems(usage), at = warmupClock();
           if (!items.length) return;
@@ -301,6 +322,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     : warmupModeUncertain ? { ...warmup.view, detail: '预热结果或执行中的授权变更未核验，所有自动预热已暂停；需核验持久记录，不能靠重启/切换开关绕过未知认领。', modeChangePaused: true }
       : !warmupJournalReadable ? { ...warmup.view, status: warmupJournalAlert === null ? 'disabled' : 'failed', detail: '原单账号预热日志不可读，无法排除已尝试请求；所有自动预热暂停，不覆盖原记录。', alertId: warmupJournalAlert ? 'legacy-journal-unavailable' : null }
         : !multiReadable ? { ...warmup.view, detail: '多账号记录不可读，所有自动预热保守暂停。' }
+        : accountBackend === 'official' ? { ...warmup.view, status: 'disabled', detail: '官方账号后端使用下方独立逐账号每日授权；旧单账号计划暂停，原开关保持不变。' }
         : multiEnabled ? { ...warmup.view, status: 'disabled', detail: '多账号计划已开启，原单账号计划暂停，原开关保持不变。' }
           : legacyResumePaused ? { ...warmup.view, status: 'disabled', detail: '刚退出多账号模式，旧单账号计划本进程保守暂停；核验后完整重启 DSH，不在保存时立即预热。' }
             : legacyDayBlocked ? { ...warmup.view, status: 'disabled', detail: '今天已有多账号认领，保守暂停旧单账号计划以避免重复。' } : warmup.view;
@@ -331,6 +353,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       try { raw = JSON.parse((await readFile(prefsFile, 'utf8')).replace(/^\uFEFF/, '')); }
       catch { raw = null; }
       if (!live) return;
+      configureAccountBackend(raw);
       configureQuotaPolling(raw);
       // Only one mounted context owns automation. Reload durable legacy claims
       // after handover; a context mounted earlier must not use its startup cache.
@@ -360,7 +383,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       const before = JSON.stringify([warmup.view, multiWarmup.view]);
       try {
         if (multiEnabled) { await warmup.tick(null); await multiWarmup.tick(); }
-        else { await multiWarmup.tick(); await warmup.tick(legacyResumePaused || legacyDayBlocked ? null : raw); }
+        else { await multiWarmup.tick(); await warmup.tick(accountBackend === 'official' || legacyResumePaused || legacyDayBlocked ? null : raw); }
       } catch { /* Automatic requests never escalate or fall back to a different account. */ }
       if (live && before !== JSON.stringify([warmup.view, multiWarmup.view])) snapshot();
     } finally {
@@ -437,12 +460,14 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   async function pollCodex(force = false) {
     if (!live || accountChanging || codexBusy || !codexBridge) return;
     codexBusy = true;
+    const backend = refreshAccountBackend();
     const revision = codexRevision, bridgeGeneration = bridgeRevision;
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]);
       let identity = null;
-      const current = await readCodexQuota(codexBridge, signal, Date.now(), codexProvider,
-        { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked), onIdentity(value) { identity = value; } });
+      const current = backend === 'official' ? await readOfficialQuota(codexBridge, signal, value => { identity = value; })
+        : await readCodexQuota(codexBridge, signal, Date.now(), codexProvider,
+          { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked), onIdentity(value) { identity = value; } });
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
       for (const delta of quotaDeltas(codex, current)) push(delta);
       if (codex.provider !== current.provider) { accountSourceGeneration++; multiWarmup.active?.abort(); }
@@ -493,7 +518,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     if (seenQueue.length > 512) seen.delete(seenQueue.shift());
     const at = Number.isFinite(new Date(event.time).getTime()) ? new Date(event.time).getTime() : Date.now();
     if (CODEX_PROVIDERS.has(source.provider)) {
-      if (codexProvider !== source.provider) {
+      if (refreshAccountBackend() === 'legacy' && source.provider !== 'codex-accounts' && codexProvider !== source.provider) {
         codexProvider = source.provider;
         accountSourceGeneration++;
         multiWarmup.active?.abort();
@@ -550,10 +575,10 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
         ? createHash('sha256').update(bytes).digest('hex') : null;
     } catch { return null; }
   }
-  const panelReady = () => live && petStop?.applicationRuntime?.()?.active === true && !!panelGrant() && !!codexBridge && switchSupported(codex.provider)
+  const panelReady = () => live && petStop?.applicationRuntime?.()?.active === true && !!panelGrant() && !!codexBridge && (refreshAccountBackend() === 'official' || switchSupported(codex.provider))
     && !accountChanging && !warmupSwitchUncertain && !warmupModeUncertain && !prefsReading && !warmup.active && !multiWarmup.active;
   const accountControl = createAccountControl({
-    context: () => live && petStop?.applicationRuntime?.()?.active === true && panelGrant() && codexBridge && switchSupported(codex.provider)
+    context: () => live && refreshAccountBackend() === 'legacy' && petStop?.applicationRuntime?.()?.active === true && panelGrant() && codexBridge && switchSupported(codex.provider)
       ? { bridge: codexBridge, provider: codex.provider, generation: `${bridgeRevision}:${accountSourceGeneration}:${codexProvider}:${panelGrant()}` } : null,
     blocked: () => accountChanging || warmupSwitchUncertain || warmupModeUncertain || prefsReading || !!warmup.active || !!multiWarmup.active,
     begin() {
@@ -574,8 +599,44 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     },
   });
   const preferencesStore = new PreferencesStore(prefsFile);
-  const panelCycle = createPanelCycle({ control: accountControl, grant: panelGrant, ready: panelReady });
-  function panelView() {
+  const legacyPanelCycle = createPanelCycle({ control: accountControl, grant: panelGrant, ready: panelReady });
+  const panelCycle = async expected => {
+    if (refreshAccountBackend() !== 'official') return legacyPanelCycle(expected);
+    if (!panelReady() || panelGrant() !== expected) throw new Error('Panel not ready');
+    const grant = panelGrant(), bridge = codexBridge, generation = `${bridgeRevision}:${accountSourceGeneration}`;
+    accountChanging = true; clearTimeout(warmupTimer); let attempted = false, confirmed = false;
+    try {
+      const list = await officialAccountRpc(bridge, null, {}, AbortSignal.timeout(10000));
+      const rows = list.accounts?.filter(r => r.bound === true);
+      if (!Array.isArray(rows) || rows.length < 2 || new Set(rows.map(r => r.accountKey)).size !== rows.length || !Number.isSafeInteger(list.generation)) throw new Error('Need two bound accounts');
+      const current = rows.findIndex(r => r.accountKey === list.defaultKey);
+      if (current < 0 || rows.filter(r => r.selected === true).length !== 1) throw new Error('Selected account unavailable');
+      if (panelGrant() !== grant || refreshAccountBackend() !== 'official' || codexBridge !== bridge || `${bridgeRevision}:${accountSourceGeneration}` !== generation || !live) throw new Error('Authority changed');
+      const target = rows[(current + 1) % rows.length].accountKey;
+      attempted = true;
+      await officialAccountRpc(bridge, 'account.select', { accountKey: target, expectedGeneration: list.generation }, AbortSignal.timeout(10000));
+      const after = await officialAccountRpc(bridge, null, {}, AbortSignal.timeout(10000));
+      confirmed = live && panelGrant() === grant && refreshAccountBackend() === 'official' && codexBridge === bridge && `${bridgeRevision}:${accountSourceGeneration}` === generation
+        && after.defaultKey === target && after.accounts?.some(r => r.accountKey === target && r.selected);
+      if (!confirmed) throw new Error('Switch unconfirmed');
+      return { ok: true };
+    } finally {
+      accountChanging = false; warmupSwitchUncertain = warmupAfterAccountSwitch(warmupSwitchUncertain, { attempted, confirmed });
+      codexRevision++; codexIdentity = null; warmupQuota = null; snapshot(); void pollCodex(true); scheduleWarmup();
+    }
+  };
+  async function panelView() {
+    if (refreshAccountBackend() === 'official') {
+      const grant = panelGrant();
+      if (!grant) return { enabled: false, canSwitch: false, email: '', selection: 'none', validForMs: 2000 };
+      try {
+        const list = await officialAccountRpc(codexBridge, null, {}, AbortSignal.timeout(5000));
+        const bound = list.accounts?.filter(r => r.bound === true) ?? [];
+        const row = bound.find(r => r.accountKey === list.defaultKey);
+        if (panelGrant() !== grant || refreshAccountBackend() !== 'official') throw new Error('Authority changed');
+        return { enabled: true, grant, canSwitch: !!row && bound.length >= 2 && panelReady(), email: row?.label ?? '', selection: row ? 'default' : 'none', validForMs: 2000, reason: row ? '仅改变本账号服务后续新请求默认账号' : '请先完成官方订阅 OAuth 登录' };
+      } catch { return { enabled: true, grant, canSwitch: false, email: '', selection: 'none', validForMs: 2000, reason: '官方账号插件未就绪' }; }
+    }
     const grant = panelGrant();
     if (!grant) return { enabled: false, canSwitch: false, email: '', selection: 'none', validForMs: 2000 };
     const evidence = panelIdentityEvidence(codex, codexIdentity);
@@ -608,7 +669,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     }), 'simple-pet: retired settings account switch');
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/multi-warmup',
-      handler: multiWarmupHandler({ store: multiStore, discover: discoverBoundAccounts,
+      handler: multiWarmupHandler({ store: multiStore, discover: discoverAccounts,
         context: multiContext, authorize: (req, res) => guard(routeCtx, req, res),
         changed() {
           if (warmup.active || multiWarmup.active) { warmupModeUncertain = true; warmup.active?.abort(); multiWarmup.active?.abort(); }
@@ -616,6 +677,9 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
         },
       }),
     }), 'simple-pet: explicitly authorized account-bound warmup');
+    routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: '/api/dsh-plugin-simple-pet/official-accounts',
+      handler: officialAccountsProxy({ bridge: () => live && refreshAccountBackend() === 'official' ? codexBridge : null, authorize: (req, res) => guard(routeCtx, req, res) }),
+    }), 'simple-pet: explicit official OAuth account management');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
       const method = req.method ?? 'GET';

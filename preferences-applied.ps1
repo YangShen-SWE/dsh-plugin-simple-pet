@@ -33,7 +33,7 @@ function Read-PetPreferenceSnapshot([string]$path) {
 function Get-PetAppliedPreferenceValues {
   # EXACT DEFAULT_PREFERENCES key set; report actual native values, not JS sanitization.
   $values = [ordered]@{}
-  foreach ($key in @('skin', 'cardTheme', 'unit', 'size', 'billingMode', 'codexUnit',
+  foreach ($key in @('skin', 'cardTheme', 'unit', 'size', 'billingMode', 'codexUnit', 'codexAccountBackend',
     'codexQuotaRefreshSeconds', 'codexWarmupDaily', 'codexWarmupTime', 'codexWarmupReset',
     'codexWarmupStartup', 'multiAccountManagement', 'sleepMinutes', 'compactMode', 'quietMode', 'feedbackStyle', 'reduceMotion', 'disableFlashes', 'disableFloats')) {
     $values[$key] = $script:Prefs[$key]
