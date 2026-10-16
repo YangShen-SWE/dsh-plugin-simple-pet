@@ -1,12 +1,22 @@
 // Desktop-pet side: safe DTOs only; this module never sees a Codex grant.
 export const OFFICIAL_PROVIDER = 'codex-accounts';
 const messages = Object.freeze({
-  OFFICIAL_ROUTE_MISSING: '独立账号服务未接入宿主通道。请完整退出 DSH（含托盘）后重开，以加载更新后的账号插件。',
+  OFFICIAL_ROUTE_MISSING: '独立账号插件未成功启动，或尚未注册宿主通道。请先查看插件运行错误，不要反复添加账号。修复后需重新加载插件。',
   OFFICIAL_ACCESS_DENIED: '宿主未授权本次读取。请刷新 DSH 页面后重试，不要重复添加账号。',
   DIRECTORY_UNAVAILABLE: '账号目录暂不可读。请检查本机目录权限或文件状态；不要删除授权或去重记录。',
   DIRECTORY_LOCKED: '账号目录正被另一操作占用，请稍后点击刷新。',
   DIRECTORY_WRITE_UNAVAILABLE: '账号目录暂时无法完成原子写入。请稍后重试；不会自动重复登录、额度或模型操作。',
   LOGIN_BUSY: '已有登录正在进行，请刷新查看进度或取消该次登录。',
+  MODEL_CATALOG_UNAVAILABLE:'无法更新账号模型目录；保留上次目录，未发送模型请求。',
+  MODEL_CATALOG_AUTH_REQUIRED:'账号模型目录拒绝访问，请检查该账号授权；没有回退其它账号。',
+  MODEL_CATALOG_INVALID:'账号返回的模型目录不符合当前兼容契约，未采用。',
+  MODEL_CATALOG_EMPTY:'该账号未返回当前适配器可用的模型；不会虚构 gpt-6.1-sol 权限。',
+  MODEL_REVOKED:'所选模型已不在账号目录或已被隐藏，请刷新目录并重新选择。',
+  INVALID_MODEL_SETTINGS:'模型设置不完整或格式不正确。',
+  REASONING_UNAVAILABLE:'所选推理档位不受该模型支持。',
+  HOST_MODEL_UNAVAILABLE:'当前宿主不支持保存新会话默认模型；可在会话顶部手动选择。',
+  HOST_MODEL_NOT_SAVED:'宿主未保存所选模型，请在会话顶部手动选择。',
+  DIRECTORY_LIMIT:'账号目录达到安全大小上限，未覆盖现有数据。',
   SOURCE_CHANGED: '账号列表已经变化，请刷新后重新选择。',
   OAUTH_REQUIRED: '该账号授权不可用，请移除本插件中的失效记录后重新绑定。',
   OFFICIAL_SERVICE_UNAVAILABLE: '账号服务暂不可用。请确认独立账号插件已启用；操作未自动重试。',
@@ -58,7 +68,7 @@ export async function runOfficialWarmup({ bridge, accountKey, modelKey, signal, 
   return result;
 }
 export function officialAccountsProxy({ bridge, authorize }) {
-  const permitted = new Set(['login.start', 'login.cancel', 'login.respond', 'account.remove', 'account.select', 'quota.read']);
+  const permitted = new Set(['login.start', 'login.cancel', 'login.respond', 'account.remove', 'account.select', 'quota.read', 'models.read', 'models.refresh', 'models.configure', 'host-model.select']);
   return async (req, res) => {
     if (!authorize(req, res)) return;
     const method = req.method || 'GET';

@@ -8,6 +8,7 @@ import { createSimplePetClient } from './client-source.js';
 import { DEFAULT_PREFERENCES } from './preferences.js';
 import { apply as applyPet } from './index.js';
 import { apply as applyAccounts } from './codex-accounts/index.js';
+import { officialAccountRpc } from './official-accounts.js';
 const settle=()=>new Promise(r=>setImmediate(r));
 const token=id=>`eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:id}})).toString('base64url')}.MOCK_SIGNATURE`;
 function uiFixture(send){
@@ -55,7 +56,9 @@ async function actualFixture(t){
  const bridge={async fetch(req){const route=fetchRoutes.get(new URL(req.url).pathname);return route?.methods.includes(req.method)?route.fetch(req):new Response('not found',{status:404});}};
  const connection={requestRejection:()=>undefined,fetch:{register(route){fetchRoutes.set(route.path,route);const dispose=()=>fetchRoutes.delete(route.path);cleanups.push(dispose);return dispose;}},createSharedFetchHandler:()=>bridge,onProviderChange:()=>()=>{},provider:'openai-codex'};
  const ctx={logger:{warn(){}},credentials,settings:{describe:()=>[]},sessions:{on(){}},llm:{registerAdapter(providers,adapter){registered={providers,adapter};return()=>{};},listConfigurableProviders:()=>[]},effect(fn){const c=fn();if(typeof c==='function')cleanups.push(c);},on(){},inject(names,fn){const c=fn({...this,connection,webServer:{register({path,handler}){routes.set(path,handler);return()=>routes.delete(path);}}});if(typeof c==='function')cleanups.push(c);}};
- const service=await applyAccounts(ctx,{directoryFile:path.join(root,'accounts','directory.json'),driver,fetchImpl:async(_url,init)=>new Response(JSON.stringify({account_id:init.headers['ChatGPT-Account-Id'],rate_limit:{allowed:true,primary_window:{used_percent:10,limit_window_seconds:18000,reset_at:Math.floor(Date.now()/1000)+3600},secondary_window:{used_percent:20,limit_window_seconds:604800,reset_at:Math.floor(Date.now()/1000)+86400}}}))});
+ const lifecycleEffect=await applyAccounts(ctx,{directoryFile:path.join(root,'accounts','directory.json'),driver,fetchImpl:async(_url,init)=>new Response(JSON.stringify({account_id:init.headers['ChatGPT-Account-Id'],rate_limit:{allowed:true,primary_window:{used_percent:10,limit_window_seconds:18000,reset_at:Math.floor(Date.now()/1000)+3600},secondary_window:{used_percent:20,limit_window_seconds:604800,reset_at:Math.floor(Date.now()/1000)+86400}}}))});
+ assert.equal(lifecycleEffect,undefined);
+ const service={catalogue:()=>officialAccountRpc(bridge,null),beginLogin:label=>officialAccountRpc(bridge,'login.start',{label})};
  const add=async label=>{await service.beginLogin(label);for(let i=0;i<100;i++){const c=await service.catalogue();if(c.login.status==='completed')return c.accounts.find(a=>a.label===label);await new Promise(r=>setTimeout(r,5));}throw Error('mock login timed out');};
  t.after(async()=>{for(const fn of cleanups.reverse())await fn();for(const[k,v]of Object.entries(before)){if(v===undefined)delete process.env[k];else process.env[k]=v;}assert(root.startsWith(path.join(os.tmpdir(),'DshOfficialHost-')));await fs.rm(root,{recursive:true,force:true});});
  const a=await add('A'),b=await add('B');applyPet(ctx,{petLauncher:()=>Object.assign(()=>{}, {applicationRuntime:()=>({active:true})}),panelStarter:async options=>{panel=options;return{url:'http://127.0.0.1:1/panel',token:'a'.repeat(64),close(){}};}});

@@ -29,7 +29,7 @@ export function accountServiceHandler(service, authorize) {
       if (cancelled()) return;
       let body;
       try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); } catch { reply(400, { error: 'INVALID_JSON' }); return; }
-      const schema = { 'login.start': ['label'], 'login.cancel': ['id'], 'login.respond': ['id', 'promptId', 'value'], 'account.remove': ['accountKey'], 'account.select': ['accountKey', 'expectedGeneration'], 'quota.read': ['accountKey'], bindings: [], 'warmup.run': ['accountKey', 'modelKey'] };
+      const schema = { 'login.start': ['label'], 'login.cancel': ['id'], 'login.respond': ['id', 'promptId', 'value'], 'account.remove': ['accountKey'], 'account.select': ['accountKey', 'expectedGeneration'], 'quota.read': ['accountKey'], 'models.read':['accountKey'], 'models.refresh':['accountKey'], 'models.configure':['accountKey','expectedGeneration','settings'], 'host-model.select':['accountKey','modelKey'], bindings: [], 'warmup.run': ['accountKey', 'modelKey'] };
       const keys = schema[body?.action];
       if (!keys || !body || Array.isArray(body) || Object.keys(body).sort().join(',') !== ['action', ...keys].sort().join(',')) { reply(400, { error: 'INVALID_ACTION' }); return; }
       const signal = AbortSignal.any([sourceSignal, AbortSignal.timeout(body.action === 'warmup.run' ? 90000 : 20000)]);
@@ -41,8 +41,12 @@ export function accountServiceHandler(service, authorize) {
         case 'login.cancel': result = await service.cancelLogin(body.id); break;
         case 'login.respond': result = await service.respondLogin(body.id, body.promptId, body.value); break;
         case 'account.remove': result = await service.remove(body.accountKey); break;
-        case 'account.select': result = await service.select(body.accountKey, body.expectedGeneration); break;
+        case 'account.select': result = await service.select(body.accountKey, body.expectedGeneration, signal); break;
         case 'quota.read': result = await service.quota(body.accountKey, signal); break;
+        case 'models.read': result=await service.models(body.accountKey,false,signal);break;
+        case 'models.refresh': result=await service.models(body.accountKey,true,signal);break;
+        case 'models.configure': result=await service.configureModels(body.accountKey,body.expectedGeneration,body.settings);break;
+        case 'host-model.select': result=await service.selectHostModel(body.accountKey,body.modelKey);break;
         case 'bindings': result = await service.bindings(); break;
         case 'warmup.run': result = await service.warmup(body.accountKey, body.modelKey, signal); break;
       }
@@ -76,9 +80,11 @@ export function accountServiceFetchHandler(service) {
     finally { request.signal.removeEventListener('abort', abort); input.destroy(); }
   };
 }
-export async function apply(ctx, { directoryFile, driver = createOfficialDriver, fetchImpl } = {}) {
+export async function apply(ctx, { directoryFile, driver, fetchImpl } = {}) {
+  const get = name => {try{return ctx.get?.(name);}catch{return undefined;}};
+  const accountDriver=driver ?? (options=>createOfficialDriver({...options,runtime:{attachments:()=>get('attachments'),filesystem:()=>get('fs'),fetchImpl}}));
   const directory = new AccountDirectory(directoryFile || join(process.env.LOCALAPPDATA || join(homedir(), '.local', 'share'), 'DshCodexAccounts', 'accounts.json'));
-  const service = createAccountService({ directory, credentials: ctx.credentials, driver, fetchImpl });
+  const service = createAccountService({ directory, credentials: ctx.credentials, driver:accountDriver, fetchImpl, hostModel:()=>get('agentDefaultModel'), changed:()=>ctx.llm.emitAdaptersUpdated?.() });
   await service.catalogue();
   const adapter = createBoundAdapter(service);
   ctx.llm.registerAdapter([PROVIDER], adapter);
@@ -95,5 +101,7 @@ export async function apply(ctx, { directoryFile, driver = createOfficialDriver,
     }
   });
   ctx.effect(() => () => service.dispose(), 'codex-accounts: lifetime');
-  return service;
+  // Cordis collects the resolved apply() value as a lifecycle effect. A plain
+  // service object is invalid and makes the host unload every registered route.
+  // The service is already owned by the lifetime effect; do not return it.
 }

@@ -26,13 +26,16 @@ async function fixture(t) {
       return route?.methods.includes(request.method) ? route.fetch(request) : Promise.resolve(new Response('not found', { status: 404 }));
     } }; },
   };
-  const service = await apply({
+  const lifecycleEffect = await apply({
     credentials: { async readRecord() { throw Error('No account data in this test'); }, async modifyRecord() { throw Error('No OAuth in transport tests'); }, async deleteRecord() {} },
     llm: { registerAdapter() {} },
     effect(fn) { const dispose = fn(); if (typeof dispose === 'function') cleanups.push(dispose); },
     inject(_names, fn) { fn({ connection, webServer: { register(route) { httpRoutes.set(route.path, route.handler); return () => httpRoutes.delete(route.path); } }, effect(fn) { const dispose = fn(); if (typeof dispose === 'function') cleanups.push(dispose); } }); },
   }, { directoryFile: path.join(root, 'directory.json'), driver: async () => { throw Error('No OAuth or model work'); } });
-  t.after(async () => { for (const dispose of cleanups.reverse()) await dispose?.(); await service.dispose(); await fs.rm(root, { recursive: true, force: true }); });
+  // The real host feeds this resolved value to Cordis safeCollect, which rejects
+  // plain objects. Mock transports must verify the lifecycle contract as well.
+  assert.equal(lifecycleEffect, undefined);
+  t.after(async () => { for (const dispose of cleanups.reverse()) await dispose?.(); await fs.rm(root, { recursive: true, force: true }); });
   return { connection, fetchRoutes, httpRoutes, disposeRoutes() { for (const dispose of cleanups.splice(0).reverse()) dispose?.(); }, setDenied(value) { denied = value; }, async http(method = 'GET') {
     const request = Readable.from([]); request.method = method; request.headers = {};
     const response = new EventEmitter(); let status, body;

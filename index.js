@@ -20,6 +20,7 @@ import { createAccountControl } from './account-control.js';
 import { MultiWarmupStore, MultiWarmupScheduler, multiWarmupHandler } from './multi-warmup.js';
 import { discoverBoundAccounts, runBoundWarmup } from './multi-warmup-provider.js';
 import { officialAccountRpc, readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy } from './official-accounts.js';
+import { embeddedAccountsPlugin } from './embedded-accounts.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -157,6 +158,9 @@ export function readLegacyWarmup(file) {
 }
 
 export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability, panelStarter = startPanelAccounts } = {}) {
+  // A child fiber shares the host's public services and is disposed with simple-pet.
+  // Mock-only contexts without plugin() never activate a real account engine.
+  if (typeof ctx.plugin === 'function') ctx.plugin(embeddedAccountsPlugin);
   let live = true;
   const instance = randomUUID();
   const profile = (process.env.DSH_PET_PROFILE || process.env.DSH_PROFILE || 'desktop').replace(/[^a-zA-Z0-9_-]/g, '');

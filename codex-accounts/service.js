@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseQuota, fetchQuota } from './quota.js';
+import { modelIdOK, validModelSettings, defaultModelSettings, requestFailure } from './model-catalogue.js';
 
 export const PROVIDER = 'codex-accounts';
 export const hash = value => createHash('sha256').update(value).digest('hex');
@@ -12,6 +13,12 @@ const idOK = id => typeof id === 'string' && id.length === 16 && idPattern.test(
 const localErrors = new WeakSet();
 export const isAccountError = error => localErrors.has(error);
 const fail = (code, status = 409, requestNotSent = true) => { const error = Object.assign(new Error(code), { code, status, requestNotSent }); localErrors.add(error); return error; };
+const requestMessages = Object.freeze({
+  BOUND_CANCELLED: '请求已取消。', BOUND_CONTENT_UNSUPPORTED: '无法处理该请求的输入或图片附件。',
+  BOUND_OPTION_UNSUPPORTED: '所选模型不支持该请求选项或推理设置。', BOUND_MODEL_UNAVAILABLE: '该账号当前不可调用所选模型，请刷新账号模型目录。',
+  BOUND_AUTH_REQUIRED: 'Codex 订阅账号授权不可用，请核验或重新登录该账号。', BOUND_QUOTA_LIMITED: 'Codex 账号额度或速率受限，请核验额度。',
+  BOUND_TRANSPORT_FAILED: 'Codex 账号请求发生网络或超时错误。', BOUND_REQUEST_FAILED: 'Codex 账号请求未完成，请检查账号、模型与网络。',
+});
 const cleanLabel = v => typeof v === 'string' && v.length <= 64 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(v);
 const blank = () => ({ version: 1, defaultKey: null, rows: [] });
 // Stable public budget identity survives revoke/rebind; credential scopes remain unique per login.
@@ -32,7 +39,7 @@ export class AccountDirectory {
       if (bytes.length > 131072) throw 0;
       const x = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
       if ((x.generation !== undefined && (!Number.isSafeInteger(x.generation) || x.generation < 0)) || x.version !== 1 || !Array.isArray(x.rows) || x.rows.length > 256 || new Set(x.rows.map(r => r.key)).size !== x.rows.length
-        || x.rows.some(r => !idOK(r.key) || !Number.isSafeInteger(r.epoch) || r.epoch < 1 || !cleanLabel(r.label) || typeof r.revoked !== 'boolean' || typeof r.bound !== 'boolean'
+        || x.rows.some(r => (r.modelHints!==undefined&&(!Array.isArray(r.modelHints)||r.modelHints.length>128||new Set(r.modelHints).size!==r.modelHints.length||!r.modelHints.every(modelIdOK))) || (r.modelSettings !== undefined && !validModelSettings(r.modelSettings)) || !idOK(r.key) || !Number.isSafeInteger(r.epoch) || r.epoch < 1 || !cleanLabel(r.label) || typeof r.revoked !== 'boolean' || typeof r.bound !== 'boolean'
           || (r.identityHash !== null && !(typeof r.identityHash === 'string' && /^[a-f0-9]{64}$/.test(r.identityHash))))
         || !(x.defaultKey === null || x.rows.some(r => r.key === x.defaultKey && r.bound && !r.revoked))) throw 0;
       return x;
@@ -50,7 +57,8 @@ export class AccountDirectory {
       try {
         const data = await this.read(), result = await fn(data);
         data.generation = (data.generation ?? 0) + 1;
-        await fs.writeFile(tmp, JSON.stringify(data), { flag: 'wx', mode: 0o600 });
+        const serialized=JSON.stringify(data);if(Buffer.byteLength(serialized)>131072)throw fail('DIRECTORY_LIMIT');
+        await fs.writeFile(tmp, serialized, { flag: 'wx', mode: 0o600 });
         // Windows readers/scanners may briefly retain the replace target.
         // Retry this same local atomic rename only: never OAuth/network/model work.
         for (let attempt = 0; ; attempt++) {
@@ -111,11 +119,36 @@ export function fixedCredentialView(credentials, directory, captured, isCurrent 
   });
 }
 
-export function createAccountService({ credentials, directory, driver, fetchImpl = globalThis.fetch, clock = Date.now }) {
+export function createAccountService({ credentials, directory, driver, fetchImpl = globalThis.fetch, clock = Date.now, changed = () => {}, hostModel = () => undefined }) {
   if (!credentials?.modifyRecord || !credentials?.readRecord || !credentials?.deleteRecord) throw fail('CREDENTIALS_UNAVAILABLE', 503);
   const observations = new Map(), captures = new Map();
   let login = null, loginStarting = false, disposed = false, activeRequests = 0, defaultKey = null, defaultGeneration = 0;
   const ensure = () => { if (disposed) throw fail('SERVICE_CLOSED', 410); };
+  const notify = () => { if (!disposed) try { changed(); } catch { /* committed configuration remains committed */ } };
+  const settingsFor = async c => (await directory.read()).rows.find(r => r.key === c.key && r.epoch === c.epoch && !r.revoked)?.modelSettings ?? defaultModelSettings();
+  // Slugs are discovery hints only, not permission or a saved OAuth grant. They
+  // let a previously selected new model be revalidated after process restart.
+  const rememberModels=async(c,rows)=>{
+    const ids=[...new Set(rows.map(row=>row.id).filter(modelIdOK))].slice(0,128);
+    const old=(await directory.read()).rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked);
+    if(JSON.stringify(old?.modelHints)===JSON.stringify(ids))return;
+    await directory.update(data=>{const row=data.rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked&&r.bound);if(!row)throw fail('ACCOUNT_REVOKED');row.modelHints=ids;});
+  };
+  const modelsFor=async(c,engine,hint=null)=>{
+    let rows=await engine.listModels();const meta=(await directory.read()).rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked);
+    const desired=[...(meta?.modelHints||[]),meta?.modelSettings?.defaultModel,hint].filter(modelIdOK);
+    if(engine.catalogStatus?.().source==='builtin'&&desired.some(id=>!rows.some(row=>row.id===id))&&typeof engine.refreshModels==='function'){
+      try{await engine.refreshModels(AbortSignal.any([c.controller.signal,AbortSignal.timeout(10000)]));}catch(error){throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message||'')?error.message:'MODEL_CATALOG_UNAVAILABLE',503);}
+      await validCapture(c);rows=await engine.listModels();await rememberModels(c,rows);notify();
+    }
+    return rows;
+  };
+  const hostStatus = () => {
+    try { const service = hostModel(), current = service?.currentSelection?.();
+      return { available: typeof service?.saveSelection === 'function' && typeof service?.currentSelection === 'function', managed: current?.provider === PROVIDER,
+        ...(current?.provider === PROVIDER && typeof current.model === 'string' && current.model.length <= 256 && !/[\x00-\x20\x7f]/.test(current.model) ? { model: current.model, reasoningEffort: current.reasoningEffort ?? null } : {}) };
+    } catch { return { available: false, managed: false }; }
+  };
   const capture = async key => {
     ensure(); const data = await directory.read(), row = data.rows.find(r => (key == null ? r.key === data.defaultKey : publicKey(r) === key) && r.bound && !r.revoked);
     if (!row) throw fail('ACCOUNT_NOT_BOUND');
@@ -139,13 +172,13 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     const accounts = await Promise.all(data.rows.filter(r => !r.revoked && r.bound).map(async r => {
       let bound = false;
       try { bound = Boolean(await fixedCredentialView(credentials, directory, r, () => !disposed).read('openai-codex')); } catch { /* metadata alone is not a readable OAuth binding */ }
-      return { accountKey: publicKey(r), label: r.label, selected: data.defaultKey === r.key, epoch: r.epoch, bound,
+      return { accountKey: publicKey(r), label: r.label, selected: data.defaultKey === r.key, epoch: r.epoch, bound, modelSettings: r.modelSettings ?? defaultModelSettings(),
         quota: bound ? observations.get(r.key) ?? { status: 'unavailable', clientObservedAt: null, serverSampledAt: null, fiveHour: null, weekly: null }
           : { status: 'unavailable', clientObservedAt: null, serverSampledAt: null, fiveHour: null, weekly: null } };
     }));
     if (generation === defaultGeneration) defaultKey = selected ? publicKey(selected) : null;
-    return { version: 1, provider: PROVIDER, generation: data.generation ?? 0, defaultKey: selected ? publicKey(selected) : null, busy: activeRequests > 0,
-      accounts,
+    return { version: 1, provider: PROVIDER, capabilities:{models:true}, generation: data.generation ?? 0, defaultKey: selected ? publicKey(selected) : null, busy: activeRequests > 0,
+      accounts, hostModel: hostStatus(),
       login: loginSummary };
   };
   const api = {
@@ -191,7 +224,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
             if (data.rows.some(r => r.key !== row.key && r.bound && !r.revoked && r.identityHash?.slice(0, 16) === identity.slice(0, 16))) throw fail('DUPLICATE_ACCOUNT');
             current.bound = true; current.identityHash = identity; if (!data.defaultKey) data.defaultKey = row.key;
           });
-          state.status = 'completed'; state.event = null;
+          state.status = 'completed'; state.event = null; notify();
         } catch (error) {
           state.status = signal.aborted ? 'cancelled' : 'failed'; state.event = null;
           state.errorCode = isAccountError(error) ? error.code : 'LOGIN_FAILED';
@@ -212,14 +245,14 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       if (!idOK(key)) throw fail('INVALID_ACCOUNT', 400);
       let privateKey;
       await directory.update(data => { const row = data.rows.find(r => r.key === key || (!r.revoked && publicKey(r) === key)); if (!row) throw fail('ACCOUNT_NOT_BOUND');
-        privateKey = row.key; row.epoch++; row.revoked = true; row.bound = false; if (data.defaultKey === privateKey) data.defaultKey = null;
+        privateKey = row.key; row.epoch++; row.revoked = true; row.bound = false; delete row.modelHints; if (data.defaultKey === privateKey) data.defaultKey = null;
       });
       defaultGeneration++; if (defaultKey === key) defaultKey = null;
       for (const c of captures.values()) if (c.key === privateKey) c.controller.abort();
       if (login?.key === privateKey) login.controller.abort(); observations.delete(privateKey);
-      await credentials.deleteRecord(`codex-accounts/account-${privateKey}`); return { ok: true };
+      notify(); await credentials.deleteRecord(`codex-accounts/account-${privateKey}`); return { ok: true };
     },
-    async select(key, expectedGeneration) {
+    async select(key, expectedGeneration, signal) {
       if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw fail('SOURCE_CHANGED');
       await directory.update(async data => {
         if ((data.generation ?? 0) !== expectedGeneration) throw fail('SOURCE_CHANGED');
@@ -227,12 +260,18 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         if (!row) throw fail('ACCOUNT_NOT_BOUND');
         if (!await fixedCredentialView(credentials, directory, row, () => !disposed).read('openai-codex')) throw fail('OAUTH_REQUIRED');
         data.defaultKey = row.key;
-      }); defaultGeneration++; defaultKey = key; return { ok: true, accountKey: key };
+      }); defaultGeneration++; defaultKey = key; notify();
+      // Explicit selection also discovers that account's current models. A failed
+      // catalogue refresh does not undo the already committed account selection.
+      let models = null, modelError = null;
+      try { models = await api.models(key, true, signal); }
+      catch (error) { modelError = isAccountError(error) ? error.code : 'MODEL_CATALOG_UNAVAILABLE'; }
+      return { ok: true, accountKey: key, models, modelError };
     },
     prepareDefault(baseModel) {
       const key = defaultKey;
-      if (!key || typeof baseModel !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(baseModel)) throw fail('DEFAULT_ACCOUNT_REQUIRED');
-      return api.prepare(key, hash(`${key}:${baseModel}`));
+      if (!key || !modelIdOK(baseModel)) throw fail('DEFAULT_ACCOUNT_REQUIRED');
+      return api.prepare(key, hash(`${key}:${baseModel}`),baseModel);
     },
     async quota(key, signal) {
       const c = await capture(key), engine = await c.engine;
@@ -250,27 +289,91 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         observations.set(c.key, result); return result;
       }
     },
+    async models(key, refresh = false, signal) {
+      const c = await capture(key), engine = await c.engine; await validCapture(c);
+      if (refresh) {
+        if (typeof engine.refreshModels !== 'function') throw fail('MODEL_CATALOG_UNAVAILABLE',503);
+        try { await engine.refreshModels(AbortSignal.any([...(signal ? [signal] : []),c.controller.signal])); }
+        catch (error) { throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message || '') ? error.message : 'MODEL_CATALOG_UNAVAILABLE',503); }
+        await validCapture(c);await rememberModels(c,await engine.listModels());notify();
+      }
+      const rows = await modelsFor(c,engine), snapshot=await directory.read();
+      const row=snapshot.rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked&&r.bound);if(!row)throw fail('ACCOUNT_REVOKED');
+      const settings=row.modelSettings??defaultModelSettings();await validCapture(c);
+      if((await directory.read()).generation!==snapshot.generation)throw fail('SOURCE_CHANGED');
+      return { accountKey:c.accountKey, generation:snapshot.generation ?? 0, settings, hostModel:hostStatus(),
+        catalog:engine.catalogStatus?.() ?? {source:'builtin',status:'not-refreshed'},
+        models:rows.filter(m=>modelIdOK(m.id)).map(m=>({id:m.id,modelKey:hash(`${c.accountKey}:${m.id}`),name:cleanLabel(m.name)?m.name:m.id,
+          enabled:settings.enabled===null||settings.enabled.includes(m.id),inputModalities:m.inputModalities ?? ['text'],
+          contextWindow:m.context?.contextWindow ?? null,reasoning:m.reasoning ?? null})) };
+    },
+    async configureModels(key, expectedGeneration, settings) {
+      if (!validModelSettings(settings) || !Number.isSafeInteger(expectedGeneration)) throw fail('INVALID_MODEL_SETTINGS',400);
+      const c=await capture(key), engine=await c.engine, rows=await engine.listModels();await validCapture(c);
+      const enabled=rows.filter(m=>settings.enabled===null||settings.enabled.includes(m.id));
+      if ((settings.enabled && settings.enabled.some(id=>!rows.some(m=>m.id===id))) || (settings.defaultModel && !enabled.some(m=>m.id===settings.defaultModel))) throw fail('MODEL_REVOKED');
+      if (settings.reasoningEffort) {
+        const model=enabled.find(m=>m.id===settings.defaultModel);
+        if (!model?.reasoning?.efforts?.some(e=>e.id===settings.reasoningEffort)) throw fail('REASONING_UNAVAILABLE');
+      }
+      await directory.update(data=>{if((data.generation??0)!==expectedGeneration)throw fail('SOURCE_CHANGED');
+        const row=data.rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked&&r.bound);if(!row)throw fail('ACCOUNT_REVOKED');
+        row.modelSettings={enabled:settings.enabled===null?null:[...settings.enabled],defaultModel:settings.defaultModel,reasoningEffort:settings.reasoningEffort};});
+      notify();return api.models(key);
+    },
+    async selectHostModel(key, modelKey) {
+      const prepared=await api.prepare(key,modelKey), route=`${prepared.accountKey}:${prepared.baseId}`;
+      const current=hostModel();if(typeof current?.saveSelection!=='function'||typeof current?.currentSelection!=='function')throw fail('HOST_MODEL_UNAVAILABLE');
+      if(prepared.defaultReasoning&&!prepared.info?.reasoning?.efforts?.some(e=>e.id===prepared.defaultReasoning))throw fail('REASONING_UNAVAILABLE');
+      await current.saveSelection({provider:PROVIDER,model:route,...(prepared.defaultReasoning?{reasoningEffort:prepared.defaultReasoning}:{})});
+      const read=current.currentSelection();if(read?.provider!==PROVIDER||read.model!==route||(read.reasoningEffort??null)!==(prepared.defaultReasoning??null))throw fail('HOST_MODEL_NOT_SAVED');
+      return hostStatus();
+    },
     async bindings() {
       const data = await catalogue(), accounts = [];
       for (const row of data.accounts.filter(row => row.bound === true)) {
-        const c = await capture(row.accountKey), engine = await c.engine, models = await engine.listModels(); await validCapture(c);
-        accounts.push({ accountKey: c.accountKey, label: row.label, maskedEmail: null,
-          models: models.filter(m => typeof m.id === 'string' && m.id.trim() === m.id && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(m.id)).map(m => ({ modelKey: hash(`${c.accountKey}:${m.id}`), modelName: m.name || m.id, baseId: m.id })) });
+        let c, engine, models;
+        try { c = await capture(row.accountKey); engine = await c.engine; models = await modelsFor(c,engine); await validCapture(c); }
+        catch (error) {
+          ensure();
+          if (!/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message || '')) throw error;
+          // One unverified account must not erase every healthy account's picker.
+          // Do not publish its saved hints or fall back to builtin permissions.
+          accounts.push({ accountKey: row.accountKey, label: row.label, selected: row.selected, maskedEmail: null, models: [], modelError: error.message });
+          continue;
+        }
+        const settings=await settingsFor(c);
+        accounts.push({ accountKey: c.accountKey, label: row.label, selected:row.selected, maskedEmail: null,
+          models: models.filter(m => modelIdOK(m.id) && (settings.enabled===null||settings.enabled.includes(m.id))).map(m => ({ modelKey: hash(`${c.accountKey}:${m.id}`), modelName: m.name || m.id, baseId: m.id, inputModalities:m.inputModalities ?? ['text'] })) });
       }
       return { provider: PROVIDER, binding: 'official-isolated', accounts };
     },
-    async prepare(key, modelKey) {
-      const c = await capture(key), engine = await c.engine, models = await engine.listModels(); await validCapture(c);
-      const model = models.find(m => hash(`${c.accountKey}:${m.id}`) === modelKey);
+    prepareSlug(key, model) { if(!modelIdOK(model))throw fail('MODEL_REVOKED');return api.prepare(key,hash(`${key}:${model}`),model); },
+    async prepare(key, modelKey, hint=null) {
+      const c = await capture(key), engine = await c.engine, models = await modelsFor(c,engine,modelIdOK(hint)&&hash(`${key}:${hint}`)===modelKey?hint:null); await validCapture(c);
+      const settings=await settingsFor(c);
+      const model = models.find(m => hash(`${c.accountKey}:${m.id}`) === modelKey && (settings.enabled===null||settings.enabled.includes(m.id)));
       if (!model) throw fail('MODEL_REVOKED');
       const prepared = await engine.prepare(model.id); await validCapture(c);
-      return { accountKey: c.accountKey, modelName: model.name || model.id, info: prepared.model,
+      const defaultReasoning=settings.defaultModel===model.id?settings.reasoningEffort:null;
+      return { accountKey: c.accountKey, baseId:model.id, defaultReasoning, modelName: model.name || model.id, info: prepared.model,
         stream(options) {
           const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), c.controller.signal]);
           return (async function* () {
             await validCapture(c); activeRequests++;
-            try { for await (const event of prepared.stream({ ...options, provider: 'openai-codex', model: model.id, signal })) { signal.throwIfAborted(); yield event; } }
-            catch { throw fail('BOUND_REQUEST_FAILED', 503, false); }
+            try { for await (const event of prepared.stream({ ...(defaultReasoning?{reasoningEffort:defaultReasoning}:{}), ...options, provider: 'openai-codex', model: model.id, signal })) {
+              // The real SDK reports terminal usage even after abort. Preserve that
+              // accounting, but never resume text/tool output or call it success.
+              if (event.type === 'usage') { yield event; continue; }
+              signal.throwIfAborted();
+              if (event.type === 'finish' && event.reason?.kind === 'error') {
+                const code = requestFailure(event.reason.failure, signal);
+                // In-band SDK errors do not reach catch. Do not forward raw HTTP
+                // bodies, arbitrary failure extensions, or upstream error text.
+                yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNKNOWN', message: `[${code}] ${requestMessages[code] ?? requestMessages.BOUND_REQUEST_FAILED}` } } };
+              } else yield event;
+            } }
+            catch (error) { throw fail(requestFailure(error,signal), signal.aborted?409:503, engine.isPreflightError?.(error)===true); }
             finally { activeRequests--; }
           })();
         } };

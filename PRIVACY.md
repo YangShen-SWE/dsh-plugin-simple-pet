@@ -1,5 +1,13 @@
 # Privacy / 隐私说明
 
+## v1.0.0 单插件账号服务（2026-10-17）
+
+账号服务现内置于桌宠，因而「桌宠不处理 Codex grant」仅指此前隔离的 UI/legacy 路径，不再代表整个新版安装包。内置模块通过宿主 credentials 公共接口访问自有固定账号 `codex-accounts/account-*` 命名空间；不导出/复制真实 grant，不读取全局或第三方凭据，保留旧目录与授权。昵称、身份散列、模型 hints/settings 保存在原目录；hints 不是模型权限。
+
+明确选择账号或打开模型设置会为该账号发送兼容的只读模型目录 GET；选择提交成功但目录失败时不回滚、不调用模型或替换账号。目录诊断仅保存有界安全 slug/固定原因，不包含原始元数据、令牌、响应或错误；未知推理能力不被授予。刷新不会扩大用户保存的可见白名单，也不授权自动化。升级不自动登录、查真实额度、预热、切宿主模型或重启；旧独立 owner 运行时不抢占。以下双包描述是历史说明，新版只安装桌宠。
+
+The integrated account module accesses its own existing host credential scope. Explicit account selection/model settings refresh only that account's model catalogue, never model inference; persisted hints are not authorization. No credential migration or automatic automation consent.
+
 ## v0.7.4 / 账号服务 0.1.1 通道补充（2026-10-16）
 
 浏览器 HTTP 仍由宿主连接校验；新增进程内 Shared Fetch 由注册所属 Connection 的 owner/admission 边界保护，不重复索取浏览器 Cookie，不作为免鉴权公共 HTTP。两种注册随上下文卸载清理。明确开始 OAuth 后的两秒轮询只读取进度；不自动开始登录、刷新额度或调用模型，结束/取消/换后端/卸载停止。回调输入只在本次页面内存，prompt 改变即清空；取消在分发前生效，不能把已分发请求伪称未发送。错误使用固定公开分类，不转发私密上游异常。旧备份不新增，用户数据/凭据不作本次验证输入。

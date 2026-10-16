@@ -6,6 +6,7 @@ import path from 'node:path';
 import { AccountDirectory, createAccountService, fixedCredentialView } from './service.js';
 import { createOfficialDriver } from './official-driver.js';
 import { parseQuota } from './quota.js';
+import { apply } from './index.js';
 
 test('independent package uses official OAuth resolution rather than API-key credential',async()=>{
   const stores=[];
@@ -30,4 +31,23 @@ test('raw quota report remains source limited and cannot prove exact full/reset 
 });
 test('service cannot start without official credential storage, no ambient fallback',()=>{
   assert.throws(()=>createAccountService({directory:{},credentials:{},driver(){}}),/CREDENTIALS_UNAVAILABLE/);
+});
+test('plugin apply resolves to a valid Cordis lifecycle effect, not its service object',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'DshCodexLifecycle-'));
+  const cleanups=[],http=new Map(),fetchRoutes=new Map();let credentialsTouched=0;
+  t.after(async()=>{for(const dispose of cleanups.reverse())await dispose();await fs.rm(dir,{recursive:true,force:true});});
+  const ctx={
+    credentials:{async readRecord(){credentialsTouched++;throw Error('No real grants');},async modifyRecord(){credentialsTouched++;throw Error('No OAuth');},async deleteRecord(){credentialsTouched++;}},
+    llm:{registerAdapter(){}},
+    effect(fn){const value=fn();if(typeof value==='function')cleanups.push(value);else if(value!=null)throw new TypeError('Invalid effect');},
+    webServer:{register(route){http.set(route.path,route);return()=>http.delete(route.path);}},
+    connection:{requestRejection(){return undefined;},fetch:{register(route){fetchRoutes.set(route.path,route);const dispose=()=>fetchRoutes.delete(route.path);cleanups.push(dispose);return dispose;}}},
+    inject(_names,fn){const result=fn(this);if(result!=null&&typeof result!=='function')throw new TypeError('Invalid effect');},
+  };
+  const result=await apply(ctx,{directoryFile:path.join(dir,'accounts.json'),driver:async()=>{throw Error('No login or model work');}});
+  // Matches the public Cordis safeCollect rule for async plugin setup.
+  assert.equal(result,undefined,'A returned plain object makes the real host unload every route');
+  assert.equal(http.size,1);assert.equal(fetchRoutes.size,1);
+  const response=await fetchRoutes.get('/api/dsh-plugin-codex-accounts').fetch(new Request('http://localhost/api/dsh-plugin-codex-accounts',{method:'HEAD'}));
+  assert.equal(response.status,200);assert.equal(credentialsTouched,0);
 });

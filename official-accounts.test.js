@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import { AccountDirectory, createAccountService, fixedCredentialView, hash } from './codex-accounts/service.js';
 import { createOfficialDriver, createBoundAdapter } from './codex-accounts/official-driver.js';
 import { parseQuota, fetchQuota } from './codex-accounts/quota.js';
-import { accountServiceHandler, apply as applyAccounts } from './codex-accounts/index.js';
+import { accountServiceHandler } from './codex-accounts/index.js';
 import { readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy, officialAccountRpc } from './official-accounts.js';
 import { MultiWarmupStore } from './multi-warmup.js';
 const NOW = Date.now();

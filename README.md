@@ -1,10 +1,10 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v0.7.4 · 账号通道修复与简洁设置](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v0.7.4)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.0.0 · 单插件账号管理与模型目录刷新](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
-陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或新增官方组件独立账号服务。
+陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
-A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the new independent official-component account service; both default off.
+A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the integrated official-component account service; both default off. Install only the simple-pet package.
 
 ## 界面展示 / Screenshots
 
@@ -22,9 +22,33 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 
 市场展示顺序由仓库根目录的 [screenshots.json](screenshots.json) 声明；图片更新在市场下一次目录构建与客户端刷新后显示。The catalogue discovers these images from the repository declaration on its next build.
 
-> **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径需显式安装本次独立账号服务及其公开组件。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
+> **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径已内置于桌宠，安装包声明所需公开组件。旧独立账号包请在插件管理中停用后自行完整重启 DSH，不要删除账号数据或 grant。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v1.0.0：桌宠内置账号管理（2026-10-17）
+
+- **一包安装：** 账号 OAuth、目录、模型路由、额度与每日预热已整合进桌宠；根包显式依赖 `@deepseek-ai/dsh-llm-pi-ai@0.2.0-rc.2`、`@earendil-works/pi-ai@0.87.1`。不再另发/要求安装账号插件，仍可选择旧订阅后端。
+- **旧账号不搬家：** 保留 `codex-accounts/account-*` 凭据命名空间、原账号目录、模型路由、预算与偏好。已安装旧独立插件时先停用旧包，再手动完整重启一次；旧 owner 仍在运行时新版不会抢占服务或中断在途请求。不要删除目录或授权。
+- **选择即刷新该账号目录：** 选择默认账号后更新它自己的模型目录；点击「模型设置」也显式刷新，重启后读取已保存 hints 必须先重新验证同账号，不再把 SDK 旧内置表当成已验证结果。失败仍保留已选账号，并明确说明目录未验证，不偷偷回退。
+- **解释缺少 6.1-sol：** 区分未刷新/失败、服务端未返回、隐藏、不兼容元数据和本账号可见模型筛选；刷新不擅自打开已关闭模型。未知推理档位不再隐藏整个模型，但不会获得未知档位能力。没有硬编码模型权限，不承诺账号一定有该模型。
+
+### 本版合入：正常对话与账号模型设置
+
+- **正常对话而非只有预热：** 补接宿主 `attachments`/`fs`，离线复现并修复带截图历史在发送前失败；保留普通消息、工具调用/结果、图像与已报告用量，通用 temperature/stop 默认值不再误伤 Codex 通道。纯文本旧路径本可运行，不把所有失败都冒称同一原因。失败分层提示且不转发原始上游错误，取消/撤销仍结算 SDK 已报告用量，不假称成功或未发送。
+- **每个账号自己的模型目录：** 在「账号管理 → 模型」显式更新目录，按该账号返回结果合并，不硬编码授权 `gpt-6.1-sol`，也不把未知价格当免费。兼容接口可能变化；目录、额度与请求成功是不同状态。内置 SDK 缺少的新模型可按已观察 slug 在重启后重新验证，持久 hints 不是权限，撤销即失效。
+- **模型设置更直观：** 每账号选择提供哪些模型、首选模型与推理档位，单独保存；再点「设为 DSH 默认（固定此账号）」才提交并读回宿主全局模型设置。普通保存与账号默认不会偷偷修改宿主会话；已有会话需要在会话页手动换模。
+- **模型名可读：** 新选择器提供 `账号键:gpt-…`，保留旧 `账号键:模型哈希` 已有会话兼容，不静默换账号或回退模型。该账号未返回某模型时不能凭此设置获得权限。
+
+此轮参考本机已有 Codex 订阅插件的公开模型目录与设置流程，不读取其账号/凭据。验证采用私有 Temp、合成账号/HTTP/SSE、真实已安装官方 SDK 的离线序列化和隔离 React/Edge 窄屏截图；不等同真实订阅权限或服务器兼容验收。测试没有真实 OAuth/额度/模型调用、依赖安装、自动重启或关机；旧授权、预热预算和未知结果暂停规则保留。测试与发布证据见本版 Release，不把离线测试当作真实账号权限或运行宿主已验收。
+
+### 本版合入：账号服务启动生命周期（2026-10-16）
+
+再次收到「无法读取」截图后，宿主日志与当前公开 Cordis 4.0.4 的实际启动复现确认另有启动错误：`apply()` 的 Promise 返回了普通 service 对象。Cordis 仅收集函数/空值作为生命周期 effect，因 `TypeError: Invalid effect` 自动卸载插件和已经注册的通道；因此仅重启不能修复这个代码错误。
+
+本地修复让入口完成注册后返回空值，service 仍由原有 lifetime effect 负责清理。传输/双插件测试不再把插件返回值当作服务 API；通过实际管理通道访问，并增加独立包的生命周期返回值回归。另用本机实际公开 Cordis 执行真实 `Context.plugin()`、依赖注入、通道存活和卸载检查，未替换生命周期收集器。缺路由提示也不再一概归因于未重启。
+
+此修复已合入 v1.0.0；没有代登录、读取真实凭据/额度、调用模型或自动重启 DSH。真实账号授权仍需用户自行验收。以下旧版本记录保留历史双包说明，不是新版安装要求。
 
 ## v0.7.4：账号服务通道修复与简洁账号页（2026-10-16）
 

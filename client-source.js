@@ -137,6 +137,8 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const [officialCatalogue, setOfficialCatalogue] = useState(null), [officialNote, setOfficialNote] = useState(''), [officialBusy, setOfficialBusy] = useState(false);
     const [officialLabel, setOfficialLabel] = useState(''), [officialReply, setOfficialReply] = useState('');
     const [officialAdding, setOfficialAdding] = useState(false), [officialError, setOfficialError] = useState(false);
+    const [officialModels,setOfficialModels]=useState(null),[modelDraft,setModelDraft]=useState(null),[modelNote,setModelNote]=useState('');
+    const modelEditor=useRef({data:null,draft:null});
     const officialAction = useRef({ busy: false, controller: null, generation: 0 }), officialPromptId = useRef(null);
     const [multiLoaded, setMultiLoaded] = useState(null), [multiDraft, setMultiDraft] = useState(null), [boundAccounts, setBoundAccounts] = useState(null);
     const [multiBusy, setMultiBusy] = useState(false), [multiNote, setMultiNote] = useState('');
@@ -171,26 +173,55 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       const previous = officialAction.current; previous.controller?.abort();
       officialAction.current = { busy: false, controller: null, generation: previous.generation + 1 };
       officialPromptId.current = null; setOfficialBusy(false); setOfficialCatalogue(null); setOfficialNote(''); setOfficialError(false); setOfficialReply(''); setOfficialAdding(false);
+      modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('');
     };
     const officialGeneration = officialAction.current.generation;
     const officialRequest = async (action = null, payload = {}) => {
       if (!alive.current || officialAction.current.generation !== officialGeneration || officialAction.current.busy || loaded?.values?.codexAccountBackend !== 'official' || draftRef.current?.codexAccountBackend !== 'official') return;
+      if (action === 'account.select' && modelEditor.current.data && JSON.stringify(modelEditor.current.draft) !== JSON.stringify(modelEditor.current.data.settings)) { setModelNote('模型草稿未保存，请先保存或放弃，再选择账号；没有发送切换请求。'); return; }
       const controller = new AbortController(), generation = officialGeneration;
       officialAction.current = { busy: true, controller, generation }; setOfficialBusy(true); setOfficialError(false); setOfficialNote('');
       const current = () => alive.current && officialAction.current.generation === generation && draftRef.current?.codexAccountBackend === 'official';
       try {
-        if (action) await request('official-accounts', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...payload }) });
+        let actionResult;
+        if (action) actionResult=await request('official-accounts', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...payload }) });
         if (!current()) return;
         const data = await request('official-accounts', { signal: controller.signal });
         if (!current()) return;
         setOfficialCatalogue(data);
+        const modelsResult = action === 'account.select' ? actionResult?.models : action?.startsWith('models.') ? actionResult : null;
+        if(modelsResult?.accountKey){
+          modelEditor.current={data:modelsResult,draft:structuredClone(modelsResult.settings)};
+          setOfficialModels(modelsResult);setModelDraft(modelEditor.current.draft);setModelNote(action==='models.configure'?'模型设置已单独保存；没有发送模型请求。':action==='account.select'?'已选择账号并更新该账号模型目录；新模型会通知宿主选择器，没有发送模型请求。':action==='models.refresh'?'已更新该账号模型目录；没有调用模型。':'已读取模型设置。');
+        }
+        if(action==='account.select'&&!modelsResult){modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('账号已选中，但目录更新失败；并非确认没有 gpt-6.1-sol，请重试更新目录。');}
+        if(action==='host-model.select')setModelNote('已回读确认 DSH 默认模型。已有会话若固定了旧模型，请在会话顶部手动重选。');
+        if(action==='account.remove'&&modelEditor.current.data?.accountKey===payload.accountKey){modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('');}
         if (action === 'login.respond' || data.login?.prompt?.id !== officialPromptId.current) setOfficialReply('');
         officialPromptId.current = data.login?.prompt?.id ?? null;
         if (action === 'login.start') setOfficialAdding(false);
-        setOfficialNote(action ? '操作完成，请核对账号状态。' : '账号列表已更新。');
+        setOfficialNote(action === 'account.select' && actionResult?.modelError ? '账号选择已保存，但模型目录未成功更新。请点击模型后重试；没有回退或调用模型。' : action ? '操作完成，请核对账号状态。' : '账号列表已更新。');
       } catch (error) {
-        if (current()) { setOfficialCatalogue(null); setOfficialError(true); setOfficialNote(error.status ? error.message : '无法连接账号服务，请刷新页面或完整重启 DSH。未自动重试添加或切换操作。'); }
+        if (current()) {
+          const message=error.status?error.message:'无法连接账号服务，请检查插件运行错误；未自动重试操作。';
+          if(action?.startsWith('models.')||action==='host-model.select')setModelNote(message+' 当前模型草稿已保留。');
+          else{setOfficialCatalogue(null);setOfficialError(true);setOfficialNote(message);}
+        }
       } finally { if (officialAction.current.generation === generation) { officialAction.current.busy = false; if (alive.current) setOfficialBusy(false); } }
+    };
+    const modelDirty=()=>!!modelEditor.current.data&&JSON.stringify(modelEditor.current.draft)!==JSON.stringify(modelEditor.current.data.settings);
+    const openModels=(key,refresh=true,discard=false)=>{
+      if(!alive.current||officialAction.current.busy)return;
+      if(modelDirty()&&!discard){setModelNote('模型草稿尚未保存，请先保存或明确放弃；没有重新读取或改动账号。');return;}
+      void officialRequest(refresh?'models.refresh':'models.read',{accountKey:key});
+    };
+    const changeModel=patch=>{
+      if(!alive.current||officialAction.current.busy||!modelEditor.current.data)return;
+      const next={...modelEditor.current.draft,...patch};modelEditor.current={...modelEditor.current,draft:next};setModelDraft(next);setModelNote('模型草稿未保存；不会更改会话或发送请求。');
+    };
+    const saveModels=()=>{
+      const current=modelEditor.current;if(!current.data||current.data.accountKey!==officialModels?.accountKey||officialError)return;
+      void officialRequest('models.configure',{accountKey:current.data.accountKey,expectedGeneration:current.data.generation,settings:current.draft});
     };
     useEffect(() => {
       if (tab !== 'accounts' || loaded?.values?.codexAccountBackend !== 'official' || draft?.codexAccountBackend !== 'official' || !['running', 'prompt'].includes(officialCatalogue?.login?.status)) return;
@@ -292,10 +323,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       } }, dependencyBusy ? '依赖操作中…' : '一键安装并启用通用订阅 0.9.9'),
       h('p', { role: 'status', className: 'pet-settings-hint', 'data-dependency-status': true }, dependencyNote));
     const pages = [['settings', '常规'], ['appearance', '外观与动效'], ['accounts', '账号管理'], ['warmup', '自动预热'], ['stats', '用量统计']];
-    const groupPages = { '官方订阅账号（独立插件）': 'accounts', '显示与休眠': 'settings', '陪伴与舒适': 'appearance', '形象': 'appearance', '信息框主题': 'appearance', '组合预览': 'appearance', '多账号管理（桌宠面板切换）': 'accounts', '多账号定时预热（独立保存，默认关闭）': 'warmup', 'Codex 配额与自动预热': 'warmup' };
+    const groupPages = { '订阅账号（内置管理）': 'accounts', '显示与休眠': 'settings', '陪伴与舒适': 'appearance', '形象': 'appearance', '信息框主题': 'appearance', '组合预览': 'appearance', '多账号管理（桌宠面板切换）': 'accounts', '多账号定时预热（独立保存，默认关闭）': 'warmup', 'Codex 配额与自动预热': 'warmup' };
     const group = (title, ...children) => {
       const page = groupPages[title] || 'appearance';
-      const heading = title === '官方订阅账号（独立插件）' ? '账号与额度' : title === '多账号管理（桌宠面板切换）' ? '桌宠账号切换' : title;
+      const heading = title === '订阅账号（内置管理）' ? '账号与额度' : title === '多账号管理（桌宠面板切换）' ? '桌宠账号切换' : title;
       return h('section', { className: 'pet-settings-group', hidden: tab !== page, 'data-pet-page': page, 'aria-label': title }, h('h3', null, heading), ...children);
     };
     const codex = draft?.billingMode === 'codex';
@@ -303,6 +334,47 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const ledger = codex ? snapshot?.codexStats : snapshot?.stats;
     const day = ledger?.days?.[key];
     const fmt = (v, money = false) => typeof v === 'number' && Number.isFinite(v) ? (money ? `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: v < 1 ? 8 : 2 })}` : v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })) : '—';
+    const modelControls=()=>{
+      if(!officialModels||!modelDraft)return null;
+      const rows=officialModels.models||[],owner=officialCatalogue?.accounts?.find(row=>row.accountKey===officialModels.accountKey);
+      const enabled=id=>modelDraft.enabled===null||modelDraft.enabled.includes(id);
+      const selected=rows.find(row=>row.id===modelDraft.defaultModel&&enabled(row.id));
+      const dirty=modelDirty(),disabled=officialBusy||officialError||owner?.bound!==true;
+      const host=officialCatalogue?.hostModel||officialModels.hostModel;
+      const currentModel=host?.managed?(host.model?.split(':').slice(1).join(':')||''):'由 DSH 当前设置决定';
+      const effortName={off:'关闭',minimal:'极低',low:'低',medium:'中',high:'高',xhigh:'超高',max:'最高'};
+      return h('section',{className:'pet-model-panel','data-official-model-panel':officialModels.accountKey},
+        h('div',{className:'pet-model-heading'},h('div',null,h('h4',null,`模型 · ${owner?.label||'#'+officialModels.accountKey.slice(0,8)}`),h('p',{className:'pet-settings-hint'},officialModels.catalog?.source==='account-catalog'?'来自该账号返回的模型目录。':'本地兼容目录；点「更新账号目录」读取当前账号提供的模型。')),
+          h('button',{type:'button',disabled:officialBusy,'data-model-refresh':true,onClick:()=>openModels(officialModels.accountKey,true)},'更新账号目录')),
+        h('p',{className:'pet-settings-hint','data-host-model-state':true},`DSH 默认：${/^[a-f0-9]{64}$/.test(currentModel)?'旧版模型入口，请重新选择':currentModel}。已有会话若锁定旧模型，需在会话顶部手动重选。`),
+        h('label',{className:'pet-settings-row'},h('span',null,'该账号首选模型'),h('select',{'data-model-default':true,value:modelDraft.defaultModel||'',disabled,onChange:e=>changeModel({defaultModel:e.target.value||null,reasoningEffort:null})},
+          h('option',{value:''},'未指定'),
+          modelDraft.defaultModel&&!selected&&h('option',{value:modelDraft.defaultModel},'已保存模型不可用，请重选'),
+          ...rows.filter(row=>enabled(row.id)).map(row=>h('option',{key:row.id,value:row.id},`${row.name} · ${row.id}`)))),
+        h('label',{className:'pet-settings-row'},h('span',null,'推理档位'),h('select',{'data-model-reasoning':true,value:modelDraft.reasoningEffort||'',disabled:disabled||!selected,onChange:e=>changeModel({reasoningEffort:e.target.value||null})},
+          h('option',{value:''},'按模型默认'),...(selected?.reasoning?.efforts||[]).map(e=>h('option',{key:e.id,value:e.id},effortName[e.id]||e.id)))),
+        h('details',{className:'pet-settings-details'},h('summary',null,`在模型选择器提供哪些模型（${rows.filter(row=>enabled(row.id)).length}/${rows.length}）`),
+          h('label',{className:'pet-settings-toggle'},h('input',{type:'checkbox',checked:modelDraft.enabled===null,disabled,'data-model-follow':true,onChange:e=>changeModel({enabled:e.target.checked?null:rows.map(row=>row.id)})}),h('span',null,'跟随该账号目录，自动提供可用模型')),
+          h('div',{className:'pet-model-list'},...rows.map(row=>h('label',{key:row.id,className:'pet-model-row'},
+            h('input',{type:'checkbox',checked:enabled(row.id),disabled,'data-model-enabled':row.id,onChange:e=>{
+              const ids=modelDraft.enabled===null?rows.map(item=>item.id):modelDraft.enabled;
+              changeModel({enabled:e.target.checked?[...new Set([...ids,row.id])]:ids.filter(id=>id!==row.id),...(!e.target.checked&&modelDraft.defaultModel===row.id?{defaultModel:null,reasoningEffort:null}:{})});
+            }}),h('span',null,h('strong',null,row.name),h('small',null,row.id)),h('span',{className:'pet-settings-hint'},row.inputModalities?.includes('image')?'文本 / 图片':'文本'))))),
+        h('p',{className:'pet-settings-hint','data-model-sol-status':true},(()=>{
+          const sol=rows.find(row=>row.id==='gpt-6.1-sol'),catalog=officialModels.catalog;
+          if(sol)return enabled(sol.id)?'gpt-6.1-sol 已在此账号目录中启用，可选择并保存；已有会话需手动重选模型。':'已发现 gpt-6.1-sol，但被本账号可见模型筛选关闭。勾选该模型或启用「跟随目录」，再保存。';
+          if(catalog?.status!=='ready'||catalog?.source!=='account-catalog')return '尚未成功更新此账号的在线目录；内置列表缺少 gpt-6.1-sol 不代表账号没有权限。请更新账号目录。';
+          const omitted=catalog.omitted?.find(row=>row.id==='gpt-6.1-sol');
+          if(omitted)return `目录返回了 gpt-6.1-sol，但当前不可提供：${({'missing-context':'未提供可验证的上下文上限','not-visible':'服务端标记为隐藏','reserve-unsupported':'不支持的储备模型','unsupported-input':'不支持的输入类型'})[omitted.reason]||'模型能力不完整'}。未假造授权或上下文。`;
+          return '已更新此账号目录，服务端本次未返回 gpt-6.1-sol。不会改用 API Key 或添加无法验证的假入口。';
+        })()),
+        h('div',{className:'pet-account-actions'},
+          h('button',{type:'button',disabled:disabled||!dirty,'data-model-save':true,onClick:saveModels},'保存模型设置'),
+          h('button',{type:'button',disabled:disabled||dirty||!selected||host?.available!==true,'data-model-use':true,onClick:()=>void officialRequest('host-model.select',{accountKey:officialModels.accountKey,modelKey:selected.modelKey})},'设为 DSH 默认（固定此账号）'),
+          h('button',{type:'button',disabled:officialBusy,'data-model-discard':true,onClick:()=>openModels(officialModels.accountKey,false,true)},'放弃草稿并重载')),
+        h('p',{className:'pet-settings-hint',role:'status','data-model-status':true},modelNote||'模型设置单独保存；顶部保存只管理桌宠偏好。目录读取、保存和设默认都不会发送模型请求。'),
+        h('p',{className:'pet-settings-hint'},'只影响本账号在 codex-accounts 中的模型选择，不更改其他插件、预热授权或已有去重记录。未知价格不会被当作免费承诺。'));
+    };
     const quota = q => Number.isFinite(q?.remainingPercent) && q.remainingPercent >= 0 && q.remainingPercent <= 100 ? `${q.remainingPercent.toFixed(1)}%` : '—';
     const warmup = snapshot?.codexWarmup;
     const buckets = statBuckets(ledger?.days, range, codex ? 'tokens' : chartUnit, today);
@@ -321,14 +393,14 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         if (next < 0) return;
         event.preventDefault(); setTab(pages[next][0]); event.currentTarget.querySelectorAll('[role="tab"]')[next]?.focus();
       } }, ...pages.map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, id: `pet-tab-${id}`, 'data-pet-tab': id, 'aria-controls': 'pet-settings-page-content', tabIndex: tab === id ? 0 : -1, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
-      h('p', { className: 'pet-settings-hint pet-settings-save-help', 'data-page-save-hint': true }, '设置在顶部保存；多账号预热授权在自动预热页单独保存。')),
+      h('p', { className: 'pet-settings-hint pet-settings-save-help', 'data-page-save-hint': true }, '桌宠偏好在顶部保存；账号模型设置与多账号预热在各自区域单独保存。')),
       h('div', { id: 'pet-settings-page-content', role: 'tabpanel', 'aria-labelledby': `pet-tab-${tab}` },
       tab === 'accounts' && !codex && h('p', { className: 'pet-settings-hint' }, '可在此管理订阅账号；要在桌宠显示额度，再到「常规」选择 Codex。'),
       error && h('p', { role: 'alert', className: 'pet-settings-error' }, error), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
-      draft && group('官方订阅账号（独立插件）',
+      draft && group('订阅账号（内置管理）',
         field('codexAccountBackend', '账号来源', [['legacy','原订阅插件'],['official','独立账号服务 · 官方 OAuth']]),
         h('details', { className: 'pet-settings-details' }, h('summary', null, '来源说明与隐私'),
-          h('p', { className: 'pet-settings-hint' }, '独立账号服务由本项目提供，复用官方 ChatGPT 订阅 OAuth，不是 Platform API Key，也不是 DSH 官方出品。需要启用 dsh-plugin-codex-accounts；不会读取旧插件授权。默认仅影响本服务的后续新请求，不改已创建请求或 openai-codex 全局账号。旧单账号预热暂停；逐账号每日计划需另行授权。')),
+          h('p', { className: 'pet-settings-hint' }, '账号管理已内置 simple-pet，无需另外安装账号插件。复用官方 ChatGPT 订阅 OAuth，不是 Platform API Key，也不是 DSH 官方出品。已有本项目账号在原凭据命名空间直接复用，不复制令牌；不读取其他订阅插件授权。旧独立包请停用以避免重复路由。默认仅影响本服务后续新请求；旧单账号预热暂停，逐账号每日计划另行授权。')),
         draft?.codexAccountBackend === 'official' && h('div', { className: 'pet-account-panel', 'data-official-panel': true },
           h('div', { className: 'pet-account-toolbar' },
             h('div', null, h('strong', null, '订阅账号'), h('span', { className: `pet-account-state${officialError ? ' is-error' : ''}`, 'data-official-connection': true }, officialBusy ? '处理中…' : officialError ? '无法读取' : officialCatalogue ? `已绑定 ${(officialCatalogue.accounts || []).filter(row => row.bound === true).length} 个` : '尚未读取')),
@@ -355,11 +427,14 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
             h('div', { className: 'pet-account-info' }, h('strong', null, row.label),
               h('span', { className: 'pet-settings-hint' }, `#${row.accountKey.slice(0, 8)}${row.selected ? ' · 默认账号' : ''}${row.bound !== true ? ' · 凭据不可用，请移除后重新绑定' : ''}`)),
             h('div', { className: 'pet-account-actions' },
-              h('button', { type: 'button', disabled: officialBusy || row.bound !== true || row.selected || officialCatalogue.busy, 'data-official-select': row.accountKey, onClick: () => void officialRequest('account.select', { accountKey: row.accountKey, expectedGeneration: officialCatalogue.generation }) }, row.selected ? '默认' : '设为默认'),
+              h('button', { type: 'button', disabled: officialBusy || row.bound !== true || row.selected || officialCatalogue.busy, 'data-official-select': row.accountKey, onClick: () => void officialRequest('account.select', { accountKey: row.accountKey, expectedGeneration: officialCatalogue.generation }) }, row.selected ? '默认账号' : '设默认并更新目录'),
+              h('button', { type: 'button', disabled: officialBusy || row.bound!==true || officialCatalogue.capabilities?.models!==true, 'data-official-models-open':row.accountKey,onClick:()=>openModels(row.accountKey)},'模型设置'),
               h('button', { type: 'button', disabled: officialBusy, 'data-official-remove': row.accountKey, onClick: () => void officialRequest('account.remove', { accountKey: row.accountKey }) }, '移除')),
             h('div', { className: 'pet-account-row-quota' },
               h('span', { className: 'pet-settings-hint' }, row.quota?.status === 'stale' ? '上次报告 · 待更新' : row.quota ? `5h ${quota(row.quota.fiveHour)} · 每周 ${quota(row.quota.weekly)}` : '额度尚未查询'),
               h('button', { type: 'button', disabled: officialBusy || row.bound !== true, 'data-official-quota': row.accountKey, onClick: () => void officialRequest('quota.read', { accountKey: row.accountKey }) }, '刷新额度')))),
+          officialCatalogue?.capabilities?.models!==true&&officialCatalogue&&h('p',{className:'pet-settings-hint'},'当前账号服务尚未提供模型设置。若仍启用了旧独立账号包，请停用旧包并完整重启，以加载 simple-pet 内置服务。'),
+          modelControls(),
           !officialCatalogue && !officialError && h('p', { className: 'pet-account-empty' }, '点击「刷新」查看账号，或「添加账号」开始授权。'),
           h('p', { role: officialError ? 'alert' : 'status', className: officialError ? 'pet-settings-error' : 'pet-settings-hint', 'data-official-status': true }, officialNote || '刷新与添加账号不会调用模型。'))),
       codex && group('多账号管理（桌宠面板切换）',
