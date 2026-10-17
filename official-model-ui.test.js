@@ -18,7 +18,7 @@ function fixture(t, options = {}){
  let settings={enabled:options.enabled??null,defaultModel:null,reasoningEffort:null};
  let host={available:true,managed:false};
  const row=id=>({id,modelKey:hash(id),name:id==='gpt-6.1-sol'?'GPT 6.1 Sol':id,inputModalities:['text','image'],reasoning:{efforts:[{id:'low'},{id:'high'}]}});
- const models=()=>({accountKey:key,generation,settings:structuredClone(settings),hostModel:host,catalog:{source:remote?'account-catalog':'builtin',status:remote?'ready':'not-refreshed',omitted:options.omitted??[]},models:[row('gpt-5.5'),row('gpt-5.5-mini'),...(remote&&!options.noSol?[row('gpt-6.1-sol')]:[])]});
+ const models=()=>({accountKey:key,generation,settings:structuredClone(settings),hostModel:host,catalog:{source:remote?'account-catalog':'builtin',status:remote?'ready':'not-refreshed',omitted:options.omitted??[],capabilityGaps:options.capabilityGaps??[]},models:[row('gpt-5.5'),row('gpt-5.5-mini'),...(remote&&!options.noSol?[row('gpt-6.1-sol')]:[])]});
  const catalogue=()=>({generation,capabilities:{models:true},busy:false,hostModel:host,accounts:[{accountKey:key,label:'合成工作账号',bound:true,selected:true}]});
  const ui=harness(async(url,init={})=>{
   calls.push({url,...init});
@@ -27,6 +27,8 @@ function fixture(t, options = {}){
   if(init.method!=='POST')return Response.json(catalogue());
   const b=JSON.parse(init.body);
   if(b.action==='models.configure'){
+   if(options.failSave)throw new Error('Synthetic network failure');
+   if(options.saveGate)await options.saveGate;
    if(conflict||b.expectedGeneration!==generation)return Response.json({error:'模型配置已变化，请重新读取。'},{status:409});
    settings=structuredClone(b.settings);generation++;return Response.json(models());
   }
@@ -45,7 +47,7 @@ function fixture(t, options = {}){
 }
 test('models never enumerate or call inference on settings mount; opening is an explicit account action',async t=>{
  const f=fixture(t);await settle();f.ui.render();assert.equal(f.calls.length,4);assert(!f.ui.find('data-official-model-panel'));
- await f.open();assert.deepEqual(f.posts(),[{action:'models.refresh',accountKey:key}]);assert(f.ui.find('data-model-default'));assert.match(f.ui.text(),/单独保存/);
+ await f.open();assert.deepEqual(f.posts(),[{action:'models.refresh',accountKey:key}]);assert(f.ui.find('data-model-default'));assert.match(f.ui.text(),/模型偏好自动保存/);
 });
 test('gpt-6.1-sol appears only after explicit account directory response; no warmup or model call',async t=>{
  const f=fixture(t);await f.open();
@@ -79,6 +81,47 @@ test('hiding chosen model clears its draft default but does not send any request
 });
 for(const [options,expected]of [[{enabled:['gpt-5.5']},/被本账号可见模型筛选关闭/],[{noSol:true},/服务端本次未返回/],[{noSol:true,omitted:[{id:'gpt-6.1-sol',reason:'missing-context'}]},/未提供可验证的上下文上限/],[{noSol:true,omitted:[{id:'gpt-6.1-sol',reason:'not-visible'}]},/服务端标记为隐藏/]])test('sol status distinguishes '+expected,async t=>{
  const f=fixture(t,options);await f.open();assert.match(f.ui.text(f.ui.find('data-model-sol-status')),expected);assert.deepEqual(f.posts(),[{action:'models.refresh',accountKey:key}]);assert(!f.posts().some(row=>/warmup|stream/.test(row.action)));
+});
+test('unreported context stays selectable with a clearly local non-entitlement budget note',async t=>{
+ const f=fixture(t,{capabilityGaps:[{id:'gpt-6.1-sol',reason:'context-limit-unreported',localContextLimit:8192}]});await f.open();
+ assert(f.ui.nodes().some(n=>n.type==='option'&&n.props.value==='gpt-6.1-sol'));
+ assert.match(f.ui.text(f.ui.find('data-model-context-note')),/本地 8192-token/);assert.match(f.ui.text(),/不是服务端真实上限/);
+});
+const autosaveWait=()=>new Promise(r=>setTimeout(r,520));
+test('model preferences debounce latest combined draft with CAS and do not change host default',async t=>{
+ const f=fixture(t);await f.open();
+ f.ui.find('data-model-default').props.onChange({target:{value:'gpt-6.1-sol'}});f.ui.render();
+ f.ui.find('data-model-reasoning').props.onChange({target:{value:'high'}});f.ui.render();
+ assert.equal(f.posts().filter(b=>b.action==='models.configure').length,0);
+ await autosaveWait();f.ui.render();
+ assert.deepEqual(f.posts().filter(b=>b.action==='models.configure'),[{action:'models.configure',accountKey:key,expectedGeneration:1,settings:{enabled:null,defaultModel:'gpt-6.1-sol',reasoningEffort:'high'}}]);
+ assert(!f.posts().some(b=>b.action==='host-model.select'));assert.equal(f.ui.find('data-model-save').props.disabled,true);
+ f.ui.find('data-model-reasoning').props.onChange({target:{value:'low'}});f.ui.render();await autosaveWait();f.ui.render();
+ assert.equal(f.posts().filter(b=>b.action==='models.configure').at(-1).expectedGeneration,2);
+});
+test('model autosave conflicts and unknown writes pause with drafts intact and no hidden retries',async t=>{
+ for(const failure of ['conflict','network']){
+  const f=fixture(t,{failSave:failure==='network'});await f.open();
+  f.ui.find('data-model-default').props.onChange({target:{value:'gpt-5.5'}});f.ui.render();if(failure==='conflict')f.conflict();
+  await autosaveWait();f.ui.render();assert.equal(f.posts().filter(b=>b.action==='models.configure').length,1);
+  assert.equal(f.ui.find('data-model-default').props.value,'gpt-5.5');assert.match(f.ui.text(),/草稿已保留/);
+  f.ui.find('data-model-reasoning').props.onChange({target:{value:'high'}});f.ui.render();await autosaveWait();
+  assert.equal(f.posts().filter(b=>b.action==='models.configure').length,1);
+ }
+});
+test('pending model autosave is cancelled on explicit discard, backend ABA and unmount',async t=>{
+ for(const mode of ['discard','ABA','unmount']){
+  const f=fixture(t);await f.open();f.ui.find('data-model-default').props.onChange({target:{value:'gpt-5.5'}});f.ui.render();
+  if(mode==='discard')await f.click('data-model-discard');else if(mode==='unmount')f.ui.cleanup();else for(const value of ['legacy','official']){f.ui.nodes().find(n=>n.props.name==='codexAccountBackend').props.onChange({target:{value}});f.ui.render();}
+  await autosaveWait();assert.equal(f.posts().filter(b=>b.action==='models.configure').length,0);
+ }
+});
+test('model controls are disabled while an autosave request owns the account operation',async t=>{
+ let release;const saveGate=new Promise(r=>release=r);t.after(()=>release());
+ const f=fixture(t,{saveGate});await f.open();f.ui.find('data-model-default').props.onChange({target:{value:'gpt-5.5'}});f.ui.render();
+ await autosaveWait();f.ui.render();assert.equal(f.posts().filter(b=>b.action==='models.configure').length,1);
+ assert.equal(f.ui.find('data-model-default').props.disabled,true);assert.equal(f.ui.find('data-model-use').props.disabled,true);
+ release();await settle();f.ui.render();assert.equal(f.ui.find('data-model-save').props.disabled,true);
 });
 test('captured model-save/use callbacks cannot survive backend ABA or unmount',async t=>{
  for(const mode of ['ABA','unmount']){

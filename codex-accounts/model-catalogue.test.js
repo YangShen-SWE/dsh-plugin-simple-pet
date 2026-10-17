@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeAccountModels, fetchAccountModels, modelIdOK, validModelSettings } from './model-catalogue.js';
+import { inspectAccountModelCatalogue, mergeAccountModels, fetchAccountModels, modelIdOK, validModelSettings } from './model-catalogue.js';
 import { createOfficialDriver } from './official-driver.js';
 
 // All catalogue responses and OAuth values below are synthetic. No real fetch,
@@ -59,11 +59,29 @@ test('merge drops duplicate IDs, hidden/missing visibility and reserved entries'
 test('invalid first duplicate does not suppress a later valid model', () => {
   assert.equal(merge(row({ context_window: 0 }), row())[0].contextWindow, 400000);
 });
-for (const context of [undefined, null, 0, -1, 1.5, 10000001, '400000']) {
+for (const context of [0, -1, 1.5, 10000001, '400000']) {
   test(`new model never guesses unknown/invalid context ${JSON.stringify(context)}`, () => {
     assert.throws(() => merge(row({ context_window: context })), /MODEL_CATALOG_EMPTY/);
   });
 }
+test('online model with omitted optional context remains discoverable with an explicit conservative LOCAL budget', () => {
+  for (const context of [undefined, null]) {
+    const report = inspectAccountModelCatalogue({models:[row({context_window:context})]}, builtin());
+    const model = report.models[0];
+    assert.equal(model.id, 'gpt-6.1-sol'); assert.equal(model.contextWindow, 8192);
+    assert.equal(model.maxTokens, 4096); assert.equal(model.cost, undefined);
+    assert.deepEqual(report.omitted, []);
+    assert.deepEqual(report.capabilityGaps, [{id:'gpt-6.1-sol',reason:'context-limit-unreported',localContextLimit:8192}]);
+  }
+});
+test('fallback requires an online visible model and a compatible SDK template; never fabricates a slug', () => {
+  assert.deepEqual(inspectAccountModelCatalogue({models:[]},builtin()).models, []);
+  assert.throws(()=>mergeAccountModels({models:[row({context_window:undefined})]},[]),/MODEL_CATALOG_EMPTY/);
+  assert.throws(()=>merge(row({visibility:'hide',context_window:undefined})),/MODEL_CATALOG_EMPTY/);
+  const base=[{...builtin()[0],contextWindow:2048,maxTokens:8000,maxContextWindow:1000000}];
+  const [model]=mergeAccountModels({models:[row({context_window:undefined})]},base);
+  assert.equal(model.contextWindow,2048);assert.equal(model.maxTokens,1024);assert.equal(model.maxContextWindow,undefined);
+});
 test('known model may retain verified static context and pricing', () => {
   const [model] = merge(row({ slug: 'codex-mini', context_window: undefined }));
   assert.equal(model.contextWindow, 200000); assert.deepEqual(model.cost, builtin()[0].cost);

@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.0.0 · 单插件账号管理与模型目录刷新](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.0)** · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.0.1 · 自动保存与 Codex 多账号模型管理](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.1)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
@@ -8,7 +8,7 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 
 ## 界面展示 / Screenshots
 
-面板使用生产 WPF 与内置人物素材渲染，设置使用真实 React 组件隔离渲染；邮箱、额度和预算均为合成演示，不含真实账号或用户数据，不代表正在运行宿主已验收。Panels use production WPF; settings use isolated production React. All accounts and values are synthetic, not live-host/account validation.
+部分设置截图来自此前版本，自动保存提示以当前界面与使用指南为准。面板使用生产 WPF 与内置人物素材渲染，设置使用真实 React 组件隔离渲染；邮箱、额度和预算均为合成演示，不含真实账号或用户数据，不代表正在运行宿主已验收。Panels use production WPF; settings use isolated production React. All accounts and values are synthetic, not live-host/account validation.
 
 ![DeepSeek 模式：余额、峰谷价牌与缓存命中](docs/screenshots/deepseek.png)
 
@@ -25,6 +25,16 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径已内置于桌宠，安装包声明所需公开组件。旧独立账号包请在插件管理中停用后自行完整重启 DSH，不要删除账号数据或 grant。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v1.0.1：自动保存与新模型兼容（2026-10-17）
+
+普通外观、单位、休眠与刷新间隔等偏好在停止编辑约 450ms 后自动保存，状态区区分等待、保存中、已保存与失败；保存中继续编辑不会丢草稿。每账号的可见模型、首选模型与推理档位也自动保存，但不会自动设置 DSH 全局默认。初次读取不写入，跨子页面保留草稿；关闭整个设置组件会取消尚未发出的保存，请先确认已保存。
+
+预热开关/时间、账号来源、桌宠切号入口和逐账号预热授权仍须明确确认；不会被普通偏好自动保存夹带。网络失败暂停自动重试，409 冲突保留草稿并要求明确放弃后重读；本地无效输入修正后可以恢复自动保存。偏好落盘与桌宠应用回执仍是不同状态。
+
+对于账号在线目录确实返回、可见且支持的模型，若只省略可选上下文字段，不再因此过滤整个模型；使用明确标注的本地 8192-token 请求预算，不宣称服务端真实上限。无效的已提供上限仍拒绝，不添加服务端未返回的 slug，不把未知价格当免费，也不保证真实权限。可在「账号管理 → 模型 → 更新账号目录」核对 `gpt-6.1-sol` 是未返回、被隐藏、本地关闭还是能力不兼容；没有用真实账号/额度/模型调用验证。
+
+参考 [Codex 订阅插件公开设置交互](https://github.com/WSL043/dsh-codex-subscription)，只借鉴编辑即保存与状态反馈，不读取它的授权或账号。完整安装、自动保存、账号/模型/额度与预热流程见 [使用指南](USAGE.md)。新版仅安装桌宠一个包；旧独立账号插件请停用或卸载并保留数据，再自行完整重启 DSH。
 
 ## v1.0.0：桌宠内置账号管理（2026-10-17）
 

@@ -1,6 +1,10 @@
 # Codex Accounts for DeepSeek Harness
 
-独立账号服务插件 **dsh-plugin-codex-accounts 0.1.1**。非 OpenAI 官方产品；复用 DSH 官方 `PiAiAdapter` 与 pi-ai 的 **ChatGPT Codex OAuth**，不是 OpenAI Platform API Key 计费接口，也不依赖第三方订阅插件。
+## 当前版本：桌宠 v1.0.1 内置账号模块
+
+只安装根包 **dsh-plugin-simple-pet**，不再需要安装独立 `dsh-plugin-codex-accounts`。旧独立插件请在插件管理中停用或卸载，然后自行完整重启 DSH；保留原账号目录、凭据、模型设置及预热记录，不复制令牌。每账号模型偏好已自动保存；设为 DSH 默认、账号操作与预热授权仍需明确操作。完整说明见 [使用指南](../USAGE.md)。
+
+非 OpenAI 或 DSH 官方产品；复用 DSH 官方 `PiAiAdapter` 与 pi-ai 的 **ChatGPT Codex OAuth**，不是 OpenAI Platform API Key 计费接口，也不依赖第三方订阅插件。以下 **独立账号服务 0.1.1** 的双包安装、未发布状态与模型手动保存描述仅作为历史记录，不是当前安装要求。
 
 ## 本地未发布：正常对话与账号模型（2026-10-17）
 

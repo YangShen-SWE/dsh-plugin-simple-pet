@@ -102,6 +102,53 @@ export async function installPanelDependency(manager, authorized = () => true) {
   } catch { return '依赖安装状态未确认，请到 DSH 插件管理核验；不会自动重试、批准构建脚本或显示内部日志。'; }
 }
 
+// Deliberately positive allowlist: new settings cannot silently become spending grants.
+export const AUTOSAVE_PREFERENCE_KEYS = Object.freeze(['skin', 'cardTheme', 'unit', 'size', 'billingMode', 'codexUnit', 'sleepMinutes', 'codexQuotaRefreshSeconds', 'compactMode', 'quietMode', 'feedbackStyle', 'reduceMotion', 'disableFlashes', 'disableFloats']);
+export function createPreferenceAutosave({ write, onChange = () => {}, onSaved = () => {}, delay = 450, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let loaded = null, draft = null, timer = null, controller = null, disposed = false, failed = null;
+  const safe = key => AUTOSAVE_PREFERENCE_KEYS.includes(key);
+  const patch = (all = false) => Object.fromEntries(Object.entries(draft || {}).filter(([key, value]) => (all || safe(key)) && value !== loaded?.values[key]));
+  const invalid = changes => Object.entries(changes).some(([key, value]) => key === 'sleepMinutes' ? !Number.isInteger(value) || value < 1 || value > 240 : key === 'codexQuotaRefreshSeconds' ? !Number.isInteger(value) || value < 1 || value > 3600 : key === 'codexWarmupTime' ? !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value) : false);
+  const state = () => ({ loaded, draft, inFlight: !!controller, safeDirty: !!Object.keys(patch()).length, explicitDirty: Object.keys(patch(true)).some(key => !safe(key)), status: !loaded ? 'loading' : failed ? 'error' : controller ? 'saving' : invalid(patch()) ? 'invalid' : Object.keys(patch()).length ? 'waiting' : 'saved', error: failed });
+  const publish = () => { if (!disposed) onChange(state()); };
+  const cancelTimer = () => { if (timer !== null) clearTimer(timer); timer = null; };
+  const schedule = () => {
+    cancelTimer();
+    if (disposed || !loaded || failed || controller || !Object.keys(patch()).length || invalid(patch())) return;
+    timer = setTimer(() => { timer = null; void flush(); }, delay);
+  };
+  async function flush(all = false) {
+    cancelTimer();
+    if (disposed || !loaded || controller || failed?.conflict || (failed && !all)) return;
+    const changes = patch(all);
+    if (!Object.keys(changes).length) return;
+    if (invalid(changes)) { failed = { validation: true, conflict: false, message: '输入无效：请填写范围内的整数与有效 HH:mm 时间；草稿未保存。' }; publish(); return; }
+    const submitted = { ...draft }, expected = loaded.revision;
+    controller = new AbortController(); const active = controller; failed = null; publish();
+    try {
+      const data = await write(changes, expected, active.signal);
+      if (disposed) return;
+      // A response may normalize values, but must not erase edits made in flight.
+      draft = Object.fromEntries(Object.entries(data.values).map(([key, value]) => [key, draft[key] === submitted[key] && (Object.hasOwn(changes, key) || submitted[key] === loaded.values[key]) ? value : draft[key]]));
+      loaded = data; onSaved(data);
+    } catch (error) {
+      if (!disposed) failed = { conflict: error.status === 409, message: error.status === 409 ? '设置已被其他页面修改，未覆盖。当前草稿已保留；请明确放弃草稿并重新读取后再编辑。' : '保存失败，当前草稿已保留；自动保存已暂停，请核验后重试。' };
+    } finally {
+      controller = null;
+      if (!disposed) { publish(); schedule(); }
+    }
+  }
+  return {
+    state,
+    load(data) { if (disposed || controller) return; cancelTimer(); loaded = data; draft = { ...data.values }; failed = null; publish(); },
+    edit(key, value) { if (disposed || !draft) return; draft = { ...draft, [key]: value }; if (failed?.validation) failed = null; publish(); schedule(); },
+    flush,
+    retry() { if (disposed || failed?.conflict) return; failed = null; publish(); return flush(); },
+    pause() { if (disposed || controller) return; cancelTimer(); failed = { conflict: true, message: '自动保存已暂停，等待明确重新读取。' }; publish(); },
+    dispose() { disposed = true; cancelTimer(); controller?.abort(); },
+  };
+}
+
 export function createSimplePetClient(React, send = (url, init) => (globalThis.__DSH_TRANSPORT__?.fetch ?? globalThis.fetch)(url, init), services = {}) {
   const h = React.createElement;
   const { useState, useEffect, useRef } = React;
@@ -138,17 +185,24 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const [officialLabel, setOfficialLabel] = useState(''), [officialReply, setOfficialReply] = useState('');
     const [officialAdding, setOfficialAdding] = useState(false), [officialError, setOfficialError] = useState(false);
     const [officialModels,setOfficialModels]=useState(null),[modelDraft,setModelDraft]=useState(null),[modelNote,setModelNote]=useState('');
-    const modelEditor=useRef({data:null,draft:null});
+    const modelEditor=useRef({data:null,draft:null}), modelSaveTimer=useRef(null), modelSaveFailure=useRef(null);
+    const cancelModelSave=()=>{if(modelSaveTimer.current!==null)clearTimeout(modelSaveTimer.current);modelSaveTimer.current=null;};
     const officialAction = useRef({ busy: false, controller: null, generation: 0 }), officialPromptId = useRef(null);
     const [multiLoaded, setMultiLoaded] = useState(null), [multiDraft, setMultiDraft] = useState(null), [boundAccounts, setBoundAccounts] = useState(null);
     const [multiBusy, setMultiBusy] = useState(false), [multiNote, setMultiNote] = useState('');
     const multiAction = useRef({ busy: false, controller: null }), multiDraftRef = useRef(null), multiLoadedRef = useRef(null);
     const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
-    const alive = useRef(false), draftRef = useRef(null), editVersion = useRef(0), saving = useRef(false);
+    const alive = useRef(false), draftRef = useRef(null), autosave = useRef(null), preferenceReadVersion = useRef(0);
+    const [saveState, setSaveState] = useState({ status: 'loading' });
     useEffect(() => {
       alive.current = true;
-      const controller = new AbortController();
-      request('preferences', { signal: controller.signal }).then(data => { if (alive.current) { setLoaded(data); setDraft(data.values); draftRef.current = data.values; } }).catch(e => { if (alive.current && e.name !== 'AbortError') setError(e.message); });
+      autosave.current = createPreferenceAutosave({
+        write: (patch, revision, signal) => request('preferences', { method: 'PUT', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patch, revision }) }),
+        onChange: state => { if (!alive.current) return; setSaveState(state); setLoaded(state.loaded); setDraft(state.draft); draftRef.current = state.draft; },
+        onSaved: () => { if (alive.current) { setApplication(null); setNote('已保存；等待独立的桌宠应用回执。'); } },
+      });
+      const controller = new AbortController(), readVersion = ++preferenceReadVersion.current;
+      request('preferences', { signal: controller.signal }).then(data => { if (alive.current && !controller.signal.aborted && readVersion === preferenceReadVersion.current) autosave.current.load(data); }).catch(e => { if (alive.current && !controller.signal.aborted && readVersion === preferenceReadVersion.current && e.name !== 'AbortError') setError(e.message); });
       let pending = false;
       const refresh = async () => {
         // Re-evaluate the short lease even when a previous local request is stalled.
@@ -167,9 +221,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       };
       void refresh();
       const timer = setInterval(refresh, 5000);
-      return () => { alive.current = false; officialAction.current.controller?.abort(); multiAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
+      return () => { alive.current = false; cancelModelSave(); autosave.current?.dispose(); officialAction.current.controller?.abort(); multiAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
     }, []);
     const invalidateOfficial = () => {
+      cancelModelSave(); modelSaveFailure.current=null;
       const previous = officialAction.current; previous.controller?.abort();
       officialAction.current = { busy: false, controller: null, generation: previous.generation + 1 };
       officialPromptId.current = null; setOfficialBusy(false); setOfficialCatalogue(null); setOfficialNote(''); setOfficialError(false); setOfficialReply(''); setOfficialAdding(false);
@@ -191,6 +246,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         setOfficialCatalogue(data);
         const modelsResult = action === 'account.select' ? actionResult?.models : action?.startsWith('models.') ? actionResult : null;
         if(modelsResult?.accountKey){
+          cancelModelSave(); modelSaveFailure.current=null;
           modelEditor.current={data:modelsResult,draft:structuredClone(modelsResult.settings)};
           setOfficialModels(modelsResult);setModelDraft(modelEditor.current.draft);setModelNote(action==='models.configure'?'模型设置已单独保存；没有发送模型请求。':action==='account.select'?'已选择账号并更新该账号模型目录；新模型会通知宿主选择器，没有发送模型请求。':action==='models.refresh'?'已更新该账号模型目录；没有调用模型。':'已读取模型设置。');
         }
@@ -204,7 +260,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       } catch (error) {
         if (current()) {
           const message=error.status?error.message:'无法连接账号服务，请检查插件运行错误；未自动重试操作。';
-          if(action?.startsWith('models.')||action==='host-model.select')setModelNote(message+' 当前模型草稿已保留。');
+          if(action?.startsWith('models.')||action==='host-model.select'){
+            if(action==='models.configure')modelSaveFailure.current=error.status===409?'conflict':'unknown';
+            setModelNote(message+' 当前模型草稿已保留；未自动重试。'+(action==='models.configure'?(error.status===409?'请明确放弃草稿并重新读取。':'请核验后点击重试保存。'):''));
+          }
           else{setOfficialCatalogue(null);setOfficialError(true);setOfficialNote(message);}
         }
       } finally { if (officialAction.current.generation === generation) { officialAction.current.busy = false; if (alive.current) setOfficialBusy(false); } }
@@ -213,15 +272,29 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const openModels=(key,refresh=true,discard=false)=>{
       if(!alive.current||officialAction.current.busy)return;
       if(modelDirty()&&!discard){setModelNote('模型草稿尚未保存，请先保存或明确放弃；没有重新读取或改动账号。');return;}
+      cancelModelSave();
       void officialRequest(refresh?'models.refresh':'models.read',{accountKey:key});
     };
     const changeModel=patch=>{
       if(!alive.current||officialAction.current.busy||!modelEditor.current.data)return;
-      const next={...modelEditor.current.draft,...patch};modelEditor.current={...modelEditor.current,draft:next};setModelDraft(next);setModelNote('模型草稿未保存；不会更改会话或发送请求。');
+      const next={...modelEditor.current.draft,...patch};modelEditor.current={...modelEditor.current,draft:next};setModelDraft(next);cancelModelSave();
+      if(modelSaveFailure.current){setModelNote('模型自动保存已暂停；草稿保留，请核验后重试保存或明确放弃并重新读取。');return;}
+      if(!modelDirty()){setModelNote('模型设置已保存；没有更改 DSH 默认或发送模型请求。');return;}
+      setModelNote('等待自动保存模型偏好；不会更改 DSH 默认或发送模型请求。');
+      const captured=modelEditor.current;
+      modelSaveTimer.current=setTimeout(()=>{
+        modelSaveTimer.current=null;
+        if(!alive.current||modelEditor.current!==captured||officialAction.current.generation!==officialGeneration)return;
+        if(officialAction.current.busy){setModelNote('其他账号操作进行中；模型草稿保留，请继续编辑或点击立即保存。');return;}
+        saveModels();
+      },450);
     };
     const saveModels=()=>{
-      const current=modelEditor.current;if(!current.data||current.data.accountKey!==officialModels?.accountKey||officialError)return;
-      void officialRequest('models.configure',{accountKey:current.data.accountKey,expectedGeneration:current.data.generation,settings:current.draft});
+      cancelModelSave();
+      const current=modelEditor.current;if(!current.data||current.data.accountKey!==officialModels?.accountKey||officialError||!modelDirty())return;
+      if(modelSaveFailure.current==='conflict'){setModelNote('模型配置已变化；自动保存已暂停，请明确放弃草稿并重新读取。');return;}
+      setModelNote('正在保存模型偏好；没有发送模型请求。');
+      void officialRequest('models.configure',{accountKey:current.data.accountKey,expectedGeneration:current.data.generation,settings:structuredClone(current.draft)});
     };
     useEffect(() => {
       if (tab !== 'accounts' || loaded?.values?.codexAccountBackend !== 'official' || draft?.codexAccountBackend !== 'official' || !['running', 'prompt'].includes(officialCatalogue?.login?.status)) return;
@@ -270,43 +343,30 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       if (!enabled || !account.models?.length || previous.accounts.length >= 8) { setMultiNote('最多配置八个账号；新账号需要可用的绑定模型。'); return; }
       changeMulti({ accounts: [...previous.accounts, { accountKey: account.accountKey, modelKey: account.models[0].modelKey, enabled: true, allowUnverifiedQuota: false }] });
     };
+    const reloadAction = useRef(null);
     const change = (key, value) => {
+      if (!alive.current || reloadAction.current) return;
       if (key === 'codexAccountBackend') invalidateOfficial();
-      editVersion.current++;
-      const next = { ...draftRef.current, [key]: value };
-      draftRef.current = next; setDraft(next); setNote('');
+      autosave.current?.edit(key, value); setNote('');
     };
     const reload = async () => {
-      if (saving.current) return;
-      saving.current = true; setBusy(true); setError('');
-      const version = editVersion.current;
+      if (!alive.current || reloadAction.current || autosave.current?.state().inFlight) return;
+      // This button explicitly discards drafts. Suspend the debounce before GET,
+      // so an old timer can never race a newly read revision.
+      autosave.current?.pause();
+      const controller = new AbortController(); reloadAction.current = controller; ++preferenceReadVersion.current;
+      setBusy(true); setError('');
       try {
-        const data = await request('preferences');
-        if (alive.current) {
-          if (data.values.codexAccountBackend !== loaded?.values?.codexAccountBackend || (editVersion.current === version && data.values.codexAccountBackend !== draftRef.current?.codexAccountBackend)) invalidateOfficial();
-          setLoaded(data);
-          if (editVersion.current === version) { draftRef.current = data.values; setDraft(data.values); setNote('已读取当前已保存设置。'); }
-          else setNote('已刷新保存版本，保留当前编辑内容。');
+        const data = await request('preferences', { signal: controller.signal });
+        if (alive.current && !controller.signal.aborted) {
+          if (data.values.codexAccountBackend !== draftRef.current?.codexAccountBackend) invalidateOfficial();
+          autosave.current.load(data); setNote('已放弃草稿并读取当前已保存设置。');
         }
-      } catch (e) { if (alive.current) setError(e.message); }
-      finally { saving.current = false; if (alive.current) setBusy(false); }
+      } catch (e) { if (alive.current && !controller.signal.aborted) setError('重新读取失败；草稿保留，自动保存暂停。请重试重新读取。'); }
+      finally { reloadAction.current = null; if (alive.current) setBusy(false); }
     };
-    const save = async () => {
-      if (!loaded || saving.current) return;
-      saving.current = true; setBusy(true); setError(''); setNote('');
-      const version = editVersion.current;
-      const patch = Object.fromEntries(Object.entries(draftRef.current).filter(([key, val]) => loaded.values[key] !== val));
-      try {
-        if (!Object.keys(patch).length) { setNote('没有待保存的更改。'); return; }
-        const data = await request('preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patch, revision: loaded.revision }) });
-        if (alive.current) {
-          setLoaded(data); setApplication(null);
-          if (editVersion.current === version) { setDraft(data.values); draftRef.current = data.values; }
-          setNote(editVersion.current === version ? '已保存；等待独立的桌宠应用回执。首次更新代码需完整退出并重启 DSH。' : '已保存提交的设置，后续编辑仍待保存。');
-        }
-      } catch (e) { if (alive.current) setError(e.status === 409 ? '设置已被其他页面修改，未覆盖。请重新读取后再编辑；当前草稿已保留。' : e.message); }
-      finally { saving.current = false; if (alive.current) setBusy(false); }
-    };
+    useEffect(() => () => reloadAction.current?.abort(), []);
+    const save = () => { if (alive.current && !reloadAction.current && !autosave.current?.state().error?.conflict) return autosave.current?.flush(true); };
     const field = (key, label, options) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
       h('select', { name: key, value: draft[key] ?? (key === 'feedbackStyle' ? 'classic' : ''), disabled: busy, onChange: e => change(key, e.target.value) }, ...options.map(([value, text]) => h('option', { key: value, value }, text))));
     const number = (key, label, min, max) => h('label', { className: 'pet-settings-row', key }, h('span', null, label),
@@ -346,6 +406,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       return h('section',{className:'pet-model-panel','data-official-model-panel':officialModels.accountKey},
         h('div',{className:'pet-model-heading'},h('div',null,h('h4',null,`模型 · ${owner?.label||'#'+officialModels.accountKey.slice(0,8)}`),h('p',{className:'pet-settings-hint'},officialModels.catalog?.source==='account-catalog'?'来自该账号返回的模型目录。':'本地兼容目录；点「更新账号目录」读取当前账号提供的模型。')),
           h('button',{type:'button',disabled:officialBusy,'data-model-refresh':true,onClick:()=>openModels(officialModels.accountKey,true)},'更新账号目录')),
+        officialModels.catalog?.capabilityGaps?.some(row=>row.reason==='context-limit-unreported')&&h('p',{className:'pet-settings-hint','data-model-context-note':true},'部分新模型未报告上下文上限，已保留为可选模型并暂用本地 8192-token 请求预算；这不是服务端真实上限，也不保证该账号有使用权限。'),
         h('p',{className:'pet-settings-hint','data-host-model-state':true},`DSH 默认：${/^[a-f0-9]{64}$/.test(currentModel)?'旧版模型入口，请重新选择':currentModel}。已有会话若锁定旧模型，需在会话顶部手动重选。`),
         h('label',{className:'pet-settings-row'},h('span',null,'该账号首选模型'),h('select',{'data-model-default':true,value:modelDraft.defaultModel||'',disabled,onChange:e=>changeModel({defaultModel:e.target.value||null,reasoningEffort:null})},
           h('option',{value:''},'未指定'),
@@ -369,11 +430,11 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
           return '已更新此账号目录，服务端本次未返回 gpt-6.1-sol。不会改用 API Key 或添加无法验证的假入口。';
         })()),
         h('div',{className:'pet-account-actions'},
-          h('button',{type:'button',disabled:disabled||!dirty,'data-model-save':true,onClick:saveModels},'保存模型设置'),
+          h('button',{type:'button',disabled:disabled||!dirty||modelSaveFailure.current==='conflict','data-model-save':true,onClick:saveModels},modelSaveFailure.current?'重试保存模型偏好':'立即保存模型偏好'),
           h('button',{type:'button',disabled:disabled||dirty||!selected||host?.available!==true,'data-model-use':true,onClick:()=>void officialRequest('host-model.select',{accountKey:officialModels.accountKey,modelKey:selected.modelKey})},'设为 DSH 默认（固定此账号）'),
           h('button',{type:'button',disabled:officialBusy,'data-model-discard':true,onClick:()=>openModels(officialModels.accountKey,false,true)},'放弃草稿并重载')),
-        h('p',{className:'pet-settings-hint',role:'status','data-model-status':true},modelNote||'模型设置单独保存；顶部保存只管理桌宠偏好。目录读取、保存和设默认都不会发送模型请求。'),
-        h('p',{className:'pet-settings-hint'},'只影响本账号在 codex-accounts 中的模型选择，不更改其他插件、预热授权或已有去重记录。未知价格不会被当作免费承诺。'));
+        h('p',{className:'pet-settings-hint',role:'status','data-model-status':true},modelNote||'模型偏好自动保存；更改 DSH 默认仍需明确点击。目录读取和偏好保存都不会发送模型请求。'),
+        h('p',{className:'pet-settings-hint'},'模型偏好自动保存；只影响本账号在 codex-accounts 中的模型选择，不更改 DSH 默认、其他插件、预热授权或已有去重记录。未知价格不会被当作免费承诺。'));
     };
     const quota = q => Number.isFinite(q?.remainingPercent) && q.remainingPercent >= 0 && q.remainingPercent <= 100 ? `${q.remainingPercent.toFixed(1)}%` : '—';
     const warmup = snapshot?.codexWarmup;
@@ -384,19 +445,19 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       h('header', { className: 'pet-settings-toolbar', 'data-settings-toolbar': true },
       h('div', { className: 'pet-settings-heading' }, h('h2', null, '桌宠'),
         h('div', { className: 'pet-settings-actions pet-settings-savebar' },
-          h('span', { className: 'pet-settings-save-state' }, !loaded ? '正在读取设置' : dirty ? '有未保存修改' : '设置已保存'),
-          h('button', { type: 'button', 'data-settings-save': true, disabled: busy || !dirty, onClick: () => void save() }, busy ? '保存中…' : '保存设置'),
-          h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取'))),
+          h('span', { className: 'pet-settings-save-state', role: 'status', 'aria-live': 'polite', 'data-autosave-status': saveState.status, 'aria-busy': saveState.inFlight || undefined }, error ? '设置读取失败' : ({ loading: '正在读取设置', waiting: '等待自动保存…', saving: '保存中…', invalid: '输入未完成或超出范围，尚未保存', error: '保存失败 · 草稿保留', saved: saveState.explicitDirty ? '普通偏好已保存 · 授权/来源待确认' : '设置已保存' })[saveState.status]),
+          h('button', { type: 'button', 'data-settings-save': true, disabled: busy || saveState.inFlight || saveState.error?.conflict || !dirty || !!error, onClick: () => void save() }, saveState.explicitDirty ? '确认保存授权与来源设置' : saveState.status === 'error' ? '重试保存普通偏好' : '立即保存普通偏好'),
+          h('button', { type: 'button', disabled: busy || saveState.inFlight, onClick: reload }, dirty ? '放弃草稿并重新读取' : '重新读取'))),
       h('div', { className: 'pet-settings-tabs pet-settings-page-nav', role: 'tablist', 'aria-label': '桌宠子页面', onKeyDown: event => {
         const index = pages.findIndex(([id]) => id === tab);
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? pages.length - 1 : event.key === 'ArrowRight' ? (index + 1) % pages.length : event.key === 'ArrowLeft' ? (index + pages.length - 1) % pages.length : -1;
         if (next < 0) return;
         event.preventDefault(); setTab(pages[next][0]); event.currentTarget.querySelectorAll('[role="tab"]')[next]?.focus();
       } }, ...pages.map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, id: `pet-tab-${id}`, 'data-pet-tab': id, 'aria-controls': 'pet-settings-page-content', tabIndex: tab === id ? 0 : -1, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
-      h('p', { className: 'pet-settings-hint pet-settings-save-help', 'data-page-save-hint': true }, '桌宠偏好在顶部保存；账号模型设置与多账号预热在各自区域单独保存。')),
+      h('p', { className: 'pet-settings-hint pet-settings-save-help', 'data-page-save-hint': true }, '普通偏好自动保存；预热开关与时间、账号来源、桌宠切号入口需点击顶部确认。账号模型偏好也自动保存；多账号预热授权仍须单独确认。')),
       h('div', { id: 'pet-settings-page-content', role: 'tabpanel', 'aria-labelledby': `pet-tab-${tab}` },
       tab === 'accounts' && !codex && h('p', { className: 'pet-settings-hint' }, '可在此管理订阅账号；要在桌宠显示额度，再到「常规」选择 Codex。'),
-      error && h('p', { role: 'alert', className: 'pet-settings-error' }, error), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
+      (error || saveState.error) && h('p', { role: 'alert', className: 'pet-settings-error' }, error || saveState.error.message), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
       draft && group('订阅账号（内置管理）',
         field('codexAccountBackend', '账号来源', [['legacy','原订阅插件'],['official','独立账号服务 · 官方 OAuth']]),
         h('details', { className: 'pet-settings-details' }, h('summary', null, '来源说明与隐私'),
@@ -407,7 +468,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
             h('div', { className: 'pet-account-actions' },
               h('button', { type: 'button', 'data-official-read': true, disabled: officialBusy || loaded?.values?.codexAccountBackend !== 'official', onClick: () => void officialRequest() }, '刷新'),
               h('button', { type: 'button', 'data-official-add': true, disabled: officialBusy || loaded?.values?.codexAccountBackend !== 'official' || ['running','prompt'].includes(officialCatalogue?.login?.status), onClick: () => setOfficialAdding(value => !value) }, '添加账号'))),
-          loaded?.values?.codexAccountBackend !== 'official' && h('p', { className: 'pet-settings-hint', 'data-official-needs-save': true }, '先点击顶部「保存设置」，再添加或读取账号。'),
+          loaded?.values?.codexAccountBackend !== 'official' && h('p', { className: 'pet-settings-hint', 'data-official-needs-save': true }, '先点击顶部「确认保存授权与来源设置」，再添加或读取账号；选择来源不会自动登录。'),
           officialAdding && h('div', { className: 'pet-account-add' },
             h('label', { className: 'pet-settings-row' }, h('span', null, '账号昵称（选填）'), h('input', { value: officialLabel, maxLength: 64, 'data-official-label': true, onChange: e => setOfficialLabel(e.target.value), placeholder: '例如：工作账号' })),
             h('div', { className: 'pet-account-actions' },
@@ -474,7 +535,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         h('p', { className: 'pet-settings-hint', role: 'status', 'data-multi-status': true }, (['paused','unknown','failed'].includes(snapshot?.codexMultiWarmup?.status) ? snapshot.codexMultiWarmup.detail : null) || multiNote || snapshot?.codexMultiWarmup?.detail || '多账号预热未授权；打开页面不会发送请求。'),
         (multiLoaded?.paused || ['paused','unknown'].includes(snapshot?.codexMultiWarmup?.status)) && h('p', { role: 'alert', className: 'pet-settings-error' }, '记录含未知结果/未完成认领；设置保存不能清除暂停。请先核验请求与持久记录，不要删除去重记录来重复预热。')),
       !draft ? h('div', null, h('p', null, error ? '设置不可用，未修改原文件。' : '正在读取桌宠设置…'), h('button', { type: 'button', disabled: busy, onClick: reload }, '重新读取')) :
-      tab !== 'stats' ? h('form', { noValidate: true, onSubmit: e => { e.preventDefault(); void save(); } },
+      tab !== 'stats' ? h('form', { noValidate: true, onSubmit: e => { e.preventDefault(); if (alive.current && !reloadAction.current) void autosave.current?.flush(); } },
         group('陪伴与舒适',
           toggle('compactMode', '简洁模式：仅显示余额/额度面板（隐藏人物，关闭全部动效）'),
           draft.compactMode && h('p', { className: 'pet-settings-hint' }, '简洁模式覆盖下方所有视觉动效选项，退出后恢复原偏好；人物选择、信息框主题与预热开关不会被改写。'),

@@ -72,7 +72,7 @@ test('mount only reads local settings and state; defaults never enable warm-up',
     assert(!transport.calls.some(c => /subscription|llm|stream|warmup/.test(c.url)));
   } finally { ui.cleanup(); }
 });
-test('edits remain drafts until explicit submit, and time plus daily toggle commit atomically', async () => {
+test('spending authorization remains a draft until explicit confirmation, and time plus daily toggle commit atomically', async () => {
   const transport = mockTransport(), ui = harness(transport.send);
   try {
     await settle(); ui.render();
@@ -80,7 +80,7 @@ test('edits remain drafts until explicit submit, and time plus daily toggle comm
     ui.find(n => n.type === 'input' && n.props.name === 'codexWarmupDaily').props.onChange({ target: { checked: true } });
     ui.render(); assert.equal(transport.calls.length, 4);
     const radio = ui.find(n => n.props.role === 'radio' && ui.text(n).includes('薄荷')); radio.props.onClick(); ui.render();
-    ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} });
+    ui.find(n => n.props['data-settings-save']).props.onClick();
     await settle(); ui.render();
     const writes = transport.calls.filter(c => c.method === 'PUT'); assert.equal(writes.length, 1);
     assert.deepEqual(JSON.parse(writes[0].body), { patch: { skin: 'mint', codexWarmupDaily: true, codexWarmupTime: '08:15' }, revision: 'a'.repeat(64) });
@@ -212,4 +212,103 @@ test('built bundle follows the real host factory contract and owns native settin
   assert(pkg.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings-general'));
   const css = readFileSync(new URL('./client.css', import.meta.url),'utf8');
   assert.match(css, /repeat\(auto-fit,minmax\(min\(100%,130px\),1fr\)\)/); assert.match(css, /background-size:400% 200%/);
+});
+
+test('debounced ordinary changes persist across tabs without submitting spending drafts or implicit Enter grants', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = mockTransport(), ui = harness(transport.send);
+  try {
+    await settle(); ui.render(); t.mock.timers.tick(5000); await settle(); assert.equal(transport.calls.length, 4);
+    ui.find(n => n.props.name === 'codexWarmupDaily').props.onChange({ target: { checked: true } });
+    ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
+    ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
+    ui.find(n => n.props.name === 'compactMode').props.onChange({ target: { checked: true } }); ui.render();
+    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'waiting');
+    t.mock.timers.tick(449); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
+    t.mock.timers.tick(1); ui.render(); assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saving');
+    await settle(); ui.render();
+    assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, { size: 'tiny', compactMode: true });
+    assert.equal(ui.find(n => n.props.name === 'codexWarmupDaily').props.checked, true);
+    assert.match(ui.text(ui.find(n => n.props['data-autosave-status'])), /授权\/来源待确认/);
+    ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle();
+    t.mock.timers.tick(10000); await settle(); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 1);
+    assert.equal(transport.accepted.values.codexWarmupDaily, false);
+    assert(!transport.calls.some(c => /oauth|warmup|subscription|llm/.test(c.url)));
+    assert.match(ui.text(ui.render()), /等待独立的桌宠应用回执/);
+  } finally { ui.cleanup(); }
+});
+
+test('autosave keeps controls editable during writes and serially persists the newer draft', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = mockTransport(), pending = [], writes = [];
+  const ui = harness((url, init) => {
+    if (init.method !== 'PUT') return transport.send(url, init);
+    writes.push(JSON.parse(init.body)); return new Promise(resolve => pending.push(() => resolve(transport.send(url, init))));
+  });
+  try {
+    await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
+    t.mock.timers.tick(450); ui.render(); assert.equal(writes.length, 1);
+    const size = ui.find(n => n.props.name === 'size'); assert.equal(size.props.disabled, false);
+    size.props.onChange({ target: { value: 'large' } }); ui.render();
+    t.mock.timers.tick(5000); assert.equal(writes.length, 1);
+    pending.shift()(); await settle(); ui.render(); assert.equal(ui.find(n => n.props.name === 'size').props.value, 'large');
+    t.mock.timers.tick(450); assert.equal(writes.length, 2); assert.deepEqual(writes[1].patch, { size: 'large' }); assert.equal(writes[1].revision, 'b'.repeat(64));
+    pending.shift()(); await settle(); ui.render(); assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved');
+  } finally { ui.cleanup(); }
+});
+
+test('unmount drops queued debounce and aborts autosave; late success cannot write again', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = mockTransport(); let signal, finish, puts = 0;
+  const ui = harness((url, init) => {
+    if (init.method !== 'PUT') return transport.send(url, init);
+    puts++; signal = init.signal; return new Promise(resolve => { finish = () => resolve(Response.json(transport.accepted)); });
+  });
+  await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
+  t.mock.timers.tick(450); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'large' } });
+  ui.cleanup(); assert.equal(signal.aborted, true); finish(); await settle(); t.mock.timers.tick(5000); await settle(); assert.equal(puts, 1);
+});
+
+test('late initial preference read cannot overwrite a later explicit reload', async () => {
+  const transport = mockTransport(); let first, reads = 0;
+  const ui = harness((url, init) => {
+    if (!url.endsWith('/preferences')) return transport.send(url, init);
+    if (++reads === 1) return new Promise(resolve => { first = resolve; });
+    return Response.json({ ...transport.accepted, revision: 'c'.repeat(64), values: { ...DEFAULT_PREFERENCES, size: 'large' } });
+  });
+  try {
+    await settle(); ui.render(); ui.find(n => n.type === 'button' && ui.text(n) === '重新读取').props.onClick(); await settle(); ui.render();
+    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'large');
+    first(Response.json(transport.accepted)); await settle(); ui.render();
+    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'large'); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
+  } finally { ui.cleanup(); }
+});
+
+test('autosave network error retains drafts and pauses until explicit safe retry', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = mockTransport(); let fail = true, puts = 0;
+  const ui = harness((url, init) => {
+    if (init.method === 'PUT') { puts++; if (fail) throw new Error('private network log'); }
+    return transport.send(url, init);
+  });
+  try {
+    await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
+    t.mock.timers.tick(450); await settle(); ui.render(); assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'error');
+    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'tiny'); assert(!ui.text(ui.render()).includes('private network log'));
+    ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'large' } }); t.mock.timers.tick(10000); await settle(); ui.render(); assert.equal(puts, 1);
+    fail = false; ui.find(n => n.props['data-settings-save']).props.onClick(); await settle(); ui.render(); assert.equal(puts, 2);
+    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved'); assert.equal(transport.accepted.values.size, 'large');
+  } finally { ui.cleanup(); }
+});
+
+test('explicit reload cancels pending auto-save and safely discards the draft before a new revision', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = mockTransport(), ui = harness(transport.send);
+  try {
+    await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } }); ui.render();
+    const reload = ui.find(n => n.type === 'button' && ui.text(n) === '放弃草稿并重新读取');
+    reload.props.onClick(); await settle(); ui.render(); t.mock.timers.tick(5000); await settle();
+    assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0); assert.equal(ui.find(n => n.props.name === 'size').props.value, DEFAULT_PREFERENCES.size);
+    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved');
+  } finally { ui.cleanup(); }
 });

@@ -14,8 +14,14 @@ export function inspectAccountModelCatalogue(raw, builtin) {
     if (row.visibility !== 'list') { omit(row, 'not-visible'); continue; }
     if (/reserve/i.test(row.slug)) { omit(row, 'reserve-unsupported'); continue; }
     const original = builtin.find(m => m.id === row.slug), base = original || template;
-    const context = positive(row.context_window) ? row.context_window : positive(row.max_context_window) ? row.max_context_window : original?.contextWindow;
-    if (!base || !positive(context)) { omit(row, 'missing-context'); continue; } // Never invent the context of a new model.
+    // Context metadata is optional in the compatibility catalogue (the reference
+    // plugin also uses SDK defaults). Missing metadata must not erase an online
+    // model. This is a conservative LOCAL budget, not its advertised context or
+    // an account entitlement. Explicitly malformed limits still fail closed.
+    const localContext = !original && row.context_window == null && row.max_context_window == null && positive(base?.contextWindow);
+    const context = positive(row.context_window) ? row.context_window : positive(row.max_context_window) ? row.max_context_window : original?.contextWindow ?? (localContext ? Math.min(base.contextWindow, 8192) : undefined);
+    if (!base || !positive(context)) { omit(row, 'missing-context'); continue; }
+    if (localContext && capabilityGaps.length < 128) capabilityGaps.push({ id: row.slug, reason: 'context-limit-unreported', localContextLimit: context });
     const input = Array.isArray(row.input_modalities) ? row.input_modalities.filter(v => v === 'text' || v === 'image') : [...(original?.input ?? ['text'])];
     if (!input.includes('text')) { omit(row, 'unsupported-input'); continue; }
     const rawEfforts = Array.isArray(row.supported_reasoning_levels) ? row.supported_reasoning_levels.map(v => v?.effort) : null;
@@ -25,6 +31,10 @@ export function inspectAccountModelCatalogue(raw, builtin) {
     seen.add(row.slug);
     const merged={ ...base, id: row.slug, name: label(row.display_name, row.slug), input: [...new Set(input)], contextWindow: context,
       reasoning: supported ? supported.length > 0 : (original?.reasoning ?? false), ...(thinkingLevelMap ? { thinkingLevelMap } : {}), pricingKnown:!!original };
+    if (localContext) {
+      merged.maxTokens = Math.min(positive(base.maxTokens) ? base.maxTokens : 4096, Math.floor(context / 2));
+      delete merged.maxContextWindow; // Never advertise the template's extended context.
+    }
     if(!original&&!supported)delete merged.thinkingLevelMap;
     if(!original)delete merged.cost; // Unknown subscription price is not a free model.
     result.push(merged);
@@ -42,7 +52,7 @@ export async function fetchAccountModels({ auth, accountId, signal, fetchImpl = 
   let reader;
   try {
     if(![auth,accountId].every(v=>typeof v==='string'&&v.length>0&&v.length<=65536&&!/[\x00-\x1f\x7f]/.test(v)))throw new Error('MODEL_CATALOG_AUTH_REQUIRED');
-    const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', originator: 'pi', 'User-Agent': 'dsh-plugin-simple-pet/1.0.0' };
+    const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', originator: 'pi', 'User-Agent': 'dsh-plugin-simple-pet/1.0.1' };
     if (typeof etag==='string'&&etag.length<=256&&!/[\x00-\x1f\x7f]/.test(etag)) headers['If-None-Match'] = etag;
     combined.throwIfAborted();
     const response=await wait(fetchImpl('https://chatgpt.com/backend-api/codex/models?client_version=0.153.4',{method:'GET',headers,redirect:'error',signal:combined}));

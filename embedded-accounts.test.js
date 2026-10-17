@@ -19,7 +19,7 @@ async function fixture(t) {
 }
 test('root owns an embedded public Cordis child; one package declares the official dependencies',async()=>{
  const pkg=JSON.parse(await fs.readFile(new URL('./package.json',import.meta.url),'utf8')),source=await fs.readFile(new URL('./index.js',import.meta.url),'utf8');
- assert.equal(pkg.version,'1.0.0');assert.equal(pkg.dependencies['@earendil-works/pi-ai'],'0.87.1');assert.equal(pkg.dependencies['@deepseek-ai/dsh-llm-pi-ai'],'0.2.0-rc.2');
+ assert.equal(pkg.version,'1.0.1');assert.equal(pkg.dependencies['@earendil-works/pi-ai'],'0.87.1');assert.equal(pkg.dependencies['@deepseek-ai/dsh-llm-pi-ai'],'0.2.0-rc.2');
  assert.deepEqual(embeddedAccountsPlugin.inject,['credentials','llm']);assert.match(source,/ctx\.plugin\(embeddedAccountsPlugin\)/);
 });
 test('only embedded entry activates account routes/provider; empty startup has no external calls',async t=>{
@@ -37,7 +37,7 @@ test('unknown reasoning does not hide a returned sol model or enable an unknown 
  const report=inspectAccountModelCatalogue({models:[row()]},builtin);assert.equal(report.models[0].id,'gpt-6.1-sol');assert.equal(report.models[0].thinkingLevelMap.low,'low');assert.equal(report.models[0].thinkingLevelMap.off,null);assert(!Object.values(report.models[0].thinkingLevelMap).includes('future-level'));assert.equal(report.models[0].cost,undefined);assert.deepEqual(report.capabilityGaps,[{id:'gpt-6.1-sol',reason:'unknown-reasoning'}]);
 });
 test('missing/hidden/incompatible catalogue rows are explained, never invented or granted',()=>{
- for(const [extra,reason]of [[{context_window:undefined},'missing-context'],[{visibility:'hide'},'not-visible'],[{input_modalities:['audio']},'unsupported-input']]){
+ for(const [extra,reason]of [[{context_window:0},'missing-context'],[{visibility:'hide'},'not-visible'],[{input_modalities:['audio']},'unsupported-input']]){
  const report=inspectAccountModelCatalogue({models:[row(extra)]},builtin);assert.equal(report.models.length,0);assert.deepEqual(report.omitted,[{id:'gpt-6.1-sol',reason}]);assert.equal(report.receivedCount,1);
  }
 });
