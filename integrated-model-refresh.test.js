@@ -328,6 +328,21 @@ for (const older of ['success', 'failure']) test(`latest driver refresh wins whe
   assert(!JSON.stringify(f.driver.catalogStatus()).includes('PRIVATE')); assert.deepEqual(f.calls, []);
 });
 
+test('explicit full refresh bypasses the ETag and reports target evidence without inferring entitlement', {timeout:5000}, async()=>{
+  const f=await controlledOfficial(),first=f.driver.refreshModels();await f.started[0].promise;
+  f.pending[0].gate.resolve(response('codex-mini','"old"'));await first;
+  const full=f.driver.refreshModels(undefined,{force:true});await f.started[1].promise;
+  assert.equal(new Headers(f.pending[1].init.headers).get('if-none-match'),null);
+  f.pending[1].gate.resolve(response('gpt-6.1-sol','"new"'));await full;
+  const status=f.driver.catalogStatus();assert.equal(status.requestMode,'full');assert.equal(status.includedCount,1);
+  assert.deepEqual(status.targetModel,{received:true,accepted:true,reason:null});assert.equal(status.clientVersion,'0.163.0');assert.equal(status.requestProfile,'codex-models-v0.163.0');
+  assert.equal(new Headers(f.pending[1].init.headers).get('version'),'0.163.0');
+  const rejected=f.driver.refreshModels(undefined,{force:true}),failure=assert.rejects(rejected,/MODEL_CATALOG_INVALID/);await f.started[2].promise;
+  f.pending[2].gate.resolve(new Response(null,{status:304}));await failure;
+  assert.equal(f.driver.catalogStatus().status,'stale');assert.deepEqual((await f.driver.listModels()).map(row=>row.id),['gpt-6.1-sol']);
+  assert.deepEqual(f.calls,[]);assert(!JSON.stringify(status).includes('PRIVATE'));
+});
+
 test('a newer failed refresh also supersedes an older success instead of granting its obsolete catalogue', { timeout: 5000 }, async () => {
   const f = await controlledOfficial(), first = f.driver.refreshModels();
   const firstRejected = assert.rejects(first, /MODEL_CATALOG_SUPERSEDED/);

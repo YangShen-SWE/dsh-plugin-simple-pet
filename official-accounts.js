@@ -24,13 +24,17 @@ const messages = Object.freeze({
   ACCOUNT_NOT_BOUND: '此账号绑定已变化，请重新读取账号列表。',
   ACCOUNT_REVOKED: '此账号绑定已撤销或代际已变化，请重新读取账号列表。',
   INVALID_ACCOUNT: '账号标识不正确，未执行账号操作。',
+  INVALID_LABEL: '本地账号名称需为 1–64 个 Unicode 字符，不能包含控制字符或双向控制符。',
+  INVALID_ACTION: '账号操作参数不完整或包含不支持的字段，未执行账号操作。',
+  REQUEST_ABORTED: '账号操作已取消，未提交本次本地修改。',
+  SERVICE_CLOSED: '账号服务已关闭，未执行账号操作。',
   OFFICIAL_SERVICE_UNAVAILABLE: '内置账号服务暂不可用。请检查插件运行状态；操作未自动重试。',
 });
 const localErrors = new WeakSet();
 const conflictCodes = new Set(['SOURCE_CHANGED', 'DIRECTORY_LOCKED', 'DIRECTORY_LIMIT', 'OAUTH_REQUIRED', 'OAUTH_IDENTITY_INVALID', 'OAUTH_IDENTITY_CHANGED', 'ACCOUNT_NOT_BOUND', 'ACCOUNT_REVOKED', 'MODEL_REVOKED', 'REASONING_UNAVAILABLE', 'LOGIN_BUSY']);
 const serviceError = (code, requestNotSent = false) => {
   const safe = typeof code === 'string' && Object.hasOwn(messages, code) ? code : 'OFFICIAL_SERVICE_UNAVAILABLE';
-  const status = conflictCodes.has(safe) ? 409 : ['INVALID_ACCOUNT', 'INVALID_MODEL_SETTINGS'].includes(safe) ? 400 : safe === 'OFFICIAL_ACCESS_DENIED' ? 403 : 503;
+  const status = conflictCodes.has(safe) ? 409 : ['INVALID_ACCOUNT', 'INVALID_LABEL', 'INVALID_ACTION', 'INVALID_MODEL_SETTINGS'].includes(safe) ? 400 : safe === 'OFFICIAL_ACCESS_DENIED' ? 403 : safe === 'OFFICIAL_ROUTE_MISSING' ? 404 : safe === 'SERVICE_CLOSED' ? 410 : 503;
   const error = Object.assign(new Error(messages[safe]), { code: safe, requestNotSent, status });
   localErrors.add(error); return error;
 };
@@ -77,7 +81,7 @@ export async function runOfficialWarmup({ bridge, accountKey, modelKey, signal, 
   return result;
 }
 export function officialAccountsProxy({ bridge, authorize }) {
-  const permitted = new Set(['login.start', 'login.cancel', 'login.respond', 'account.remove', 'account.select', 'quota.read', 'models.read', 'models.refresh', 'models.configure', 'host-model.select']);
+  const permitted = new Set(['login.start', 'login.cancel', 'login.respond', 'account.rename', 'account.remove', 'account.select', 'quota.read', 'models.read', 'models.refresh', 'models.configure', 'host-model.select']);
   return async (req, res) => {
     if (!authorize(req, res)) return;
     const method = req.method || 'GET';

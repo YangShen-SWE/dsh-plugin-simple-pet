@@ -19,7 +19,15 @@ const requestMessages = Object.freeze({
   BOUND_AUTH_REQUIRED: 'Codex 订阅账号授权不可用，请核验或重新登录该账号。', BOUND_QUOTA_LIMITED: 'Codex 账号额度或速率受限，请核验额度。',
   BOUND_TRANSPORT_FAILED: 'Codex 账号请求发生网络或超时错误。', BOUND_REQUEST_FAILED: 'Codex 账号请求未完成，请检查账号、模型与网络。',
 });
-const cleanLabel = v => typeof v === 'string' && v.length <= 64 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(v);
+const cleanLabel = v => typeof v === 'string' && Array.from(v).length <= 64 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(v);
+const renameLabel = value => {
+  // Display names are local metadata, not identities. Count Unicode code points;
+  // do not normalize distinct names or permit hidden controls before trimming.
+  if (typeof value !== 'string' || /[\p{Cc}\p{Bidi_Control}\p{Cs}\u2028\u2029]/u.test(value)) throw fail('INVALID_LABEL', 400);
+  const label = value.trim();
+  if (!label || !cleanLabel(label)) throw fail('INVALID_LABEL', 400);
+  return label;
+};
 const blank = () => ({ version: 1, defaultKey: null, rows: [] });
 // Stable public budget identity survives revoke/rebind; credential scopes remain unique per login.
 const publicKey = row => row.identityHash ? row.identityHash.slice(0, 16) : row.key;
@@ -45,7 +53,7 @@ export class AccountDirectory {
       return x;
     } catch { throw fail('DIRECTORY_UNAVAILABLE', 503); }
   }
-  update(fn) {
+  update(fn, beforeCommit = () => {}) {
     const task = this.tail.then(async () => {
       await fs.mkdir(path.dirname(this.file), { recursive: true });
       let lock;
@@ -57,11 +65,15 @@ export class AccountDirectory {
       try {
         const data = await this.read(), result = await fn(data);
         data.generation = (data.generation ?? 0) + 1;
+        if (!Number.isSafeInteger(data.generation)) throw fail('DIRECTORY_LIMIT');
         const serialized=JSON.stringify(data);if(Buffer.byteLength(serialized)>131072)throw fail('DIRECTORY_LIMIT');
         await fs.writeFile(tmp, serialized, { flag: 'wx', mode: 0o600 });
         // Windows readers/scanners may briefly retain the replace target.
         // Retry this same local atomic rename only: never OAuth/network/model work.
         for (let attempt = 0; ; attempt++) {
+          // A queued local-only operation may be cancelled/disposed while the
+          // temporary file is written or a Windows sharing retry is waiting.
+          beforeCommit();
           try { await fs.rename(tmp, this.file); break; }
           catch (error) {
             if (process.platform !== 'win32' || !['EPERM','EACCES','EBUSY'].includes(error.code) || attempt >= 9) throw fail('DIRECTORY_WRITE_UNAVAILABLE', 503);
@@ -201,7 +213,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     ensure();
     const accounts = results.filter(Boolean), selectedKey = selected && accounts.some(r => r.accountKey === publicKey(selected)) ? publicKey(selected) : null;
     if (generation === defaultGeneration) defaultKey = selectedKey;
-    return { version: 1, provider: PROVIDER, capabilities:{models:true}, generation: data.generation ?? 0, defaultKey: selectedKey, busy: activeRequests > 0,
+    return { version: 1, provider: PROVIDER, implementation: { owner: 'simple-pet', modelDiscovery: 2 }, capabilities:{models:true,rename:true}, generation: data.generation ?? 0, defaultKey: selectedKey, busy: activeRequests > 0,
       accounts, hostModel: hostStatus(),
       login: loginSummary };
   };
@@ -265,6 +277,23 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f\x7f]/u.test(value)) throw fail('INVALID_RESPONSE', 400);
       login.prompt.resolve(value); login.status = 'running'; return { ok: true };
     },
+    async rename(key, label, expectedGeneration, signal) {
+      const guard = () => { ensure(); if (signal?.aborted) throw fail('REQUEST_ABORTED', 503); };
+      guard();
+      if (!idOK(key)) throw fail('INVALID_ACCOUNT', 400);
+      const nextLabel = renameLabel(label);
+      if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw fail('SOURCE_CHANGED');
+      await directory.update(data => {
+        guard();
+        if ((data.generation ?? 0) !== expectedGeneration) throw fail('SOURCE_CHANGED');
+        const row = data.rows.find(r => publicKey(r) === key && r.bound && !r.revoked);
+        if (!row) throw fail('ACCOUNT_NOT_BOUND');
+        // Duplicate display names are intentional. Never rotate a key/epoch,
+        // refresh a grant, change model settings or reset an account budget.
+        row.label = nextLabel;
+      }, guard);
+      notify(); return { ok: true };
+    },
     async remove(key, expectedGeneration) {
       // Public removals carry a generation. Internal login cancellation must still
       // tombstone its own provisional row while disposal is cleaning up.
@@ -324,7 +353,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       const c = await capture(key), engine = await c.engine; await validCapture(c);
       if (refresh) {
         if (typeof engine.refreshModels !== 'function') throw fail('MODEL_CATALOG_UNAVAILABLE',503);
-        try { await engine.refreshModels(AbortSignal.any([...(signal ? [signal] : []),c.controller.signal])); }
+        try { await engine.refreshModels(AbortSignal.any([...(signal ? [signal] : []),c.controller.signal]), { force: true }); }
         catch (error) { throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message || '') ? error.message : 'MODEL_CATALOG_UNAVAILABLE',503); }
         await validCapture(c);await rememberModels(c,await engine.listModels());notify();
       }

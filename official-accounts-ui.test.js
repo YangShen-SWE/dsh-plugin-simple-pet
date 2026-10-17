@@ -37,10 +37,10 @@ test('captured official callback stays revoked across backend ABA and clears old
  const before=calls.length;await old();await settle();ui.render();assert.equal(calls.length,before);assert(!ui.find('data-official-account-row'));
  }finally{ui.cleanup();}
 });
-test('top save is outside the scrolling form and saves preferences only from the account page',async()=>{
+test('source authorization is distinct from autosave and confirms only the selected source',async()=>{
  const calls=[];const ui=uiFixture(async(url,init={})=>{calls.push({url,...init});return Response.json(url.endsWith('/preferences')?{values:{...DEFAULT_PREFERENCES,billingMode:'codex'},revision:'r'}:{});});
  try{await settle();ui.render();ui.nodes().find(n=>n.props['data-pet-tab']==='accounts').props.onClick();ui.render();ui.nodes().find(n=>n.props.name==='codexAccountBackend').props.onChange({target:{value:'official'}});ui.render();
- const toolbar=ui.find('data-settings-toolbar'),save=ui.find('data-settings-save');assert(toolbar);assert.equal(save.type,'button');assert.equal(save.props.disabled,false);
+ const toolbar=ui.find('data-settings-toolbar'),save=ui.find('data-settings-save');assert(toolbar);assert.equal(save.type,'button');assert.equal(save.props.disabled,false);assert.equal(save.props['data-authorization-apply'],true);
  assert(!ui.nodes().filter(n=>n.type==='form').some(n=>ui.nodes(n).includes(save)));
  await save.props.onClick();await settle();ui.render();const puts=calls.filter(c=>c.method==='PUT');assert.equal(puts.length,1);assert.deepEqual(JSON.parse(puts[0].body).patch,{codexAccountBackend:'official'});assert(!calls.some(c=>c.url.endsWith('/official-accounts')||c.url.endsWith('/multi-warmup')));
  }finally{ui.cleanup();}

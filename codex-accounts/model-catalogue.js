@@ -1,5 +1,10 @@
 // The account catalogue is a Codex subscription compatibility endpoint, not
 // Platform API-key billing. Never infer account entitlement from a static name.
+// Protocol target: official rust-v0.163.0 models-manager + provider version
+// header. Keep our own integration identity; do not impersonate codex_cli_rs or
+// confuse this compatibility version with the plugin's release version.
+export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.3' });
+export const MODEL_CATALOGUE_CLIENT_VERSION = MODEL_CATALOGUE_PROFILE.clientVersion;
 export const modelIdOK = id => typeof id === 'string' && id.trim() === id && id.length <= 128 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id);
 const levels = ['off','minimal','low','medium','high','xhigh','max'];
 const label = (v, fallback) => typeof v === 'string' && v.length <= 160 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(v) ? v : fallback;
@@ -8,7 +13,12 @@ export function inspectAccountModelCatalogue(raw, builtin) {
   if (!raw || !Array.isArray(raw.models) || raw.models.length > 1000) throw new Error('MODEL_CATALOG_INVALID');
   const template = builtin.find(m => !/spark|reserve/i.test(m.id));
   const result = [], omitted = [], capabilityGaps = [], seen = new Set();
-  const omit = (row, reason) => { if (modelIdOK(row?.slug) && omitted.length < 128) omitted.push({ id: row.slug, reason }); };
+  const targetReceived = raw.models.some(row => row?.slug === 'gpt-6.1-sol');
+  let targetReason = null;
+  const omit = (row, reason) => {
+    if (row?.slug === 'gpt-6.1-sol') targetReason ??= reason;
+    if (modelIdOK(row?.slug) && omitted.length < 128) omitted.push({ id: row.slug, reason });
+  };
   for (const row of raw.models) {
     if (!row || !modelIdOK(row.slug) || seen.has(row.slug)) continue;
     if (row.visibility !== 'list') { omit(row, 'not-visible'); continue; }
@@ -39,7 +49,9 @@ export function inspectAccountModelCatalogue(raw, builtin) {
     if(!original)delete merged.cost; // Unknown subscription price is not a free model.
     result.push(merged);
   }
-  return { models: result, omitted, capabilityGaps, receivedCount: raw.models.length };
+  const targetAccepted = result.some(row => row.id === 'gpt-6.1-sol');
+  return { models: result, omitted, capabilityGaps, receivedCount: raw.models.length,
+    targetModel: { received: targetReceived, accepted: targetAccepted, reason: targetAccepted ? null : targetReason } };
 }
 export function mergeAccountModels(raw, builtin) {
   const report = inspectAccountModelCatalogue(raw, builtin);
@@ -52,10 +64,10 @@ export async function fetchAccountModels({ auth, accountId, signal, fetchImpl = 
   let reader;
   try {
     if(![auth,accountId].every(v=>typeof v==='string'&&v.length>0&&v.length<=65536&&!/[\x00-\x1f\x7f]/.test(v)))throw new Error('MODEL_CATALOG_AUTH_REQUIRED');
-    const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', originator: 'pi', 'User-Agent': 'dsh-plugin-simple-pet/1.0.2' };
+    const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', version: MODEL_CATALOGUE_PROFILE.versionHeader, originator: MODEL_CATALOGUE_PROFILE.originator, 'User-Agent': MODEL_CATALOGUE_PROFILE.userAgent };
     if (typeof etag==='string'&&etag.length<=256&&!/[\x00-\x1f\x7f]/.test(etag)) headers['If-None-Match'] = etag;
     combined.throwIfAborted();
-    const response=await wait(fetchImpl('https://chatgpt.com/backend-api/codex/models?client_version=0.153.4',{method:'GET',headers,redirect:'error',signal:combined}));
+    const response=await wait(fetchImpl(`https://chatgpt.com/backend-api/codex/models?client_version=${MODEL_CATALOGUE_CLIENT_VERSION}`,{method:'GET',headers,redirect:'error',signal:combined}));
     if(response.status===304)return {notModified:true};
     if(!response.ok)throw new Error(response.status===401||response.status===403?'MODEL_CATALOG_AUTH_REQUIRED':'MODEL_CATALOG_UNAVAILABLE');
     if(!response.body||Number(response.headers.get('content-length')||0)>524288)throw new Error('MODEL_CATALOG_INVALID');

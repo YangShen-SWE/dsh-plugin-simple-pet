@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.0.2 · 多账号故障隔离与可核验管理](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.2)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.0.3 · 真正自动保存与多账号工具](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.3)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
@@ -25,6 +25,19 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径已内置于桌宠，安装包声明所需公开组件。旧独立账号包请在插件管理中停用后自行完整重启 DSH，不要删除账号数据或 grant。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v1.0.3：真正自动保存与多账号工具（2026-10-17）
+
+- **设置自动保存：** 普通设置、账号模型偏好停止编辑约 450ms 后自动保存，不再显示常驻保存按钮；账号读取繁忙时排队续存。仅失败显示重试，冲突/结果未知不自动重发。预热、账号来源、切号入口及 DSH 默认模型仍独立确认，不夹带授权。
+- **更清楚的界面：** 深浅主题的顶部状态和导航采用不透明底色，修复滚动内容透出；窄屏继续换行。
+- **本机账号昵称：** 账号行可改名并自动保存，只改本地标签，不变账号身份、授权、默认、模型键或每日预算；代际冲突保留草稿。
+- **主动批量额度：** 勾选后明确刷新，最多八账号、并发两个，每目标一次逻辑查询，支持取消及逐账号结果；不会打开页面就查全部账号，也不切号、调用模型或预热。
+- **脱敏诊断下载：** 只从页面缓存生成白名单 JSON，先预览再本地下载，不上传，不含昵称、邮箱、账号键、凭据、路径、原始异常或账本。
+- **目录兼容与证据：** 显式完整 GET 绕过 ETag，独立统计目标模型并显示后端能力与请求 profile；集中维护 `codex-models-v0.163.0`。这不是实账号恢复证明，**gpt-6.1-sol 仍待真实账号核验**，不虚构入口或自动重试结果未知的预热。
+
+完整操作见 [v1.0.3 使用指南](USAGE.md)，实现和仍待核验/暂缓事项见 [账号管理待办](ACCOUNT-MANAGEMENT-REVIEW.md)。升级保留原偏好、账号、凭据和每日记录；请自行完整退出（含托盘）并重开 DSH。公共 SDK 依赖版本不变，不自动重启、不新增消费授权。
+
+以下保留各历史版本的交付记录；早期“常驻保存按钮”“P1 待实现”等说明不代表 v1.0.3 当前状态。
 
 ## v1.0.2：多账号可管理、失败不连坐（2026-10-17）
 

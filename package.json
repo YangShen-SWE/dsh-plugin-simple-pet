@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-simple-pet",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A Windows desktop companion with DeepSeek balances, integrated Codex multi-account OAuth, quota and model management, and autosaving settings.",
   "repository": { "type": "git", "url": "https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git" },
   "license": "SEE LICENSE",
@@ -17,8 +17,8 @@
   },
   "scripts": {
     "build": "node build-client.js",
-    "test:account-management": "node --test --test-isolation=none account-management.test.js account-management-ui.test.js official-accounts.test.js official-accounts-ui.test.js official-model-ui.test.js",
-    "test:official-accounts": "node --test --test-isolation=none account-management.test.js account-management-ui.test.js codex-accounts/service.test.js official-transport.test.js official-accounts.test.js official-accounts-ui.test.js",
+    "test:account-management": "node --test --test-isolation=none account-management.test.js account-management-ui.test.js account-rename.test.js account-tools.test.js official-accounts.test.js official-accounts-ui.test.js official-model-ui.test.js",
+    "test:official-accounts": "node --test --test-isolation=none account-management.test.js account-management-ui.test.js account-rename.test.js account-tools.test.js codex-accounts/service.test.js official-transport.test.js official-accounts.test.js official-accounts-ui.test.js",
     "test:autosave": "node --test --test-isolation=none autosave.test.js client.test.js official-model-ui.test.js",
     "test:models": "node --test --test-isolation=none embedded-accounts.test.js integrated-model-refresh.test.js codex-accounts/model-catalogue.test.js official-model-settings.test.js official-model-ui.test.js",
     "test:themes": "node --test --test-isolation=none card-themes.test.js",
@@ -29,6 +29,6 @@
     "test:account-control": "node --test --test-isolation=none account-control.test.js account-control-ui.test.js",
     "test:panel-accounts": "node --test --test-isolation=none panel-accounts.test.js account-control-ui.test.js",
     "test:multi-warmup": "node --test --test-isolation=none multi-warmup.test.js multi-warmup-provider.test.js multi-warmup-ui.test.js",
-    "test": "node --test account-management.test.js account-management-ui.test.js autosave.test.js embedded-accounts.test.js integrated-model-refresh.test.js codex-accounts/model-catalogue.test.js official-model-settings.test.js official-model-ui.test.js panel-accounts.test.js multi-warmup.test.js multi-warmup-provider.test.js multi-warmup-ui.test.js account-control.test.js account-control-ui.test.js account-identity.test.js compact.test.js preferences-applied.test.js companion.test.js card-themes.test.js billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js codex.test.js warmup.test.js warmup-call.test.js preferences.test.js preferences-route.test.js native-settings.test.js client.test.js"
+    "test": "node --test account-management.test.js account-management-ui.test.js account-rename.test.js account-tools.test.js autosave.test.js embedded-accounts.test.js integrated-model-refresh.test.js codex-accounts/model-catalogue.test.js official-model-settings.test.js official-model-ui.test.js panel-accounts.test.js multi-warmup.test.js multi-warmup-provider.test.js multi-warmup-ui.test.js account-control.test.js account-control-ui.test.js account-identity.test.js compact.test.js preferences-applied.test.js companion.test.js card-themes.test.js billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js codex.test.js warmup.test.js warmup-call.test.js preferences.test.js preferences-route.test.js native-settings.test.js client.test.js"
   }
 }

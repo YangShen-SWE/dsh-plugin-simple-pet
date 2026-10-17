@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createEmbeddedAccountsPlugin, embeddedAccountsPlugin } from './embedded-accounts.js';
-import { inspectAccountModelCatalogue } from './codex-accounts/model-catalogue.js';
+import { inspectAccountModelCatalogue, MODEL_CATALOGUE_PROFILE } from './codex-accounts/model-catalogue.js';
 
 async function fixture(t) {
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'DshEmbeddedAccounts-'));
@@ -19,7 +19,7 @@ async function fixture(t) {
 }
 test('root owns an embedded public Cordis child; one package declares the official dependencies',async()=>{
  const pkg=JSON.parse(await fs.readFile(new URL('./package.json',import.meta.url),'utf8')),source=await fs.readFile(new URL('./index.js',import.meta.url),'utf8');
- assert.equal(pkg.version,'1.0.2');assert.equal(pkg.dependencies['@earendil-works/pi-ai'],'0.87.1');assert.equal(pkg.dependencies['@deepseek-ai/dsh-llm-pi-ai'],'0.2.0-rc.2');
+ assert.equal(pkg.version,'1.0.3');assert.equal(MODEL_CATALOGUE_PROFILE.userAgent,`${pkg.name}/${pkg.version}`);assert.equal(pkg.dependencies['@earendil-works/pi-ai'],'0.87.1');assert.equal(pkg.dependencies['@deepseek-ai/dsh-llm-pi-ai'],'0.2.0-rc.2');
  assert.deepEqual(embeddedAccountsPlugin.inject,['credentials','llm']);assert.match(source,/ctx\.plugin\(embeddedAccountsPlugin\)/);
 });
 test('only embedded entry activates account routes/provider; empty startup has no external calls',async t=>{

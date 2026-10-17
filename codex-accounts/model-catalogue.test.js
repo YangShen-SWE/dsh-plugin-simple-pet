@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectAccountModelCatalogue, mergeAccountModels, fetchAccountModels, modelIdOK, validModelSettings } from './model-catalogue.js';
+import { inspectAccountModelCatalogue, mergeAccountModels, fetchAccountModels, modelIdOK, validModelSettings, MODEL_CATALOGUE_PROFILE, MODEL_CATALOGUE_CLIENT_VERSION } from './model-catalogue.js';
 import { createOfficialDriver } from './official-driver.js';
 
 // All catalogue responses and OAuth values below are synthetic. No real fetch,
@@ -55,6 +55,16 @@ test('merge drops duplicate IDs, hidden/missing visibility and reserved entries'
   const models = merge(row(), row({ display_name: 'duplicate' }), row({ slug: 'hidden', visibility: 'hide' }),
     row({ slug: 'missing', visibility: undefined }), row({ slug: 'codex-reserve' }));
   assert.deepEqual(models.map(m => m.id), ['gpt-6.1-sol']); assert.equal(models[0].name, 'GPT 6.1 Sol');
+});
+test('target diagnostics are independent of the 128-row omitted display cap', () => {
+  const hidden = Array.from({length: 128}, (_, i) => row({slug:`hidden-${i}`,visibility:'hide'}));
+  const report = inspectAccountModelCatalogue({models:[...hidden,row({visibility:'hide'})]},builtin());
+  assert.equal(report.omitted.length,128);assert(!report.omitted.some(item=>item.id==='gpt-6.1-sol'));
+  assert.deepEqual(report.targetModel,{received:true,accepted:false,reason:'not-visible'});
+  const accepted=inspectAccountModelCatalogue({models:[...hidden,row({visibility:'hide'}),row()]},builtin());
+  assert.deepEqual(accepted.targetModel,{received:true,accepted:true,reason:null});
+  assert.deepEqual(inspectAccountModelCatalogue({models:[row({slug:'other-model'})]},builtin()).targetModel,{received:false,accepted:false,reason:null});
+  assert(!JSON.stringify(report.targetModel).includes('PRIVATE'));
 });
 test('invalid first duplicate does not suppress a later valid model', () => {
   assert.equal(merge(row({ context_window: 0 }), row())[0].contextWindow, 400000);
@@ -127,12 +137,14 @@ test('settings schema rejects extra fields, duplicate/invalid IDs, and unsupport
 test('catalogue request uses only fixed GET endpoint, required account headers, and redirect:error', async () => {
   const controller = new AbortController(), signal = controller.signal; let call;
   const result = await request({ signal, etag: '"mock-v1"', fetchImpl: async (url, init) => { call = { url, init }; return Response.json({ models: [row()] }, { headers: { etag: '"mock-v2"' } }); } });
-  assert.equal(call.url, 'https://chatgpt.com/backend-api/codex/models?client_version=0.153.4');
+  assert.equal(call.url, 'https://chatgpt.com/backend-api/codex/models?client_version=0.163.0');
+  assert.equal(MODEL_CATALOGUE_CLIENT_VERSION, '0.163.0'); assert(Object.isFrozen(MODEL_CATALOGUE_PROFILE));
   assert.equal(call.init.method, 'GET'); assert.equal(call.init.redirect, 'error'); assert(call.init.signal instanceof AbortSignal);
   assert.equal(call.init.signal.aborted, false); controller.abort(); assert.equal(call.init.signal.aborted, true);
   const headers = new Headers(call.init.headers);
   assert.equal(headers.get('authorization'), 'Bearer PRIVATE_MOCK_ACCESS'); assert.equal(headers.get('chatgpt-account-id'), 'PRIVATE_MOCK_ACCOUNT');
-  assert.equal(headers.get('accept'), 'application/json'); assert.equal(headers.get('originator'), 'pi');
+  assert.equal(headers.get('accept'), 'application/json'); assert.equal(headers.get('originator'), 'pi'); assert.equal(headers.get('version'), '0.163.0');
+  assert.equal(headers.get('OpenAI-Beta'), null); assert.equal(headers.get('session_id'), null); assert.equal(headers.get('conversation_id'), null);
   assert.match(headers.get('user-agent'), /^dsh-plugin-simple-pet\//); assert.equal(headers.get('if-none-match'), '"mock-v1"');
   assert.equal(call.init.body, undefined); assert.equal(result.etag, '"mock-v2"'); assert.equal(result.raw.models[0].slug, 'gpt-6.1-sol');
 });

@@ -72,6 +72,17 @@ test('mount only reads local settings and state; defaults never enable warm-up',
     assert(!transport.calls.some(c => /subscription|llm|stream|warmup/.test(c.url)));
   } finally { ui.cleanup(); }
 });
+test('ordinary settings have no manual save button and contradictory save instructions are absent',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const transport=mockTransport(),ui=harness(transport.send);
+ try{
+  await settle();ui.render();assert(!ui.nodes().some(n=>n.props['data-settings-save']));
+  assert(!/跨页草稿保留，不自动保存|点击保存后桌宠应用|请使用顶部保存设置|立即保存普通偏好/.test(ui.text(ui.render())));
+  ui.find(n=>n.props.name==='size').props.onChange({target:{value:'tiny'}});ui.render();
+  assert(!ui.nodes().some(n=>n.props['data-settings-save']));t.mock.timers.tick(450);await settle();ui.render();
+  assert.equal(transport.accepted.values.size,'tiny');assert.equal(transport.calls.filter(c=>c.method==='PUT').length,1);
+  assert(!ui.nodes().some(n=>n.props['data-authorization-confirm']));
+ }finally{ui.cleanup();}
+});
 test('spending authorization remains a draft until explicit confirmation, and time plus daily toggle commit atomically', async () => {
   const transport = mockTransport(), ui = harness(transport.send);
   try {
@@ -212,6 +223,15 @@ test('built bundle follows the real host factory contract and owns native settin
   assert(pkg.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings-general'));
   const css = readFileSync(new URL('./client.css', import.meta.url),'utf8');
   assert.match(css, /repeat\(auto-fit,minmax\(min\(100%,130px\),1fr\)\)/); assert.match(css, /background-size:400% 200%/);
+});
+
+test('sticky settings toolbar flattens translucent host surfaces and ships its opaque fallback', () => {
+  const css = readFileSync(new URL('./client.css', import.meta.url),'utf8');
+  const toolbar = /\.pet-settings-toolbar\{([^}]+)\}/.exec(css)?.[1]; assert(toolbar);
+  assert.match(toolbar, /position:sticky/); assert.match(toolbar, /isolation:isolate/);
+  assert(toolbar.includes('background:linear-gradient(var(--dsw-alias-bg-layer-2,#202126),var(--dsw-alias-bg-layer-2,#202126)),#202126;'));
+  const opaque = 'background:rgb(from var(--dsw-alias-bg-layer-2,#202126) r g b / 1);'; assert(toolbar.includes(opaque));
+  assert(readFileSync(new URL('./lib/client.js', import.meta.url),'utf8').includes(opaque));
 });
 
 test('debounced ordinary changes persist across tabs without submitting spending drafts or implicit Enter grants', async t => {

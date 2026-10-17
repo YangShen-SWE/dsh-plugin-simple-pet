@@ -200,10 +200,10 @@ test('actual service/RPC/proxy conflict reaches the settings component, retainin
   find('data-official-models-open').props.onClick(); await until(() => !!find('data-model-default'));
   find('data-model-default').props.onChange({ target: { value: 'codex-mini' } }); render();
   await f.directory.update(data => { data.rows[1].label = 'Changed elsewhere'; });
-  find('data-model-save').props.onClick(); await until(() => /明确放弃草稿/.test(text(find('data-model-status'))));
-  assert.equal(find('data-model-default').props.value, 'codex-mini'); assert.equal(find('data-model-save').props.disabled, true);
+  assert.equal(find('data-model-save'),undefined); await until(() => /明确放弃草稿/.test(text(find('data-model-status'))));
+  assert.equal(find('data-model-default').props.value, 'codex-mini'); assert.equal(find('data-model-save'),undefined);
   assert(find('data-official-account-row', f.key(1))); assert(find('data-official-stale-directory'));
-  find('data-model-save').props.onClick(); await pause(500); render();
+  await pause(500); render();
   assert.equal(posts.filter(body => body.action === 'models.configure').length, 1); assert.equal(f.calls.streams, 0);
   assert(!posts.some(body => ['host-model.select', 'warmup.run'].includes(body.action)));
 });

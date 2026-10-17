@@ -1,6 +1,6 @@
 // Public packages only. This module never reads the host's global Codex slot,
 // environment keys, ~/.codex, or an installation-private path.
-import { inspectAccountModelCatalogue, fetchAccountModels } from './model-catalogue.js';
+import { inspectAccountModelCatalogue, fetchAccountModels, MODEL_CATALOGUE_CLIENT_VERSION, MODEL_CATALOGUE_PROFILE } from './model-catalogue.js';
 
 export async function createOfficialDriver({ credentials, runtime = {} }, load = async () => {
   const [{ createModels }, { openaiCodexProvider }, { PiAiAdapter }, { resolveImageAttachmentAccess, LlmError }] = await Promise.all([
@@ -22,7 +22,7 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
     resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess?.(attachments, hostPath => runtime.filesystem?.()?.processPathFromHostPath(hostPath), ref),
   });
   const builtin = provider.getModels?.() ?? [];
-  let etag = null, revision = 0, refreshGeneration = 0, catalog = { source: 'builtin', status: 'not-refreshed', clientObservedAt: null, error: null };
+  let etag = null, revision = 0, refreshGeneration = 0, catalog = { source: 'builtin', status: 'not-refreshed', clientObservedAt: null, error: null, clientVersion: MODEL_CATALOGUE_CLIENT_VERSION, requestProfile: MODEL_CATALOGUE_PROFILE.id, requestMode: null };
   const safeAuth = async signal => {
     const resolution = await models.getAuth('openai-codex', { signal });
     if (resolution?.source !== 'OAuth' || !resolution.auth?.apiKey) throw new Error('SUBSCRIPTION_OAUTH_REQUIRED');
@@ -33,18 +33,20 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
     auth: safeAuth,
     catalogStatus: () => ({ ...catalog, revision }),
     isPreflightError: error => typeof LlmError === 'function' && error instanceof LlmError && ['UNSUPPORTED_CONTENT','UNSUPPORTED_OPTION','UNSUPPORTED_REASONING_EFFORT'].includes(error.code),
-    async refreshModels(signal) {
+    async refreshModels(signal, { force = false } = {}) {
       const generation = ++refreshGeneration;
       const combined = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]);
       try {
         const authValue = await safeAuth(combined), grant = await credentials.read('openai-codex');
         if (!grant || grant.access !== authValue.apiKey) throw new Error('MODEL_CATALOG_AUTH_REQUIRED');
-        const response = await fetchAccountModels({ auth: authValue.apiKey, accountId: grant.accountId, signal: combined, etag, fetchImpl: runtime.fetchImpl });
+        const response = await fetchAccountModels({ auth: authValue.apiKey, accountId: grant.accountId, signal: combined, etag: force ? null : etag, fetchImpl: runtime.fetchImpl });
         combined.throwIfAborted();
         if (generation !== refreshGeneration) throw new Error('MODEL_CATALOG_SUPERSEDED');
+        if (response.notModified && force) throw new Error('MODEL_CATALOG_INVALID');
         if (!response.notModified) {
           const report = inspectAccountModelCatalogue(response.raw, builtin);
-          catalog = { ...catalog, receivedCount: report.receivedCount, omitted: report.omitted, capabilityGaps: report.capabilityGaps };
+          catalog = { ...catalog, receivedCount: report.receivedCount, includedCount: report.models.length, omitted: report.omitted, capabilityGaps: report.capabilityGaps,
+            targetModel: report.targetModel, requestMode: force ? 'full' : 'conditional' };
           const next = report.models;
           if (!next.length) throw new Error('MODEL_CATALOG_EMPTY');
           // pi-ai requires numeric costs internally; this placeholder is not a price quote.
