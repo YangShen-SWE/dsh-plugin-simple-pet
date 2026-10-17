@@ -52,7 +52,7 @@ export async function fetchAccountModels({ auth, accountId, signal, fetchImpl = 
   let reader;
   try {
     if(![auth,accountId].every(v=>typeof v==='string'&&v.length>0&&v.length<=65536&&!/[\x00-\x1f\x7f]/.test(v)))throw new Error('MODEL_CATALOG_AUTH_REQUIRED');
-    const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', originator: 'pi', 'User-Agent': 'dsh-plugin-simple-pet/1.0.1' };
+    const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', originator: 'pi', 'User-Agent': 'dsh-plugin-simple-pet/1.0.2' };
     if (typeof etag==='string'&&etag.length<=256&&!/[\x00-\x1f\x7f]/.test(etag)) headers['If-None-Match'] = etag;
     combined.throwIfAborted();
     const response=await wait(fetchImpl('https://chatgpt.com/backend-api/codex/models?client_version=0.153.4',{method:'GET',headers,redirect:'error',signal:combined}));

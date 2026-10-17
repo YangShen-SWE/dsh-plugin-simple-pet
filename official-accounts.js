@@ -1,7 +1,7 @@
 // Desktop-pet side: safe DTOs only; this module never sees a Codex grant.
 export const OFFICIAL_PROVIDER = 'codex-accounts';
 const messages = Object.freeze({
-  OFFICIAL_ROUTE_MISSING: '独立账号插件未成功启动，或尚未注册宿主通道。请先查看插件运行错误，不要反复添加账号。修复后需重新加载插件。',
+  OFFICIAL_ROUTE_MISSING: '内置账号服务未成功启动，或尚未注册宿主通道。请先查看插件运行错误，不要反复添加账号。修复后需重新加载插件。',
   OFFICIAL_ACCESS_DENIED: '宿主未授权本次读取。请刷新 DSH 页面后重试，不要重复添加账号。',
   DIRECTORY_UNAVAILABLE: '账号目录暂不可读。请检查本机目录权限或文件状态；不要删除授权或去重记录。',
   DIRECTORY_LOCKED: '账号目录正被另一操作占用，请稍后点击刷新。',
@@ -18,12 +18,21 @@ const messages = Object.freeze({
   HOST_MODEL_NOT_SAVED:'宿主未保存所选模型，请在会话顶部手动选择。',
   DIRECTORY_LIMIT:'账号目录达到安全大小上限，未覆盖现有数据。',
   SOURCE_CHANGED: '账号列表已经变化，请刷新后重新选择。',
-  OAUTH_REQUIRED: '该账号授权不可用，请移除本插件中的失效记录后重新绑定。',
-  OFFICIAL_SERVICE_UNAVAILABLE: '账号服务暂不可用。请确认独立账号插件已启用；操作未自动重试。',
+  OAUTH_REQUIRED: '该账号的本地授权不可读，请先刷新核验；需要重新绑定时，请核对移除提示，不要清空全部账号。',
+  OAUTH_IDENTITY_INVALID: '该账号本地凭据格式无法验证，已暂停使用；请核验后再处理此账号。',
+  OAUTH_IDENTITY_CHANGED: '该账号凭据身份与绑定记录不一致，已暂停使用；不会借用其它账号。',
+  ACCOUNT_NOT_BOUND: '此账号绑定已变化，请重新读取账号列表。',
+  ACCOUNT_REVOKED: '此账号绑定已撤销或代际已变化，请重新读取账号列表。',
+  INVALID_ACCOUNT: '账号标识不正确，未执行账号操作。',
+  OFFICIAL_SERVICE_UNAVAILABLE: '内置账号服务暂不可用。请检查插件运行状态；操作未自动重试。',
 });
+const localErrors = new WeakSet();
+const conflictCodes = new Set(['SOURCE_CHANGED', 'DIRECTORY_LOCKED', 'DIRECTORY_LIMIT', 'OAUTH_REQUIRED', 'OAUTH_IDENTITY_INVALID', 'OAUTH_IDENTITY_CHANGED', 'ACCOUNT_NOT_BOUND', 'ACCOUNT_REVOKED', 'MODEL_REVOKED', 'REASONING_UNAVAILABLE', 'LOGIN_BUSY']);
 const serviceError = (code, requestNotSent = false) => {
   const safe = typeof code === 'string' && Object.hasOwn(messages, code) ? code : 'OFFICIAL_SERVICE_UNAVAILABLE';
-  return Object.assign(new Error(messages[safe]), { code: safe, requestNotSent });
+  const status = conflictCodes.has(safe) ? 409 : ['INVALID_ACCOUNT', 'INVALID_MODEL_SETTINGS'].includes(safe) ? 400 : safe === 'OFFICIAL_ACCESS_DENIED' ? 403 : 503;
+  const error = Object.assign(new Error(messages[safe]), { code: safe, requestNotSent, status });
+  localErrors.add(error); return error;
 };
 export async function officialAccountRpc(bridge, action, payload = {}, signal) {
   if (!bridge?.fetch) throw serviceError('OFFICIAL_SERVICE_UNAVAILABLE', true);
@@ -86,13 +95,13 @@ export function officialAccountsProxy({ bridge, authorize }) {
         ({ action, ...payload } = body);
       }
       const current = bridge();
-      if (!current) { reply(503, { error: '请安装并启用独立官方组件账号插件；不会回退第三方账号。' }); return; }
+      if (!current) { reply(503, { error: '内置账号服务尚不可用，请检查 simple-pet 运行状态；不会回退第三方账号。', code: 'OFFICIAL_SERVICE_UNAVAILABLE' }); return; }
       const result = await officialAccountRpc(current, action, payload, AbortSignal.timeout(20000));
       if (bridge() !== current) throw new Error('source changed');
       reply(200, result);
     } catch (error) {
-      const known = serviceError(error?.code);
-      reply(503, { error: known.message, code: known.code });
+      const known = localErrors.has(error) ? error : serviceError('OFFICIAL_SERVICE_UNAVAILABLE');
+      reply(known.status, { error: known.message, code: known.code, requestNotSent: known.requestNotSent === true });
     }
   };
 }

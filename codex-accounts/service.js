@@ -124,6 +124,24 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
   const observations = new Map(), captures = new Map();
   let login = null, loginStarting = false, disposed = false, activeRequests = 0, defaultKey = null, defaultGeneration = 0;
   const ensure = () => { if (disposed) throw fail('SERVICE_CLOSED', 410); };
+  // Only errors signed by this service may be attributed to one account. Shared
+  // storage, imports, unknown exceptions and disposal must still fail globally.
+  const accountProblem = async (error, row, capture) => {
+    ensure();
+    const local = isAccountError(error);
+    if ((local && ['ACCOUNT_NOT_BOUND', 'ACCOUNT_REVOKED'].includes(error.code))
+      || (capture?.controller.signal.aborted && error === capture.controller.signal.reason)) {
+      const current = (await directory.read()).rows.find(r => publicKey(r) === (row.accountKey ?? publicKey(row)));
+      ensure();
+      if (!current || current.revoked || !current.bound || current.epoch !== row.epoch) return { changed: true };
+      throw error;
+    }
+    if (!local) throw error;
+    const credentialStatus = new Map([['OAUTH_REQUIRED', 'missing'], ['OAUTH_IDENTITY_INVALID', 'invalid'], ['OAUTH_IDENTITY_CHANGED', 'identity-mismatch']]).get(error.code);
+    if (credentialStatus) return { credentialStatus, credentialErrorCode: error.code };
+    if (/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error.code)) return { modelStatus: 'unavailable', modelError: error.code };
+    throw error;
+  };
   const notify = () => { if (!disposed) try { changed(); } catch { /* committed configuration remains committed */ } };
   const settingsFor = async c => (await directory.read()).rows.find(r => r.key === c.key && r.epoch === c.epoch && !r.revoked)?.modelSettings ?? defaultModelSettings();
   // Slugs are discovery hints only, not permission or a saved OAuth grant. They
@@ -169,15 +187,21 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     const loginSummary = login ? { id: login.id, status: login.status, errorCode: login.errorCode ?? null, event: login.event, prompt: login.prompt ? { message: login.prompt.choices ? '选择官方授权方式' : '等待官方浏览器回调；仅回调失败时在此输入完整回调 URL。不要输入 API Key/密码/令牌。', id: login.prompt.id, choices: login.prompt.choices } : null } : null;
     const data = await directory.read();
     const selected = data.rows.find(r => r.key === data.defaultKey && !r.revoked && r.bound);
-    const accounts = await Promise.all(data.rows.filter(r => !r.revoked && r.bound).map(async r => {
-      let bound = false;
-      try { bound = Boolean(await fixedCredentialView(credentials, directory, r, () => !disposed).read('openai-codex')); } catch { /* metadata alone is not a readable OAuth binding */ }
-      return { accountKey: publicKey(r), label: r.label, selected: data.defaultKey === r.key, epoch: r.epoch, bound, modelSettings: r.modelSettings ?? defaultModelSettings(),
+    const results = await Promise.all(data.rows.filter(r => !r.revoked && r.bound).map(async r => {
+      let bound = false, status;
+      try {
+        bound = Boolean(await fixedCredentialView(credentials, directory, r, () => !disposed).read('openai-codex'));
+        ensure();
+        status = bound ? { credentialStatus: 'available', credentialErrorCode: null } : { credentialStatus: 'missing', credentialErrorCode: 'OAUTH_REQUIRED' };
+      } catch (error) { status = await accountProblem(error, r); if (status.changed) return null; }
+      return { accountKey: publicKey(r), label: r.label, selected: data.defaultKey === r.key, epoch: r.epoch, bound, ...status, modelSettings: r.modelSettings ?? defaultModelSettings(),
         quota: bound ? observations.get(r.key) ?? { status: 'unavailable', clientObservedAt: null, serverSampledAt: null, fiveHour: null, weekly: null }
           : { status: 'unavailable', clientObservedAt: null, serverSampledAt: null, fiveHour: null, weekly: null } };
     }));
-    if (generation === defaultGeneration) defaultKey = selected ? publicKey(selected) : null;
-    return { version: 1, provider: PROVIDER, capabilities:{models:true}, generation: data.generation ?? 0, defaultKey: selected ? publicKey(selected) : null, busy: activeRequests > 0,
+    ensure();
+    const accounts = results.filter(Boolean), selectedKey = selected && accounts.some(r => r.accountKey === publicKey(selected)) ? publicKey(selected) : null;
+    if (generation === defaultGeneration) defaultKey = selectedKey;
+    return { version: 1, provider: PROVIDER, capabilities:{models:true}, generation: data.generation ?? 0, defaultKey: selectedKey, busy: activeRequests > 0,
       accounts, hostModel: hostStatus(),
       login: loginSummary };
   };
@@ -241,10 +265,17 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f\x7f]/u.test(value)) throw fail('INVALID_RESPONSE', 400);
       login.prompt.resolve(value); login.status = 'running'; return { ok: true };
     },
-    async remove(key) {
+    async remove(key, expectedGeneration) {
+      // Public removals carry a generation. Internal login cancellation must still
+      // tombstone its own provisional row while disposal is cleaning up.
+      if (expectedGeneration !== undefined) ensure();
       if (!idOK(key)) throw fail('INVALID_ACCOUNT', 400);
+      if (expectedGeneration !== undefined && (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0)) throw fail('SOURCE_CHANGED');
       let privateKey;
-      await directory.update(data => { const row = data.rows.find(r => r.key === key || (!r.revoked && publicKey(r) === key)); if (!row) throw fail('ACCOUNT_NOT_BOUND');
+      await directory.update(data => {
+        if (expectedGeneration !== undefined) ensure();
+        if (expectedGeneration !== undefined && (data.generation ?? 0) !== expectedGeneration) throw fail('SOURCE_CHANGED');
+        const row = data.rows.find(r => r.key === key || (!r.revoked && publicKey(r) === key)); if (!row) throw fail('ACCOUNT_NOT_BOUND');
         privateKey = row.key; row.epoch++; row.revoked = true; row.bound = false; delete row.modelHints; if (data.defaultKey === privateKey) data.defaultKey = null;
       });
       defaultGeneration++; if (defaultKey === key) defaultKey = null;
@@ -332,20 +363,23 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     async bindings() {
       const data = await catalogue(), accounts = [];
       for (const row of data.accounts.filter(row => row.bound === true)) {
-        let c, engine, models;
-        try { c = await capture(row.accountKey); engine = await c.engine; models = await modelsFor(c,engine); await validCapture(c); }
-        catch (error) {
-          ensure();
-          if (!/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message || '')) throw error;
-          // One unverified account must not erase every healthy account's picker.
-          // Do not publish its saved hints or fall back to builtin permissions.
-          accounts.push({ accountKey: row.accountKey, label: row.label, selected: row.selected, maskedEmail: null, models: [], modelError: error.message });
+        let c, engine, models, settings;
+        try {
+          c = await capture(row.accountKey); engine = await c.engine; models = await modelsFor(c,engine);
+          settings = await settingsFor(c); await validCapture(c);
+        } catch (error) {
+          const problem = await accountProblem(error, row, c);
+          if (problem.changed) continue;
+          // This row has no verified models. Never borrow another account, expose
+          // persisted hints as permissions, or hide a shared/unknown failure.
+          accounts.push({ accountKey: row.accountKey, label: row.label, selected: row.selected, maskedEmail: null,
+            ...problem, models: [], modelError: problem.modelError ?? problem.credentialErrorCode });
           continue;
         }
-        const settings=await settingsFor(c);
-        accounts.push({ accountKey: c.accountKey, label: row.label, selected:row.selected, maskedEmail: null,
+        accounts.push({ accountKey: c.accountKey, label: row.label, selected:row.selected, maskedEmail: null, credentialStatus: 'available', modelStatus: 'ready',
           models: models.filter(m => modelIdOK(m.id) && (settings.enabled===null||settings.enabled.includes(m.id))).map(m => ({ modelKey: hash(`${c.accountKey}:${m.id}`), modelName: m.name || m.id, baseId: m.id, inputModalities:m.inputModalities ?? ['text'] })) });
       }
+      ensure();
       return { provider: PROVIDER, binding: 'official-isolated', accounts };
     },
     prepareSlug(key, model) { if(!modelIdOK(model))throw fail('MODEL_REVOKED');return api.prepare(key,hash(`${key}:${model}`),model); },
