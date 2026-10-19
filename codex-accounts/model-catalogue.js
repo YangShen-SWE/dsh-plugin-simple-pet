@@ -3,7 +3,7 @@
 // Protocol target: official rust-v0.163.0 models-manager + provider version
 // header. Keep our own integration identity; do not impersonate codex_cli_rs or
 // confuse this compatibility version with the plugin's release version.
-export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.4' });
+export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.5' });
 export const MODEL_CATALOGUE_CLIENT_VERSION = MODEL_CATALOGUE_PROFILE.clientVersion;
 // The wire catalogue contains instruction templates, including compatibility
 // copies of base_instructions. Bound decoded bytes, not a small quota-DTO size.
@@ -105,7 +105,16 @@ export const defaultModelSettings = () => ({ enabled: null, defaultModel: null, 
 export function requestFailure(error, signal) {
   if (signal?.aborted || error?.name === 'AbortError') return 'BOUND_CANCELLED';
   const code = error?.code;
-  if (code === 'UNSUPPORTED_CONTENT' || code === 'IMAGE_OFFLOAD_REQUIRED') return 'BOUND_CONTENT_UNSUPPORTED';
+  if (code === 'UNSUPPORTED_CONTENT') {
+    const message = error?.message;
+    if (message === 'pi-ai image input requires the durable attachment service' || message === 'pi-ai image conversion requires the durable attachment service') return 'BOUND_IMAGE_SERVICE_UNAVAILABLE';
+    if (/^pi-ai cannot represent an image in an in-history (assistant|system) message$/.test(message ?? '')) return 'BOUND_HISTORY_IMAGE_UNSUPPORTED';
+    if (message === 'Developer messages are not supported yet' || message === 'Tool-change blocks require developer role' || message === 'Deferred tool loading is not supported yet') return 'BOUND_TOOL_HISTORY_UNSUPPORTED';
+    return 'BOUND_CONTENT_UNSUPPORTED';
+  }
+  // Only the driver may restore a branded, validated preflight control failure.
+  // An arbitrary/in-band error must not trigger a replay after possible dispatch.
+  if (code === 'IMAGE_OFFLOAD_REQUIRED') return 'BOUND_CONTENT_UNSUPPORTED';
   if (['UNSUPPORTED_OPTION','INVALID_REASONING_EFFORT','UNSUPPORTED_REASONING_EFFORT'].includes(code)) return 'BOUND_OPTION_UNSUPPORTED';
   if (['UNKNOWN_MODEL','MODEL_NOT_FOUND'].includes(code)) return 'BOUND_MODEL_UNAVAILABLE';
   if (['AUTH','INVALID_CREDENTIAL','INVALID_API_KEY','UNAUTHORIZED','AUTHENTICATION'].includes(code)) return 'BOUND_AUTH_REQUIRED';

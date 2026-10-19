@@ -118,7 +118,8 @@ test('Codex selection shows percent option but chart is correctly locked to Toke
     const previews = ui.nodes().filter(n => n.props.className === 'pet-settings-sprite');
     assert.equal(previews.length, 6);
     assert(previews.every(n => n.props.title === '形象预览'));
-    ui.find(n => n.props.role === 'tab' && ui.text(n) === '用量统计').props.onClick(); ui.render();
+    ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
+    ui.find(n => n.props['data-pet-tab'] === 'stats').props.onClick(); ui.render();
     assert.equal(ui.find(n => n.type === 'select' && n.props.disabled === true).props.value, 'tokens');
     assert.match(ui.text(ui.render()), /5 小时额度剩余/);
     assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
@@ -156,12 +157,13 @@ test('top navigation partitions all setting groups without extra requests or wri
   try {
     await settle(); ui.render();
     const tabs = () => ui.nodes().filter(n => n.props.role === 'tab');
-    assert.deepEqual(tabs().map(ui.text), ['常规', '外观与动效', '账号管理', '自动预热', '用量统计']);
-    for (const id of ['settings','appearance','accounts','warmup','stats','settings']) {
+    assert.deepEqual(tabs().map(ui.text), ['账号与额度', '模型设置', '桌宠设置', '自动预热']);
+    assert.equal(ui.find(n => n.props['data-pet-settings']).props['data-current-page'], 'accounts');
+    for (const id of ['models','appearance','accounts','warmup','appearance','stats','accounts']) {
       ui.find(n => n.props['data-pet-tab'] === id).props.onClick(); ui.render();
       assert.equal(tabs().filter(n => n.props['aria-selected']).length, 1);
       assert.equal(tabs().filter(n => n.props.tabIndex === 0).length, 1);
-      assert.equal(ui.find(n => n.props.role === 'tabpanel').props['aria-labelledby'], `pet-tab-${id}`);
+      assert.equal(ui.find(n => n.props.role === 'tabpanel').props['aria-labelledby'], `pet-tab-${id === 'stats' ? 'appearance' : id}`);
       const visible = ui.nodes().filter(n => n.props['data-pet-page'] && !n.props.hidden);
       assert(visible.every(n => n.props['data-pet-page'] === id));
       if (id !== 'stats') assert(visible.length > 0, id);
@@ -193,10 +195,10 @@ test('navigation keyboard wraps arrows and Home/End with roving focus', async ()
   const ui = harness(mockTransport().send);
   try {
     await settle(); ui.render(); let focused = -1, prevented = 0;
-    const press = key => { ui.find(n => n.props.role === 'tablist').props.onKeyDown({ key, preventDefault() { prevented++; }, currentTarget: { querySelectorAll() { return Array.from({ length: 5 }, (_, i) => ({ focus() { focused = i; } })); } } }); ui.render(); };
-    press('ArrowLeft'); assert.equal(focused, 4);
+    const press = key => { ui.find(n => n.props.role === 'tablist').props.onKeyDown({ key, preventDefault() { prevented++; }, currentTarget: { querySelectorAll() { return Array.from({ length: 4 }, (_, i) => ({ focus() { focused = i; } })); } } }); ui.render(); };
+    press('ArrowLeft'); assert.equal(focused, 3);
     press('ArrowRight'); assert.equal(focused, 0);
-    press('End'); assert.equal(focused, 4);
+    press('End'); assert.equal(focused, 3);
     press('Home'); assert.equal(focused, 0);
     press('ArrowRight'); assert.equal(focused, 1);
     press('Escape'); assert.equal(prevented, 5);
@@ -214,7 +216,7 @@ test('built bundle follows the real host factory contract and owns native settin
   vm.runInNewContext(readFileSync(new URL('./lib/client.js', import.meta.url), 'utf8'), sandbox);
   const plugin = factory(id => { assert.equal(id, 'react'); return React; });
   assert.deepEqual([...plugin.inject], ['slots', 'remote']);
-  plugin.apply({ effect(fn) { effects.push(fn()); }, slots: { inject(name, fn) { assert.equal(name, 'settings.section'); effects.push(fn()); }, register(options, Component) { registration = { options, Component }; return () => {}; } } });
+  plugin.apply({ effect(fn) { effects.push(fn()); }, inject(names) { assert.deepEqual([...names], ['remote.pluginManager']); return () => {}; }, slots: { inject(name, fn) { assert.equal(name, 'settings.section'); effects.push(fn()); }, register(options, Component) { registration = { options, Component }; return () => {}; } } });
   assert.equal(registration.options.id, 'simple-desktop-pet'); assert.equal(registration.options.label(), '桌宠');
   assert.equal(typeof registration.Component, 'function'); assert.equal(added,1);
   effects.reverse().forEach(fn => fn?.()); assert.equal(removed,1);
@@ -225,9 +227,164 @@ test('built bundle follows the real host factory contract and owns native settin
   assert.match(css, /repeat\(auto-fit,minmax\(min\(100%,130px\),1fr\)\)/); assert.match(css, /background-size:400% 200%/);
 });
 
+function visibleSettingsNodes(root) {
+  if (!root || typeof root !== 'object' || root.props?.hidden) return [];
+  const children = root.type === 'details' && !root.props.open ? root.children.filter(child => child?.type === 'summary') : root.children;
+  return [root, ...children.flatMap(visibleSettingsNodes)];
+}
+
+test('B model page is independent, starts empty and never reads accounts or models on tab selection', async () => {
+  const transport = mockTransport(); transport.accepted.values.codexAccountBackend = 'official';
+  const ui = harness(transport.send);
+  try {
+    await settle(); ui.render();
+    ui.find(n => n.props['data-pet-tab'] === 'models').props.onClick(); ui.render();
+    const visible = visibleSettingsNodes(ui.render());
+    assert.equal(ui.find(n => n.props['data-settings-design']).props['data-settings-design'], 'b-complete');
+    assert(visible.some(n => n.props['data-model-workbench']));
+    assert(!visible.some(n => n.props['data-official-panel']));
+    assert.match(ui.text(ui.find(n => n.props['data-model-workbench'])), /先读取账号/);
+    assert(!ui.nodes().some(n => n.props['data-official-model-panel']));
+    assert.equal(transport.calls.length, 4); assert(transport.calls.every(c => c.method === undefined || c.method === 'GET'));
+  } finally { ui.cleanup(); }
+});
+
+test('B desktop page prioritizes preview and ordinary switches while appearance, motion and panel grants stay folded', async () => {
+  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
+  const ui = harness(transport.send);
+  try {
+    await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
+    const visible = visibleSettingsNodes(ui.render());
+    assert(visible.some(n => n.props['data-desktop-intro']));
+    assert(visible.some(n => n.props.className?.includes('pet-combination-preview')));
+    assert.deepEqual(visible.filter(n => n.props.role === 'switch').map(n => n.props.name), ['compactMode','quietMode']);
+    for (const attr of ['data-appearance-library','data-motion-settings','data-application-details','data-panel-switch-settings']) {
+      const details = ui.find(n => n.props[attr]); assert.equal(details.type, 'details'); assert(!details.props.open);
+    }
+    assert(!visible.some(n => n.props['data-card-theme-choice']));
+    assert.equal(ui.nodes().filter(n => n.props.role === 'radio').length, 11);
+    assert(visible.some(n => n.props['data-stats-entry']));
+    assert.equal(transport.calls.length, 4);
+  } finally { ui.cleanup(); }
+});
+
+test('B statistics is a secondary desktop page with an explicit return and no extra reads', async () => {
+  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
+  const ui = harness(transport.send);
+  try {
+    await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
+    ui.find(n => n.props['data-pet-tab'] === 'stats').props.onClick(); ui.render();
+    assert(ui.find(n => n.props['data-statistics-page']));
+    assert.equal(ui.find(n => n.props.role === 'tab' && n.props['aria-selected']).props['data-pet-tab'], 'appearance');
+    assert(!ui.nodes().some(n => n.props.role === 'tab' && n.props['data-pet-tab'] === 'stats'));
+    assert.equal(ui.find(n => n.props['data-current-page']).props['data-current-page'], 'stats');
+    ui.find(n => n.props['data-stats-back']).props.onClick(); ui.render();
+    assert.equal(ui.find(n => n.props['data-current-page']).props['data-current-page'], 'appearance');
+    assert.equal(transport.calls.length, 4);
+  } finally { ui.cleanup(); }
+});
+
+test('B warmup keeps the spending warning and unknown-result pause visible while optional triggers remain disabled and folded', async () => {
+  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex'; transport.accepted.values.codexAccountBackend = 'official';
+  const ui = harness(async (url, init) => {
+    const response = await transport.send(url, init);
+    return url.endsWith('/state') ? Response.json({codexMultiWarmup:{status:'unknown',detail:'请求可能已发送；结果未知，保持暂停'}}) : response;
+  });
+  try {
+    await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'warmup').props.onClick(); ui.render();
+    const visible = visibleSettingsNodes(ui.render());
+    assert(visible.some(n => n.props['data-warmup-warning']));
+    assert.match(ui.text(ui.find(n => n.props['data-warmup-warning'])), /消耗额度.*不自动重试/);
+    assert(!ui.find(n => n.props['data-multi-boundaries']).props.open);
+    assert(!ui.find(n => n.props['data-legacy-warmup']).props.open);
+    const triggers = ui.nodes().filter(n => n.props['data-multi-trigger']); assert.equal(triggers.length, 2);
+    assert(triggers.every(n => n.props.disabled && n.props.checked === false));
+    assert(!visible.some(n => n.props['data-multi-trigger']));
+    assert(visible.some(n => n.props.role === 'alert' && /设置保存不能清除暂停/.test(ui.text(n))));
+    assert(!ui.nodes().some(n => n.props['data-multi-save']));
+    assert.equal(transport.calls.length, 4);
+  } finally { ui.cleanup(); }
+});
+
+test('B header moves reload into closed maintenance without replacing automatic saves or implicit authorization', async () => {
+  const transport = mockTransport(), ui = harness(transport.send);
+  try {
+    await settle(); ui.render(); const visible = visibleSettingsNodes(ui.render());
+    assert.equal(ui.find(n => n.props['data-save-explanation']).type, 'details');
+    assert(!ui.find(n => n.props['data-save-explanation']).props.open);
+    assert(!visible.some(n => n.props['data-settings-reload']));
+    assert(!ui.nodes().some(n => n.props['data-settings-save']));
+    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved');
+    assert.equal(transport.calls.length, 4);
+  } finally { ui.cleanup(); }
+});
+
+test('B switches expose stable accessible labels and keep explicit panel permission separate from ordinary preferences', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
+  const ui = harness(transport.send);
+  try {
+    await settle(); ui.render();
+    for (const name of ['compactMode','quietMode','multiAccountManagement']) {
+      const toggle = ui.find(n => n.props.name === name); assert.equal(toggle.props.role, 'switch'); assert(toggle.props['aria-label']);
+    }
+    ui.find(n => n.props.name === 'multiAccountManagement').props.onChange({target:{checked:true}});
+    ui.find(n => n.props.name === 'quietMode').props.onChange({target:{checked:true}}); ui.render();
+    t.mock.timers.tick(450); await settle(); ui.render();
+    assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, {quietMode:true});
+    assert.equal(transport.accepted.values.multiAccountManagement, false);
+    assert(ui.find(n => n.props['data-authorization-apply']));
+  } finally { ui.cleanup(); }
+});
+
+function settingsRegistrationHarness() {
+  const entries = new Map(), waiting = [], services = {}, effects = [];
+  let unauthorizedReads = 0, requests = 0;
+  const remote = Object.defineProperty({}, 'pluginManager', { get() { unauthorizedReads++; throw Error('cannot get property "remote.pluginManager" without inject'); } });
+  const plugin = createSimplePetClient({ createElement() {} }, () => { requests++; throw Error('FORBIDDEN_REQUEST'); }, services);
+  plugin.apply({ remote, inject(names, callback) {
+    assert.deepEqual(names, ['remote.pluginManager']);
+    const row = { active: true, callback, cleanup: null }; waiting.push(row);
+    const stop = () => { row.active = false; row.cleanup?.(); row.cleanup = null; }; effects.push(stop); return stop;
+  }, slots: { inject(name, callback) { assert.equal(name, 'settings.section'); effects.push(callback()); }, register(options, Component) {
+    entries.set(options.id, { options, Component }); return () => entries.delete(options.id);
+  } } });
+  return { entries, services, get unauthorizedReads() { return unauthorizedReads; }, get requests() { return requests; },
+    mount(manager) { const row = waiting[0]; if (!row.active) return null; row.cleanup = row.callback({ remote: { pluginManager: manager } }); return row.cleanup; },
+    unmount() { const row = waiting[0]; row.cleanup?.(); row.cleanup = null; },
+    dispose() { effects.reverse().forEach(fn => fn?.()); } };
+}
+
+test('settings menu registers without reading an undeclared optional remote namespace', () => {
+  const host = settingsRegistrationHarness();
+  try {
+    assert.equal(host.entries.get('simple-desktop-pet').options.label(), '桌宠');
+    assert.equal(host.unauthorizedReads, 0); assert.equal(host.requests, 0);
+    assert.equal(host.services.pluginManager, undefined);
+  } finally { host.dispose(); }
+  assert.equal(host.entries.size, 0);
+});
+
+test('late or retired plugin-manager namespace cannot hide settings or leave a stale installer', () => {
+  const host = settingsRegistrationHarness(), managerA = {}, managerB = {};
+  try {
+    const retireA = host.mount(managerA); assert.equal(host.services.pluginManager, managerA);
+    host.unmount(); assert.equal(host.services.pluginManager, undefined); assert.equal(host.entries.size, 1);
+    host.mount(managerB); retireA(); assert.equal(host.services.pluginManager, managerB);
+    assert.equal(host.entries.size, 1); assert.equal(host.unauthorizedReads, 0); assert.equal(host.requests, 0);
+  } finally { host.dispose(); }
+  assert.equal(host.services.pluginManager, undefined); assert.equal(host.entries.size, 0);
+});
+
+test('disposing settings before optional service arrival revokes its waiting registration', () => {
+  const host = settingsRegistrationHarness(); host.dispose();
+  assert.equal(host.mount({}), null); assert.equal(host.services.pluginManager, undefined);
+  assert.equal(host.entries.size, 0); assert.equal(host.requests, 0);
+});
+
 test('sticky settings toolbar flattens translucent host surfaces and ships its opaque fallback', () => {
   const css = readFileSync(new URL('./client.css', import.meta.url),'utf8');
-  const toolbar = /\.pet-settings-toolbar\{([^}]+)\}/.exec(css)?.[1]; assert(toolbar);
+  const toolbar = [...css.matchAll(/\.pet-settings-toolbar\{([^}]+)\}/g)].map(row => row[1]).join(';'); assert(toolbar);
   assert.match(toolbar, /position:sticky/); assert.match(toolbar, /isolation:isolate/);
   assert(toolbar.includes('background:linear-gradient(var(--dsw-alias-bg-layer-2,#202126),var(--dsw-alias-bg-layer-2,#202126)),#202126;'));
   const opaque = 'background:rgb(from var(--dsw-alias-bg-layer-2,#202126) r g b / 1);'; assert(toolbar.includes(opaque));
@@ -249,7 +406,8 @@ test('debounced ordinary changes persist across tabs without submitting spending
     await settle(); ui.render();
     assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, { size: 'tiny', compactMode: true });
     assert.equal(ui.find(n => n.props.name === 'codexWarmupDaily').props.checked, true);
-    assert.match(ui.text(ui.find(n => n.props['data-autosave-status'])), /授权\/来源待确认/);
+    assert.match(ui.text(ui.find(n => n.props['data-autosave-status'])), /授权待确认/);
+    assert(ui.find(n => n.props['data-authorization-apply']));
     ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle();
     t.mock.timers.tick(10000); await settle(); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 1);
     assert.equal(transport.accepted.values.codexWarmupDaily, false);

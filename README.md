@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.0.4 · B 双栏工作台与模型目录兼容](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.4)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.0.5 · 完整 B 设置与长会话图片兼容](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.5)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
@@ -25,6 +25,17 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径已内置于桌宠，安装包声明所需公开组件。旧独立账号包请在插件管理中停用后自行完整重启 DSH，不要删除账号数据或 grant。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v1.0.5：完整 B 设置与长会话图片兼容
+
+**更新原因：** 上一版只改了账号页，未完整实现选定方案；可选安装器的服务访问还可能隐藏设置入口。长会话内容错误则暴露了图片卸载控制信息丢失，最小短文本连接测试没有覆盖此类场景。
+
+- **整套界面：** 账号与额度、模型设置、桌宠设置、自动预热四页统一；统计为二级入口，宽窄/深浅主题适配。账号浏览不切号，普通/模型偏好自动保存，消费与来源独立授权。
+- **入口可靠：** 先注册设置，再在独立注入上下文接入可选安装器；缺失、晚到或卸载都不应隐藏“设置 → 桌宠”。
+- **内容错误不再混为一谈：** 恢复真实 SDK 图片卸载的发送前控制信号及安全数量；附件服务/历史图片/工具历史错误分开，保留机器码，不暴露原始错误，不由插件自动重发或删除历史。
+- **不夸大验收：** 旧截图具体触发子原因已丢失，不能宣称一定是图片超限；未为此重发真实请求，原生 replay 封装仍待专项验证。升级保留账号、偏好和预热记录，公共依赖不变，请自行完整退出（含托盘）并重开 DSH。
+
+操作与边界见 [v1.0.5 使用指南](USAGE.md)、[更新原因和明细](CHANGELOG.md)、[隐私说明](PRIVACY.md)。下面的 v1.0.4 连接结果仅是当时最小请求的历史记录。
 
 ## v1.0.4：B 双栏工作台与模型目录兼容（2026-10-19）
 

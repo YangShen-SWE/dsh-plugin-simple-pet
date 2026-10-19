@@ -1,4 +1,97 @@
 .pet-settings [hidden]{display:none!important}
+/* B 整套设置：同一壳层、四个主页面；统计是桌宠页的二级入口。 */
+.pet-settings.pet-settings-workbench{font:13px/1.65 "Segoe UI","Microsoft YaHei",sans-serif;max-width:1040px;margin:0 auto;padding:0 20px 20px;border-radius:16px;background:#27272d;background:linear-gradient(var(--dsw-alias-bg-layer-2,#27272d),var(--dsw-alias-bg-layer-2,#27272d)),#27272d;background:rgb(from var(--dsw-alias-bg-layer-2,#27272d) r g b / 1)}
+.pet-settings.pet-settings-workbench p{margin-top:6px;margin-bottom:8px}
+.pet-settings.pet-settings-workbench button,.pet-settings.pet-settings-workbench select,.pet-settings.pet-settings-workbench input:not([type=checkbox]){font:inherit;font-size:13px;line-height:1.5;border-radius:9px;padding:8px 11px;min-height:36px}
+.pet-settings.pet-settings-workbench .pet-settings-toolbar{padding:18px 0 14px;border:0;border-radius:16px 16px 0 0}
+.pet-settings.pet-settings-workbench .pet-settings-heading{margin:0 0 16px;gap:12px;min-height:32px}
+.pet-settings.pet-settings-workbench .pet-settings-brand{display:flex;align-items:center;gap:9px}
+.pet-settings.pet-settings-workbench .pet-settings-brand h2{font-size:20px;letter-spacing:-.025em;line-height:1.4;margin:0;font-weight:650}
+.pet-settings.pet-settings-workbench .pet-settings-mark{display:grid;place-items:center;background:color-mix(in srgb,var(--dsw-alias-brand-primary,#598cff) 15%,transparent);color:var(--dsw-alias-brand-primary,#8bafff);border-radius:10px;width:30px;height:30px;font-size:22px;line-height:1}
+.pet-settings.pet-settings-workbench .pet-settings-savebar{gap:12px;flex:0 1 auto}
+.pet-settings.pet-settings-workbench .pet-settings-save-state{font-size:11px;line-height:1.6;max-width:260px}
+.pet-settings.pet-settings-workbench .pet-settings-save-state[data-autosave-status=saved]:before{content:"";display:inline-block;width:6px;height:6px;background:currentColor;border-radius:50%;margin-right:6px;vertical-align:middle}
+.pet-settings.pet-settings-workbench .pet-settings-maintenance{font-size:11px;color:var(--dsw-alias-label-secondary,#a3a3ad);max-width:280px}
+.pet-settings.pet-settings-workbench .pet-settings-maintenance summary{cursor:pointer;padding:4px 0;list-style:none;white-space:nowrap}
+.pet-settings.pet-settings-workbench .pet-settings-maintenance summary:after{content:" ⌄"}
+.pet-settings.pet-settings-workbench .pet-settings-maintenance[open]{flex:1 1 100%;padding:10px;border:1px solid var(--dsw-alias-border-default,#7773);border-radius:9px}
+.pet-settings.pet-settings-workbench .pet-settings-page-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;margin:0;padding:4px;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-3,#1f1f24)}
+.pet-settings.pet-settings-workbench .pet-settings-page-nav button{flex:none;border:1px solid transparent;border-radius:9px;min-height:36px;font-size:13px;line-height:1.5;padding:8px 5px;background:none;white-space:nowrap;color:var(--dsw-alias-label-secondary,#a3a3ad)}
+.pet-settings.pet-settings-workbench .pet-settings-page-nav button[aria-selected=true]{color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-interactive-bg-hover,#ffffff0b);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,#598cff) 35%,transparent)}
+.pet-settings.pet-settings-workbench .pet-settings-page-body{padding-top:6px;min-width:0}
+.pet-settings.pet-settings-workbench .pet-settings-page-intro{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 16px;min-width:0}
+.pet-settings.pet-settings-workbench .pet-settings-page-intro h3{font-size:17px;line-height:1.5;font-weight:650;letter-spacing:-.01em;margin:0}
+.pet-settings.pet-settings-workbench .pet-settings-page-intro p{margin:3px 0 0;max-width:62ch}
+.pet-settings.pet-settings-workbench .pet-settings-pill{display:inline-block;flex:none;border-radius:6px;padding:2px 8px;white-space:nowrap;background:color-mix(in srgb,var(--dsw-alias-status-success,#75cfa7) 10%,transparent);color:var(--dsw-alias-status-success,#75cfa7);font-size:11px}
+.pet-settings.pet-settings-workbench .pet-settings-group{border:1px solid var(--dsw-alias-border-default,#7773);border-radius:12px;background:var(--dsw-alias-bg-layer-3,#202025);padding:18px;margin:0 0 14px}
+.pet-settings.pet-settings-workbench .pet-settings-group>h3{font-size:14px;line-height:1.6;margin:0 0 12px;font-weight:650}
+.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="订阅账号（内置管理）"]{padding:0;border:0;background:none}
+.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="订阅账号（内置管理）"]>h3{font-size:17px;margin-bottom:6px}
+.pet-settings.pet-settings-workbench .pet-settings-row{display:flex;align-items:center;justify-content:space-between;gap:12px 20px;margin:0;padding:12px 0;border-top:1px solid var(--dsw-alias-border-default,#7772)}
+.pet-settings.pet-settings-workbench .pet-settings-row:first-of-type{border-top:0;padding-top:0}
+.pet-settings.pet-settings-workbench .pet-settings-row>span{font-size:13px;flex:1 1 160px}
+.pet-settings.pet-settings-workbench .pet-settings-row>select,.pet-settings.pet-settings-workbench .pet-settings-row>input{font-size:13px;flex:0 1 240px;width:240px;max-width:100%;background:var(--dsw-alias-bg-layer-2,#19191e)}
+.pet-settings.pet-settings-workbench .pet-settings-hint{font-size:11px;line-height:1.7}
+.pet-settings.pet-settings-workbench .pet-settings-switch{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;margin:0;border-top:1px solid var(--dsw-alias-border-default,#7772)}
+.pet-settings.pet-settings-workbench .pet-settings-switch:first-of-type{border-top:0;padding-top:0}
+.pet-settings.pet-settings-workbench .pet-setting-copy{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
+.pet-settings.pet-settings-workbench .pet-setting-copy strong{font-size:13px;font-weight:500}
+.pet-settings.pet-settings-workbench .pet-setting-copy small{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary,#a3a3ad)}
+.pet-settings.pet-settings-workbench .pet-settings-switch>input[type=checkbox]{appearance:none;-webkit-appearance:none;position:relative;flex:0 0 36px;order:1;width:36px;height:21px;border:1px solid var(--dsw-alias-border-default,#7775);border-radius:12px;background:var(--dsw-alias-bg-layer-2,#16161c);margin:0;cursor:pointer}
+.pet-settings.pet-settings-workbench .pet-settings-switch>input[type=checkbox]:after{content:"";position:absolute;top:3px;left:3px;width:13px;height:13px;border-radius:50%;background:var(--dsw-alias-label-secondary,#a3a3ad)}
+.pet-settings.pet-settings-workbench .pet-settings-switch>input[type=checkbox]:checked{background:var(--dsw-alias-brand-primary,#4b7fff);border-color:transparent}
+.pet-settings.pet-settings-workbench .pet-settings-switch>input[type=checkbox]:checked:after{left:18px;background:#fff}
+.pet-settings.pet-settings-workbench .pet-settings-switch>input[type=checkbox]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4b7fff);outline-offset:3px}
+.pet-settings.pet-settings-workbench .pet-settings-details{font-size:12px;line-height:1.65;margin:10px 0;color:var(--dsw-alias-label-secondary,#a3a3ad)}
+.pet-settings.pet-settings-workbench .pet-settings-details summary{padding:5px 0;cursor:pointer}
+.pet-settings.pet-settings-workbench .pet-settings-details summary:focus-visible,.pet-settings.pet-settings-workbench .pet-settings-maintenance summary:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4b7fff);outline-offset:3px;border-radius:4px}
+.pet-settings.pet-settings-workbench .pet-settings-advanced{padding:12px 16px;border:1px solid var(--dsw-alias-border-default,#7773);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#202025)}
+.pet-settings.pet-settings-workbench .pet-settings-group>.pet-settings-advanced{padding:10px 0;border:0;border-top:1px solid var(--dsw-alias-border-default,#7772);border-radius:0;background:none;margin:0}
+.pet-settings.pet-settings-workbench .pet-settings-advanced .pet-settings-group{padding:14px 0 0;margin:0;border:0;border-radius:0;background:none}
+.pet-settings.pet-settings-workbench .pet-authorization-banner{padding:12px 16px;margin:0 0 16px;border:1px solid color-mix(in srgb,var(--dsw-alias-status-warning,#e5bc6d) 45%,transparent);border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-status-warning,#e5bc6d) 7%,transparent)}
+.pet-settings.pet-settings-workbench .pet-authorization-banner p{margin:0 0 8px}
+.pet-settings.pet-settings-workbench .pet-account-toolbar{margin:10px 0 14px}
+.pet-settings.pet-settings-workbench .pet-account-toolbar button{font-size:12px}
+.pet-settings.pet-settings-workbench .pet-account-source{margin:0 0 10px}
+.pet-settings.pet-settings-workbench .pet-account-detail>.pet-account-row{padding:18px;gap:14px}
+.pet-settings.pet-settings-workbench .pet-account-detail .pet-account-info>strong{font-size:17px}
+.pet-settings.pet-settings-workbench .pet-account-row-quota{order:2;padding-top:16px}
+.pet-settings.pet-settings-workbench .pet-account-model-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;padding:16px 18px;background:var(--dsw-alias-bg-layer-3,#202025)}
+.pet-settings.pet-settings-workbench .pet-account-model-summary strong{font-size:13px;font-weight:500}
+.pet-settings.pet-settings-workbench .pet-account-model-summary p{margin:3px 0 0}
+.pet-settings.pet-settings-workbench .pet-account-model-summary button{flex:none;font-size:12px;padding:6px 9px}
+.pet-settings.pet-settings-workbench .pet-account-tools{padding:12px 0 0}
+.pet-settings.pet-settings-workbench .pet-settings-empty{padding:28px 22px;border:1px dashed var(--dsw-alias-border-default,#7775);border-radius:12px;background:var(--dsw-alias-bg-layer-3,#202025);font-size:12px;color:var(--dsw-alias-label-secondary,#a3a3ad)}
+.pet-settings.pet-settings-workbench .pet-settings-empty p{margin:0 0 14px;max-width:64ch}
+.pet-settings.pet-settings-workbench .pet-model-account-picker{display:flex;flex-direction:column;gap:4px;flex:0 1 220px;min-width:0;font-size:10px;color:var(--dsw-alias-label-secondary,#a3a3ad)}
+.pet-settings.pet-settings-workbench .pet-model-account-picker select{max-width:100%;min-width:0;font-size:12px}
+.pet-settings.pet-settings-workbench .pet-model-panel{margin-top:0;padding:18px;background:var(--dsw-alias-bg-layer-3,#202025);border:1px solid var(--dsw-alias-border-default,#7773)}
+.pet-settings.pet-settings-workbench .pet-model-heading{padding-bottom:12px;border-bottom:1px solid var(--dsw-alias-border-default,#7772);margin-bottom:12px}
+.pet-settings.pet-settings-workbench .pet-model-heading p{margin:3px 0 0}
+.pet-settings.pet-settings-workbench .pet-model-list-heading{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,inherit);padding-top:12px}
+.pet-settings.pet-settings-workbench .pet-model-list{margin:10px 0;max-height:360px;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-default,#7776) transparent}
+.pet-settings.pet-settings-workbench .pet-model-row{padding:12px 0;font-size:12px}
+.pet-settings.pet-settings-workbench .pet-model-row .pet-settings-hint{margin:0;font-size:11px}
+.pet-settings.pet-settings-workbench .pet-model-diagnostics{border-bottom:1px solid var(--dsw-alias-border-default,#7772);padding-bottom:8px}
+.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]{display:grid;grid-template-columns:190px minmax(0,1fr);align-items:center;gap:0 28px}
+.pet-settings.pet-settings-workbench .pet-combination-preview{grid-column:1;grid-row:1 / span 3;width:250px;min-height:0;padding:0;margin:0 auto;zoom:.7;background:none}
+.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]>h3{display:none}
+.pet-settings.pet-settings-workbench .pet-combination-caption{grid-column:2;align-self:end;font-size:14px;margin:0 0 8px;color:var(--dsw-alias-label-primary,inherit)}
+.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]>.pet-settings-hint{grid-column:2;align-self:start;max-width:42ch}
+.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]>.pet-settings-actions{grid-column:2;margin:4px 0}
+.pet-settings.pet-settings-workbench .pet-settings-stat-link{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border:1px solid var(--dsw-alias-border-default,#7773);border-radius:12px;background:var(--dsw-alias-bg-layer-3,#202025);margin-top:14px}
+.pet-settings.pet-settings-workbench .pet-settings-stat-link p{margin:3px 0 0}
+.pet-settings.pet-settings-workbench .pet-settings-stat-link button{flex:none;font-size:12px}
+.pet-settings.pet-settings-workbench .pet-warmup-warning{padding:12px 16px;border:1px solid color-mix(in srgb,var(--dsw-alias-status-warning,#e5bc6d) 35%,transparent);border-radius:10px;color:var(--dsw-alias-status-warning,#e5bc6d);font-size:12px;margin-bottom:16px}
+.pet-settings.pet-settings-workbench .pet-warmup-plan{margin-top:16px;border-top:1px solid var(--dsw-alias-border-default,#7772);padding-top:14px}
+.pet-settings.pet-settings-workbench .pet-warmup-account{padding:12px 14px;border:1px solid var(--dsw-alias-border-default,#7773);border-radius:9px;margin:12px 0}
+.pet-settings.pet-settings-workbench .pet-warmup-account .pet-settings-toggle{margin:4px 0 8px;font-size:12px}
+.pet-settings.pet-settings-workbench .pet-settings-trigger-support{margin:0;padding:10px;background:none}
+.pet-settings.pet-settings-workbench .pet-settings-cards{gap:12px;margin:16px 0}
+.pet-settings.pet-settings-workbench .pet-settings-cards>div{padding:16px;border-radius:12px}
+.pet-settings.pet-settings-workbench .pet-settings-chart{margin:18px 0}
+@container pet-settings (max-width:650px){.pet-settings.pet-settings-workbench .pet-settings-row>span{flex-basis:110px}.pet-settings.pet-settings-workbench .pet-account-detail>.pet-account-row{padding:14px}.pet-settings.pet-settings-workbench .pet-model-panel{padding:14px}.pet-settings.pet-settings-workbench .pet-settings-page-intro{align-items:flex-start}.pet-settings.pet-settings-workbench .pet-model-account-picker{flex-basis:160px}}
+@container pet-settings (max-width:420px){.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]{grid-template-columns:minmax(0,1fr);gap:8px}.pet-settings.pet-settings-workbench .pet-combination-caption{grid-column:1;grid-row:1;align-self:auto;font-size:12px}.pet-settings.pet-settings-workbench .pet-combination-preview{grid-column:1;grid-row:2}.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]>.pet-settings-hint{grid-column:1;grid-row:4}.pet-settings.pet-settings-workbench .pet-settings-group[aria-label="组合预览"]>.pet-settings-actions{grid-column:1;grid-row:3}.pet-settings.pet-settings-workbench .pet-settings-page-nav button{font-size:11px;padding:8px 3px}.pet-settings.pet-settings-workbench .pet-settings-group{padding:14px}.pet-settings.pet-settings-workbench .pet-settings-page-intro{flex-wrap:wrap}.pet-settings.pet-settings-workbench .pet-model-account-picker{flex:1 1 100%}.pet-settings.pet-settings-workbench .pet-settings-row>span{flex-basis:90px}.pet-settings.pet-settings-workbench .pet-settings-row>select,.pet-settings.pet-settings-workbench .pet-settings-row>input{flex:1 1 120px;width:120px}.pet-settings.pet-settings-workbench .pet-settings-save-state{max-width:180px;font-size:10px}.pet-settings.pet-settings-workbench .pet-settings-savebar{gap:8px;flex:0 1 auto}.pet-settings.pet-settings-workbench .pet-account-model-summary{flex-wrap:wrap}.pet-settings.pet-settings-workbench .pet-account-model-summary button{margin-left:auto}.pet-settings.pet-settings-workbench .pet-settings-mark{display:none}.pet-settings.pet-settings-workbench .pet-settings-brand h2{font-size:18px}}
 /* B 工作台：查看账号不等于切换默认；由实际容器宽度决定双栏/纵排。 */
 .pet-settings{container:pet-settings / inline-size}
 .pet-settings .pet-account-panel{padding:0;border:0;background:none}

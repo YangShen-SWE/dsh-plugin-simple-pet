@@ -32,7 +32,15 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
     login: interaction => models.login('openai-codex', 'oauth', interaction),
     auth: safeAuth,
     catalogStatus: () => ({ ...catalog, revision }),
-    isPreflightError: error => typeof LlmError === 'function' && error instanceof LlmError && ['UNSUPPORTED_CONTENT','UNSUPPORTED_OPTION','UNSUPPORTED_REASONING_EFFORT'].includes(error.code),
+    isPreflightError: error => typeof LlmError === 'function' && error instanceof LlmError && ['UNSUPPORTED_CONTENT','UNSUPPORTED_OPTION','UNSUPPORTED_REASONING_EFFORT','IMAGE_OFFLOAD_REQUIRED'].includes(error.code),
+    preflightFailure(error) {
+      if (typeof LlmError !== 'function' || !(error instanceof LlmError) || error.code !== 'IMAGE_OFFLOAD_REQUIRED') return;
+      const count = error.failure?.offloadImages;
+      if (!Number.isSafeInteger(count) || count <= 0) return;
+      // Preserve only the public host control protocol, never the SDK message,
+      // cause, request ID, attachment references or upstream response body.
+      return Object.assign(new LlmError('Request image budget requires offloading earlier images.', 'IMAGE_OFFLOAD_REQUIRED', { offloadImages: count }), { requestNotSent: true });
+    },
     async refreshModels(signal, { force = false } = {}) {
       const generation = ++refreshGeneration;
       const combined = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]);

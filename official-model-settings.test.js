@@ -359,7 +359,7 @@ for(const [code,category] of [['AUTH','BOUND_AUTH_REQUIRED'],['RATE_LIMIT','BOUN
  const f=await fixture(t),usage={inputTokens:17,outputTokens:5,totalTokens:22};await f.service.models(f.keys[0]);
  f.engines.get('A').prepare=async id=>({model:model(id),stream:()=> (async function*(){yield{type:'usage',usage};yield{type:'finish',reason:{kind:'error',failure:{code,message:'PRIVATE_MOCK_ACCESS PRIVATE_MOCK_ACCOUNT',cause:{secret:'PRIVATE_CAUSE'}}},privateExtension:'PRIVATE_TOP_LEVEL'};})()});
  const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini'),events=[];for await(const event of prepared.stream({messages:[]}))events.push(event);
- assert.deepEqual(events[0],{type:'usage',usage});assert.equal(events.length,2);assert.equal(events[1].reason.kind,'error');assert.equal(events[1].reason.failure.code,'UNKNOWN');assert.match(events[1].reason.failure.message,new RegExp(category));assert(!JSON.stringify(events).includes('PRIVATE_'));assert.deepEqual(Object.keys(events[1]).sort(),['reason','type']);assert.deepEqual(Object.keys(events[1].reason.failure).sort(),['code','message']);
+ assert.deepEqual(events[0],{type:'usage',usage});assert.equal(events.length,2);assert.equal(events[1].reason.kind,'error');assert.equal(events[1].reason.failure.code,category);assert.match(events[1].reason.failure.message,new RegExp(category));assert(!JSON.stringify(events).includes('PRIVATE_'));assert.deepEqual(Object.keys(events[1]).sort(),['reason','type']);assert.deepEqual(Object.keys(events[1].reason.failure).sort(),['code','message']);
 });
 test('failed warmup retains SDK usage but never becomes success or proven unsent',async t=>{
  const f=await fixture(t,{fetchImpl:async()=>new Response(JSON.stringify({account_id:'MOCK_ACCOUNT_A',ordinary_usage_allowed:true,rate_limit:{allowed:true,primary_window:{used_percent:10,reset_at:1800003600,limit_window_seconds:18000}}}),{headers:{'content-type':'application/json'}})}),usage={inputTokens:17,outputTokens:5,totalTokens:22};await f.service.models(f.keys[0]);
@@ -379,4 +379,42 @@ test('apply uses injected FakeStore/FakeDriver and registers only codex-accounts
   const source = await fs.readFile(new URL('./codex-accounts/index.js', import.meta.url), 'utf8');
   assert.match(source, /hostModel\s*:\s*\(\)\s*=>\s*get\(['"]agentDefaultModel['"]\)/);
   assertNoAccountWork(f);
+});
+
+test('validated image offload preflight survives bound service without retry or private facts', async t => {
+  const f=await fixture(t);await f.service.models(f.keys[0]);const engine=f.engines.get('A');
+  const raw=Object.assign(Error('PRIVATE_IMAGE_CAUSE'),{code:'IMAGE_OFFLOAD_REQUIRED'});
+  const control=Object.assign(Error('Request image budget requires offloading earlier images.'),{code:'IMAGE_OFFLOAD_REQUIRED',requestNotSent:true,failure:Object.freeze({code:'IMAGE_OFFLOAD_REQUIRED',message:'Request image budget requires offloading earlier images.',offloadImages:2})});
+  let attempts=0;engine.preflightFailure=error=>error===raw?control:undefined;
+  engine.prepare=async id=>({model:model(id),stream:()=> (async function*(){attempts++;throw raw;})()});
+  const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini');
+  await assert.rejects(async()=>{for await(const event of prepared.stream({messages:[]}))assert.fail('unexpected event');},error=>error===control&&error.failure.offloadImages===2&&error.requestNotSent===true&&!JSON.stringify(error).includes('PRIVATE_'));
+  assert.equal(attempts,1);assertNoAccountWork({...f,calls:f.calls.filter(c=>!['list','prepare'].includes(c[0]))});
+});
+
+test('in-band image offload cannot request replay after already reported usage', async t => {
+  const f=await fixture(t);await f.service.models(f.keys[0]);const engine=f.engines.get('A');let controlCalls=0;
+  engine.preflightFailure=()=>{controlCalls++;throw Error('MUST_NOT_REPLAY');};
+  engine.prepare=async id=>({model:model(id),stream:()=> (async function*(){yield{type:'usage',usage:{inputTokens:9}};yield{type:'finish',reason:{kind:'error',failure:{code:'IMAGE_OFFLOAD_REQUIRED',message:'PRIVATE_BODY',offloadImages:2}}};})()});
+  const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini'),events=[];for await(const event of prepared.stream({messages:[]}))events.push(event);
+  assert.equal(controlCalls,0);assert.equal(events[0].usage.inputTokens,9);assert.equal(events[1].reason.failure.code,'BOUND_CONTENT_UNSUPPORTED');assert.equal(events[1].reason.failure.offloadImages,undefined);assert(!JSON.stringify(events).includes('PRIVATE_'));
+});
+test('thrown offload after usage cannot masquerade as a safe preflight replay',async t=>{
+ const f=await fixture(t);await f.service.models(f.keys[0]);const engine=f.engines.get('A');let controlCalls=0;
+ engine.preflightFailure=()=>{controlCalls++;throw Error('MUST_NOT_REPLAY');};engine.isPreflightError=()=>true;
+ engine.prepare=async id=>({model:model(id),stream:()=> (async function*(){yield{type:'usage',usage:{inputTokens:7}};throw Object.assign(Error('PRIVATE_AFTER_SEND'),{code:'IMAGE_OFFLOAD_REQUIRED',failure:{offloadImages:1}});})()});
+ const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini'),events=[];
+ await assert.rejects(async()=>{for await(const event of prepared.stream({messages:[]}))events.push(event);},error=>error.code==='BOUND_CONTENT_UNSUPPORTED'&&error.requestNotSent===false&&error.failure.offloadImages===undefined);
+ assert.equal(controlCalls,0);assert.equal(events[0].usage.inputTokens,7);
+});
+for(const [message,code] of [
+ ['pi-ai image input requires the durable attachment service','BOUND_IMAGE_SERVICE_UNAVAILABLE'],
+ ['pi-ai cannot represent an image in an in-history assistant message','BOUND_HISTORY_IMAGE_UNSUPPORTED'],
+ ['Developer messages are not supported yet','BOUND_TOOL_HISTORY_UNSUPPORTED'],
+ ['PRIVATE_UNRECOGNIZED_MESSAGE','BOUND_CONTENT_UNSUPPORTED'],
+])test(`unsupported input preserves only fixed safe category ${code}`,async t=>{
+ const f=await fixture(t);await f.service.models(f.keys[0]);const engine=f.engines.get('A');engine.isPreflightError=()=>true;
+ engine.prepare=async id=>({model:model(id),stream:()=> (async function*(){throw Object.assign(Error(message),{code:'UNSUPPORTED_CONTENT',cause:{secret:'PRIVATE_CAUSE'}});})()});
+ const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini');
+ await assert.rejects(async()=>{for await(const event of prepared.stream({messages:[]}))assert.fail('unexpected event');},error=>error.code===code&&error.failure.code===code&&error.requestNotSent===true&&!JSON.stringify(error).includes('PRIVATE_'));
 });

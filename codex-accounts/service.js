@@ -15,6 +15,9 @@ export const isAccountError = error => localErrors.has(error);
 const fail = (code, status = 409, requestNotSent = true) => { const error = Object.assign(new Error(code), { code, status, requestNotSent }); localErrors.add(error); return error; };
 const requestMessages = Object.freeze({
   BOUND_CANCELLED: '请求已取消。', BOUND_CONTENT_UNSUPPORTED: '无法处理该请求的输入或图片附件。',
+  BOUND_IMAGE_SERVICE_UNAVAILABLE: '当前图片请求缺少可用的持久附件服务。',
+  BOUND_HISTORY_IMAGE_UNSUPPORTED: '当前适配器不支持历史 assistant/system 消息中的图片；未删除历史或自动重发。',
+  BOUND_TOOL_HISTORY_UNSUPPORTED: '当前适配器不支持该工具历史格式；未删除历史或自动重发。',
   BOUND_OPTION_UNSUPPORTED: '所选模型不支持该请求选项或推理设置。', BOUND_MODEL_UNAVAILABLE: '该账号当前不可调用所选模型，请刷新账号模型目录。',
   BOUND_AUTH_REQUIRED: 'Codex 订阅账号授权不可用，请核验或重新登录该账号。', BOUND_QUOTA_LIMITED: 'Codex 账号额度或速率受限，请核验额度。',
   BOUND_TRANSPORT_FAILED: 'Codex 账号请求发生网络或超时错误。', BOUND_REQUEST_FAILED: 'Codex 账号请求未完成，请检查账号、模型与网络。',
@@ -423,8 +426,9 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         stream(options) {
           const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), c.controller.signal]);
           return (async function* () {
-            await validCapture(c); activeRequests++;
+            await validCapture(c); activeRequests++; let observedStreamEvent = false;
             try { for await (const event of prepared.stream({ ...(defaultReasoning?{reasoningEffort:defaultReasoning}:{}), ...options, provider: 'openai-codex', model: model.id, signal })) {
+              observedStreamEvent = true;
               // The real SDK reports terminal usage even after abort. Preserve that
               // accounting, but never resume text/tool output or call it success.
               if (event.type === 'usage') { yield event; continue; }
@@ -433,10 +437,17 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
                 const code = requestFailure(event.reason.failure, signal);
                 // In-band SDK errors do not reach catch. Do not forward raw HTTP
                 // bodies, arbitrary failure extensions, or upstream error text.
-                yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNKNOWN', message: `[${code}] ${requestMessages[code] ?? requestMessages.BOUND_REQUEST_FAILED}` } } };
+                yield { type: 'finish', reason: { kind: 'error', failure: { code, message: `[${code}] ${requestMessages[code] ?? requestMessages.BOUND_REQUEST_FAILED}` } } };
               } else yield event;
             } }
-            catch (error) { throw fail(requestFailure(error,signal), signal.aborted?409:503, engine.isPreflightError?.(error)===true); }
+            catch (error) {
+              if (!observedStreamEvent && !signal.aborted) { const control = engine.preflightFailure?.(error); if (control) throw control; }
+              const failure = fail(requestFailure(error,signal), signal.aborted?409:503, !observedStreamEvent && engine.isPreflightError?.(error)===true);
+              // The host accepts foreign Error codes only with a matching own
+              // failure snapshot. Keep fixed safe facts instead of UNKNOWN.
+              failure.failure = Object.freeze({ code: failure.code, message: requestMessages[failure.code] ?? failure.message });
+              throw failure;
+            }
             finally { activeRequests--; }
           })();
         } };
