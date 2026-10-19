@@ -1,4 +1,55 @@
 .pet-settings [hidden]{display:none!important}
+/* B 工作台：查看账号不等于切换默认；由实际容器宽度决定双栏/纵排。 */
+.pet-settings{container:pet-settings / inline-size}
+.pet-settings .pet-account-panel{padding:0;border:0;background:none}
+.pet-settings .pet-account-toolbar{margin:8px 0 14px}
+.pet-settings .pet-account-workspace{display:grid;grid-template-columns:minmax(160px,210px) minmax(0,1fr);gap:16px;align-items:start;min-width:0}
+.pet-settings .pet-account-rail{min-width:0;padding:12px;border:1px solid var(--dsw-alias-border-default,#8493a544);border-radius:12px;background:var(--dsw-alias-bg-layer-3,#1d1e23)}
+.pet-settings .pet-account-rail-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.pet-settings .pet-account-rail>.pet-settings-hint{font-size:11px;margin:5px 0 12px}
+.pet-settings .pet-account-rail-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+.pet-settings .pet-account-view{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:8px;width:100%;padding:10px 8px;text-align:left;border-color:transparent;background:transparent;min-width:0}
+.pet-settings .pet-account-view[aria-pressed=true]{border-color:var(--dsw-alias-brand-primary,#588df0);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#588df0) 12%,transparent)}
+.pet-settings .pet-account-avatar{display:grid;place-items:center;grid-row:1 / span 2;width:28px;height:28px;border-radius:9px;background:color-mix(in srgb,var(--dsw-alias-brand-primary,#588df0) 16%,transparent);color:var(--dsw-alias-brand-primary,#7db2ff);font-weight:600;font-size:13px}
+.pet-settings .pet-account-view-text{min-width:0;display:flex;flex-direction:column;gap:4px}
+.pet-settings .pet-account-view-text strong{font-size:12px;overflow-wrap:anywhere}
+.pet-settings .pet-account-view-text small{font-size:10px;color:var(--dsw-alias-label-secondary,#a0a6b2);overflow-wrap:anywhere}
+.pet-settings .pet-account-default-badge{grid-column:2;justify-self:start;font-size:10px;border-radius:5px;padding:1px 6px;background:color-mix(in srgb,var(--dsw-alias-status-success,#72bfa6) 12%,transparent);color:var(--dsw-alias-status-success,#72bfa6)}
+.pet-settings .pet-account-detail{min-width:0}
+.pet-settings .pet-account-detail>.pet-account-row{display:flex;align-items:flex-start;border:1px solid var(--dsw-alias-border-default,#8493a544);border-radius:12px;padding:16px;margin:0;background:var(--dsw-alias-bg-layer-3,#1d1e23);gap:14px}
+.pet-settings .pet-account-info{flex:1 1 160px;gap:5px}
+.pet-settings .pet-account-info>strong{font-size:16px}
+.pet-settings .pet-account-info .pet-settings-hint{font-size:11px}
+.pet-settings .pet-account-detail .pet-account-row>.pet-account-actions{justify-content:flex-end;flex:1 1 150px}
+.pet-settings .pet-account-detail .pet-account-row>.pet-account-actions button{font-size:12px;padding:7px 10px}
+.pet-settings .pet-account-management{flex:1 1 100%;order:4;margin:0;border-top:1px solid var(--dsw-alias-border-default,#8493a533);padding-top:10px}
+.pet-settings .pet-account-management .pet-account-actions{margin-top:10px}
+.pet-settings .pet-account-rename,.pet-settings .pet-account-remove-confirm{order:5}
+.pet-settings .pet-account-row>[data-official-row-error]{order:6}
+.pet-settings .pet-account-row-quota{display:flex;flex-direction:column;align-items:stretch;gap:10px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-default,#8493a533);order:2}
+.pet-settings .pet-account-quota-heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+.pet-settings .pet-account-quota-heading>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px}
+.pet-settings .pet-account-quota-state{font-size:11px;font-weight:400}
+.pet-settings .pet-account-quota-heading>button{font-size:12px;padding:6px 9px}
+.pet-settings .pet-account-quota-windows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;width:100%}
+.pet-settings .pet-account-quota-windows>.pet-account-quota-card{display:flex;flex-direction:column;gap:12px;padding:14px;border-radius:10px;background:var(--dsw-alias-bg-layer-2,#25262c);border:1px solid var(--dsw-alias-border-default,#8493a522);min-width:0}
+.pet-settings .pet-account-quota-value{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.pet-settings .pet-account-quota-value>span{color:var(--dsw-alias-label-secondary,#a0a6b2);font-size:12px}
+.pet-settings .pet-account-quota-value>strong{font-size:26px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.pet-settings .pet-account-quota-bar{height:5px;border-radius:5px;overflow:hidden;background:var(--dsw-alias-border-default,#8493a544)}
+.pet-settings .pet-account-quota-bar>span{display:block;height:100%;background:var(--dsw-alias-brand-primary,#588df0);border-radius:inherit}
+.pet-settings .pet-account-quota-card.is-low .pet-account-quota-bar>span{background:var(--dsw-alias-status-warning,#d9a54b)}
+.pet-settings .pet-account-row-quota.is-stale .pet-account-quota-bar{opacity:.5}
+.pet-settings .pet-account-model-summary{padding:14px 16px;margin-top:12px;border:1px solid var(--dsw-alias-border-default,#8493a544);border-radius:12px}
+.pet-settings .pet-account-model-summary p{margin-bottom:0}
+.pet-settings .pet-account-detail .pet-model-panel{margin-top:12px}
+.pet-settings .pet-account-tools{margin:18px 0 10px;border-top:1px solid var(--dsw-alias-border-default,#8493a533);padding-top:12px}
+.pet-settings .pet-account-batch-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:0 14px;margin:8px 0}
+.pet-settings .pet-account-batch-list>div{min-width:0}
+.pet-settings .pet-account-batch-check input[type=checkbox]{width:16px;height:16px}
+@container pet-settings (max-width:650px){.pet-settings .pet-account-workspace{grid-template-columns:minmax(0,1fr);gap:12px}.pet-settings .pet-account-rail-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr));gap:6px}.pet-settings .pet-account-rail>.pet-settings-hint{margin-bottom:8px}.pet-settings .pet-account-detail>.pet-account-row{padding:12px}.pet-settings .pet-account-quota-windows{grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr))}}
+@container pet-settings (max-width:350px){.pet-settings .pet-account-rail-list{grid-template-columns:minmax(0,1fr)}.pet-settings .pet-account-quota-windows{grid-template-columns:minmax(0,1fr)}.pet-settings .pet-account-detail .pet-account-row>.pet-account-actions{justify-content:flex-start}}
+
 .pet-account-tools{width:100%;min-width:0}.pet-account-rename,.pet-account-batch-check,.pet-account-row>[data-official-batch-result]{flex:1 1 100%;min-width:0}.pet-account-rename{border:1px solid var(--dsw-alias-border-default,#8493a544);border-radius:8px;padding:10px}.pet-account-rename input{width:100%;min-width:0;box-sizing:border-box}.pet-settings .pet-account-diagnostic{display:block;width:100%;max-width:100%;min-width:0;box-sizing:border-box;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;max-height:20rem;border:1px solid var(--dsw-alias-border-default,#8493a544);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#1d1e23);color:inherit;padding:10px;font:11px/1.6 monospace;margin:8px 0}.pet-account-batch-check{font-size:11px;color:var(--dsw-alias-label-secondary,#a0a6b2)}
 .pet-account-row.is-unverified{border-top-style:dashed}.pet-account-row>.pet-settings-error{flex:1 1 100%;margin:0}.pet-account-row-quota{align-items:flex-start;gap:8px}.pet-account-quota-state{flex:1 1 100%;font-weight:600}.pet-account-row-quota.is-stale .pet-account-quota-state{color:var(--dsw-alias-status-warning,#d9a54b)}.pet-account-quota-windows{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:8px 16px;flex:1 1 100%;min-width:0}.pet-account-quota-windows>div{display:flex;flex-direction:column;gap:4px;min-width:0}.pet-account-quota-windows small,.pet-account-row-quota>small{color:var(--dsw-alias-label-secondary,#a0a6b2);font-size:11px;line-height:1.6;overflow-wrap:anywhere}.pet-account-row-quota>small,.pet-account-row-quota>.pet-settings-error{flex:1 1 100%}.pet-account-row-quota>button{margin-left:auto}.pet-account-remove-confirm{flex:1 1 100%;min-width:0;border:1px solid var(--dsw-alias-status-warning,#d9a54b);border-radius:8px;padding:12px;background:color-mix(in srgb,var(--dsw-alias-status-warning,#d9a54b) 7%,transparent);font-size:12px;line-height:1.7}.pet-account-remove-confirm p{margin:8px 0}.pet-account-remove-confirm .pet-account-actions{justify-content:flex-end}.pet-account-remove-confirm [data-official-remove-confirm]{border-color:var(--dsw-alias-status-danger,#e67373)}
 .pet-settings [data-autosave-status=saving],.pet-settings [data-autosave-status=waiting]{color:var(--dsw-alias-brand-primary,#7db2ff)}.pet-settings [data-autosave-status=error],.pet-settings [data-autosave-status=invalid]{color:var(--dsw-alias-status-danger,#e67373)}.pet-settings [data-autosave-status=saved]{color:var(--dsw-alias-status-success,#72bfa6)}

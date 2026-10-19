@@ -149,6 +149,13 @@ test('desktop official proxy cannot send warmup or arbitrary RPC; no automatic f
   let count=0;const proxy=officialAccountsProxy({bridge:()=>({fetch(){count++;throw Error('PRIVATE');}}),authorize:authorized});
   assert.equal((await invoke(proxy,'POST',{action:'warmup.run'})).status,400);assert.equal(count,0);assert.equal((await invoke(proxy,'GET')).status,503);assert.equal(count,1);
 });
+test('model catalogue size failure crosses the proxy without becoming an OAuth failure or leaking upstream content',async()=>{
+  const requests=[],proxy=officialAccountsProxy({bridge:()=>({async fetch(req){requests.push(req);return Response.json({error:'MODEL_CATALOG_TOO_LARGE',detail:'PRIVATE_MOCK_RAW_BODY'},{status:503});}}),authorize:authorized});
+  const reply=await invoke(proxy,'POST',{action:'models.refresh',accountKey:'a'.repeat(16)});
+  assert.equal(reply.status,503);const body=JSON.parse(reply.body);
+  assert.equal(body.code,'MODEL_CATALOG_TOO_LARGE');assert.match(body.error,/8 MiB/);assert.match(body.error,/不代表授权失效/);
+  assert(!JSON.stringify(body).includes('PRIVATE'));assert.equal(requests.length,1);
+});
 test('persistent daily budget rejects cross-backend replay even under distinct account keys',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'DshOfficialBudget-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
   const store=new MultiWarmupStore(path.join(dir,'multi.json'));const now=new Date(2026,9,16,9,30).getTime(),day='2026-10-16',a={accountKey:'a'.repeat(16),modelKey:'b'.repeat(64),enabled:true,allowUnverifiedQuota:true},b={...a,accountKey:'c'.repeat(16)};

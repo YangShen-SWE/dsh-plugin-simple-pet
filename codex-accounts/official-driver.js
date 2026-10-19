@@ -59,7 +59,7 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
         catalog = { ...catalog, source: 'account-catalog', status: 'ready', clientObservedAt: Date.now(), error: null };
         return { ...catalog, revision };
       } catch (error) {
-        const code = /^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE|SUPERSEDED)$/.test(error?.message || '') ? error.message : 'MODEL_CATALOG_UNAVAILABLE';
+        const code = /^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|TOO_LARGE|EMPTY|UNAVAILABLE|SUPERSEDED)$/.test(error?.message || '') ? error.message : 'MODEL_CATALOG_UNAVAILABLE';
         if (generation === refreshGeneration) catalog = { ...catalog, status: 'stale', error: code };
         throw new Error(code);
       }

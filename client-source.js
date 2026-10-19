@@ -262,6 +262,10 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const closeRename = () => { cancelRenameTimer(); renameEditor.current = null; setRenameTarget(null); };
     const [batchKeys, setBatchKeys] = useState([]), [batchResults, setBatchResults] = useState({}), [batchNote, setBatchNote] = useState(''), [batchRunning, setBatchRunning] = useState(false);
     const [diagnosticText, setDiagnosticText] = useState(''), [diagnosticNote, setDiagnosticNote] = useState('');
+    // Browsing is local presentation state, never the service's default account.
+    const [viewAccountKey, setViewAccountKey] = useState(null);
+    const accountRows = officialCatalogue?.accounts || [];
+    const viewedAccount = accountRows.find(row => row.accountKey === viewAccountKey) || accountRows.find(row => row.selected) || accountRows[0] || null;
     const cancelRemove = (restoreFocus = false) => { removeConfirmation.current = null; setRemoveTarget(null); if (restoreFocus) removeTrigger.current?.focus?.(); };
     const [officialModels,setOfficialModels]=useState(null),[modelDraft,setModelDraft]=useState(null),[modelNote,setModelNote]=useState('');
     const modelEditor=useRef({data:null,draft:null}), modelSaveTimer=useRef(null), modelSaveFailure=useRef(null);
@@ -303,7 +307,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       return () => { alive.current = false; cancelModelSave(); cancelRenameTimer(); autosave.current?.dispose(); officialAction.current.controller?.abort(); multiAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
     }, []);
     const invalidateOfficial = () => {
-      cancelModelSave(); modelSaveFailure.current=null; closeRename(); setBatchKeys([]); setBatchResults({}); setBatchNote(''); setBatchRunning(false); setDiagnosticText(''); setDiagnosticNote('');
+      cancelModelSave(); modelSaveFailure.current=null; closeRename(); setViewAccountKey(null); setBatchKeys([]); setBatchResults({}); setBatchNote(''); setBatchRunning(false); setDiagnosticText(''); setDiagnosticNote('');
       const previous = officialAction.current; previous.controller?.abort();
       officialAction.current = { busy: false, controller: null, generation: previous.generation + 1 };
       officialPromptId.current = null; officialSnapshot.current = null; officialBlocked.current = false; cancelRemove(); setOfficialRowNotes({}); setOfficialBusy(false); setOfficialCatalogue(null); setOfficialNote(''); setOfficialError(false); setOfficialReply(''); setOfficialAdding(false);
@@ -335,10 +339,12 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         setBatchKeys(previous => previous.filter(key => data.accounts?.some(row => row.accountKey === key && row.bound === true)));
         setDiagnosticText('');
         officialSnapshot.current = data; officialBlocked.current = false; setOfficialError(false); setOfficialRowNotes({}); setOfficialCatalogue(data);
+        setViewAccountKey(previous => data.accounts?.some(row => row.accountKey === previous) ? previous : data.accounts?.find(row => row.selected)?.accountKey || data.accounts?.[0]?.accountKey || null);
         const target = removeConfirmation.current;
         if (target && (target.generation !== data.generation || !data.accounts?.some(row => row.accountKey === target.accountKey && row.epoch === target.epoch))) cancelRemove();
         const modelsResult = action === 'account.select' ? actionResult?.models : action?.startsWith('models.') ? actionResult : null;
         if(modelsResult?.accountKey){
+          if (data.accounts?.some(row => row.accountKey === modelsResult.accountKey)) setViewAccountKey(modelsResult.accountKey);
           cancelModelSave(); modelSaveFailure.current=null;
           modelEditor.current={data:modelsResult,draft:structuredClone(modelsResult.settings)};
           setOfficialModels(modelsResult);setModelDraft(modelEditor.current.draft);setModelNote(action==='models.configure'?'模型设置已单独保存；没有发送模型请求。':action==='account.select'?'已选择账号并更新该账号模型目录；新模型会通知宿主选择器，没有发送模型请求。':action==='models.refresh'?'已更新该账号模型目录；没有调用模型。':'已读取模型设置。');
@@ -359,7 +365,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
           }
           const message = error.status ? error.message : '无法连接账号服务，请检查插件运行错误；未自动重试操作。';
           const conflict = error.status === 409 && (!error.code || error.code === 'SOURCE_CHANGED');
-          const local = payload.accountKey && !readingCatalogue && !actionCommitted && ['OAUTH_REQUIRED', 'OAUTH_IDENTITY_INVALID', 'OAUTH_IDENTITY_CHANGED', 'ACCOUNT_NOT_BOUND', 'ACCOUNT_REVOKED', 'MODEL_CATALOG_AUTH_REQUIRED', 'MODEL_CATALOG_INVALID', 'MODEL_CATALOG_EMPTY', 'MODEL_CATALOG_UNAVAILABLE', 'MODEL_REVOKED', 'REASONING_UNAVAILABLE', 'INVALID_MODEL_SETTINGS', 'INVALID_LABEL'].includes(error.code);
+          const local = payload.accountKey && !readingCatalogue && !actionCommitted && ['OAUTH_REQUIRED', 'OAUTH_IDENTITY_INVALID', 'OAUTH_IDENTITY_CHANGED', 'ACCOUNT_NOT_BOUND', 'ACCOUNT_REVOKED', 'MODEL_CATALOG_AUTH_REQUIRED', 'MODEL_CATALOG_INVALID', 'MODEL_CATALOG_TOO_LARGE', 'MODEL_CATALOG_EMPTY', 'MODEL_CATALOG_UNAVAILABLE', 'MODEL_REVOKED', 'REASONING_UNAVAILABLE', 'INVALID_MODEL_SETTINGS', 'INVALID_LABEL'].includes(error.code);
           if (action === 'account.rename' && renameEditor.current?.accountKey === payload.accountKey) { cancelRenameTimer(); renameEditor.current = { ...renameEditor.current, status: conflict ? 'conflict' : actionCommitted || !local ? 'unverified' : 'error' }; setRenameTarget(renameEditor.current); }
           if (!local) { cancelRenameTimer(); if (renameEditor.current?.status === 'waiting') { renameEditor.current = { ...renameEditor.current, status: 'conflict' }; setRenameTarget(renameEditor.current); } cancelModelSave(); officialBlocked.current = true; setOfficialError(true); cancelRemove(); }
           if (payload.accountKey) setOfficialRowNotes(previous => ({ ...previous, [payload.accountKey]: message }));
@@ -444,6 +450,12 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       void officialRequest('account.remove', { accountKey: target.accountKey, expectedGeneration: target.generation });
     };
     const modelDirty=()=>!!modelEditor.current.data&&JSON.stringify(modelEditor.current.draft)!==JSON.stringify(modelEditor.current.data.settings);
+    const viewAccount = row => {
+      if (!alive.current || officialAction.current.generation !== officialGeneration || officialAction.current.busy || draftRef.current?.codexAccountBackend !== 'official') return false;
+      if (modelDirty() || renameEditor.current) { setOfficialNote('请先等待自动保存完成或关闭编辑，再查看其他账号；草稿保留，没有发送请求。'); return false; }
+      if (!officialSnapshot.current?.accounts?.some(value => value.accountKey === row.accountKey && value.epoch === row.epoch)) return false;
+      cancelRemove(); setViewAccountKey(row.accountKey); return true;
+    };
     const openModels=(key,refresh=true,discard=false)=>{
       if(!alive.current||officialAction.current.busy)return;
       if(modelDirty()&&!discard){setModelNote('模型草稿尚未保存，请等待自动保存完成，或明确放弃；没有重新读取或改动账号。');return;}
@@ -582,6 +594,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       return h('section',{className:'pet-model-panel','data-official-model-panel':officialModels.accountKey},
         h('div',{className:'pet-model-heading'},h('div',null,h('h4',null,`模型 · ${owner?.label||'#'+officialModels.accountKey.slice(0,8)}`),h('p',{className:'pet-settings-hint'},officialModels.catalog?.source==='account-catalog'?'来自该账号返回的模型目录。':'本地兼容目录；点「更新账号目录」读取当前账号提供的模型。')),
           h('button',{type:'button',disabled:officialBusy,'data-model-refresh':true,onClick:()=>openModels(officialModels.accountKey,true)},'更新账号目录')),
+        h('details', { className: 'pet-settings-details pet-model-diagnostics', 'data-model-catalog-details': true }, h('summary', null, '目录来源与兼容详情'),
         h('p', { className: 'pet-settings-hint', 'data-model-catalog-diagnostic': true }, (() => {
           const catalog = officialModels.catalog || {}, count = n => Number.isSafeInteger(n) && n >= 0 && n <= 1000 ? n : '未知';
           const source = catalog.source === 'account-catalog' ? '账号在线目录' : '离线 SDK 列表（不是账号权限证明）';
@@ -589,7 +602,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
             (catalog.requestMode === 'full' ? '缓存记录的读取模式为完整 GET，未采用 ETag；本次是否成功以上述状态为准。' : '') +
             (typeof catalog.clientVersion === 'string' && /^[0-9.]{1,32}$/.test(catalog.clientVersion) ? `兼容查询版本 ${catalog.clientVersion}。` : '') +
             (catalog.requestProfile === 'codex-models-v0.163.0' ? '目录协议目标 Codex 0.163.0；保留本插件的 pi/UA 身份，非官方客户端或账号可用性证明。' : '');
-        })()),
+        })())),
         officialCatalogue?.implementation?.modelDiscovery !== 2 && h('p', { className: 'pet-settings-error', 'data-model-owner-unconfirmed': true }, '当前账号服务实现尚未确认。旧独立插件或尚未退出的宿主进程可能仍占用路由；安装文件更新不代表运行中服务已切换。请自行完整退出并重开 DSH 后再更新目录，不要删除授权或预热记录。'),
         officialModels.catalog?.capabilityGaps?.some(row=>row.reason==='context-limit-unreported')&&h('p',{className:'pet-settings-hint','data-model-context-note':true},'部分新模型未报告上下文上限，已保留为可选模型并暂用本地 8192-token 请求预算；这不是服务端真实上限，也不保证该账号有使用权限。'),
         h('p',{className:'pet-settings-hint','data-host-model-state':true},`DSH 默认：${/^[a-f0-9]{64}$/.test(currentModel)?'旧版模型入口，请重新选择':currentModel}。已有会话若锁定旧模型，需在会话顶部手动重选。`),
@@ -622,6 +635,21 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         h('p',{className:'pet-settings-hint',role:'status','data-model-status':true},modelNote||'模型偏好自动保存；更改 DSH 默认仍需明确点击。目录读取和偏好保存都不会发送模型请求。'),
         h('p',{className:'pet-settings-hint'},'模型偏好自动保存；只影响本账号在 codex-accounts 中的模型选择，不更改 DSH 默认、其他插件、预热授权或已有去重记录。未知价格不会被当作免费承诺。'));
     };
+    const accountTools = () => officialCatalogue && h('details', { className: 'pet-settings-details pet-account-tools', 'data-official-tools': true },
+      h('summary', null, '批量查询与脱敏诊断'),
+      h('p', { className: 'pet-settings-hint' }, '明确勾选后才查询；最多八个账号、并发两个。不会登录、切号、预热或调用模型；未确认的共享错误会停止队列。'),
+      h('div', { className: 'pet-account-batch-list' }, ...accountRows.map(row => h('div', { key: row.accountKey },
+        h('label', { className: 'pet-settings-toggle pet-account-batch-check' }, h('input', { type: 'checkbox', checked: batchKeys.includes(row.accountKey), disabled: officialBusy || officialError || row.bound !== true || !batchKeys.includes(row.accountKey) && batchKeys.length >= 8, 'data-official-batch-account': row.accountKey, onChange: event => { if (!alive.current || officialAction.current.busy || officialBlocked.current || officialAction.current.generation !== officialGeneration) return; const checked = event.target.checked; setBatchKeys(previous => checked ? previous.includes(row.accountKey) || previous.length >= 8 ? previous : [...previous, row.accountKey] : previous.filter(key => key !== row.accountKey)); } }), `批量查询：${row.label}`),
+        batchResults[row.accountKey] && h('p', { role: 'status', className: 'pet-settings-hint', 'data-official-batch-result': row.accountKey }, ({ queued: '批量查询：排队中', running: '批量查询：查询中', success: '批量查询：已收到额度响应', failed: '批量查询：失败 · 未自动重试', cancelled: '批量查询：已取消或未执行 · 未重试' })[batchResults[row.accountKey].status])))),
+      h('div', { className: 'pet-account-actions' },
+        h('button', { type: 'button', disabled: officialBusy || officialError, 'data-official-batch-select': true, onClick: () => setBatchKeys((officialSnapshot.current?.accounts || []).filter(row => row.bound === true).slice(0, 8).map(row => row.accountKey)) }, '勾选可用账号（最多八个）'),
+        h('button', { type: 'button', disabled: officialBusy || officialError || !batchKeys.length, 'data-official-batch-read': true, onClick: () => void batchQuota() }, `刷新所选额度（${batchKeys.length}）`),
+        batchRunning && h('button', { type: 'button', 'data-official-batch-cancel': true, onClick: cancelBatch }, '取消剩余查询')),
+      h('p', { role: 'status', className: 'pet-settings-hint', 'data-official-batch-status': true }, batchNote || '勾选或展开本区域不会发送查询。'),
+      h('button', { type: 'button', 'data-official-diagnostics': true, onClick: generateDiagnostics }, '生成本地脱敏诊断'),
+      h('p', { className: 'pet-settings-hint' }, '仅导出本地缓存的白名单统计与兼容状态，不含昵称、邮箱、账号标识、凭据、路径、回调、原始错误或预热账本。不会上传或新增请求。'),
+      diagnosticText && h('div', null, h('textarea', { className: 'pet-account-diagnostic', readOnly: true, value: diagnosticText, rows: 9, 'aria-label': '可核对的脱敏诊断 JSON', 'data-official-diagnostic-json': true }), h('button', { type: 'button', 'data-official-diagnostics-download': true, onClick: downloadDiagnostics }, '下载这份诊断 JSON')),
+      diagnosticNote && h('p', { role: 'status', className: 'pet-settings-hint' }, diagnosticNote));
     const quota = q => Number.isFinite(q?.remainingPercent) && q.remainingPercent >= 0 && q.remainingPercent <= 100 ? `${q.remainingPercent.toFixed(1)}%` : '—';
     const warmup = snapshot?.codexWarmup;
     const buckets = statBuckets(ledger?.days, range, codex ? 'tokens' : chartUnit, today);
@@ -640,7 +668,8 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         if (next < 0) return;
         event.preventDefault(); setTab(pages[next][0]); event.currentTarget.querySelectorAll('[role="tab"]')[next]?.focus();
       } }, ...pages.map(([id, label]) => h('button', { type: 'button', role: 'tab', key: id, id: `pet-tab-${id}`, 'data-pet-tab': id, 'aria-controls': 'pet-settings-page-content', tabIndex: tab === id ? 0 : -1, 'aria-selected': tab === id, onClick: () => setTab(id) }, label))),
-      h('p', { className: 'pet-settings-hint pet-settings-save-help', 'data-page-save-hint': true }, '设置与模型偏好修改后自动保存，无需点击保存。预热授权、账号来源和桌宠切号权限是独立的确认操作，不随普通设置提交。'),
+      h('details', { className: 'pet-settings-details pet-settings-save-help', 'data-save-explanation': true }, h('summary', null, '自动保存与授权'),
+        h('p', { className: 'pet-settings-hint', 'data-page-save-hint': true }, '设置与模型偏好修改后自动保存，无需点击保存。预热授权、账号来源和桌宠切号权限是独立的确认操作，不随普通设置提交。')),
       saveState.explicitDirty && h('div', { className: 'pet-settings-group', 'data-authorization-confirm': true },
         h('p', { className: 'pet-settings-hint' }, '以下授权／来源修改尚未生效：' + Object.keys(draft || {}).filter(key => !AUTOSAVE_PREFERENCE_KEYS.includes(key) && draft[key] !== loaded?.values[key]).map(key => PREFERENCE_AUTHORIZATION_LABELS[key] || key).join('、') + '。确认可能改变后续请求或账号来源；不会清除预热暂停与去重记录。'),
         h('button', { type: 'button', 'data-settings-save': true, 'data-authorization-apply': true, disabled: busy || saveState.inFlight || saveState.error?.conflict || !!error, onClick: () => void save() }, '确认上述授权／来源修改'))),
@@ -648,8 +677,8 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       tab === 'accounts' && !codex && h('p', { className: 'pet-settings-hint' }, '可在此管理订阅账号；要在桌宠显示额度，再到「常规」选择 Codex。'),
       (error || saveState.error) && h('p', { role: 'alert', className: 'pet-settings-error' }, error || saveState.error.message), note && h('p', { role: 'status', className: 'pet-settings-hint' }, note),
       draft && group('订阅账号（内置管理）',
-        field('codexAccountBackend', '账号来源', [['legacy','原订阅插件'],['official','内置账号管理 · ChatGPT OAuth']]),
-        h('details', { className: 'pet-settings-details' }, h('summary', null, '来源说明与隐私'),
+        h('details', { className: 'pet-settings-details pet-account-source', 'data-account-source-details': true }, h('summary', null, `账号来源 · ${draft.codexAccountBackend === 'official' ? '内置 ChatGPT OAuth' : '原订阅插件'}`),
+          field('codexAccountBackend', '账号来源', [['legacy','原订阅插件'],['official','内置账号管理 · ChatGPT OAuth']]),
           h('p', { className: 'pet-settings-hint' }, '账号管理已内置 simple-pet，无需另外安装账号插件。复用官方 ChatGPT 订阅 OAuth，不是 Platform API Key，也不是 DSH 官方出品。已有本项目账号在原凭据命名空间直接复用，不复制令牌；不读取其他订阅插件授权。旧独立包请停用以避免重复路由。默认仅影响本服务后续新请求；旧单账号预热暂停，逐账号每日计划另行授权。')),
         draft?.codexAccountBackend === 'official' && h('div', { className: 'pet-account-panel', 'data-official-panel': true },
           h('div', { className: 'pet-account-toolbar' },
@@ -673,39 +702,40 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
               h('button', { type: 'button', disabled: officialBusy || !officialReply, onClick: () => void officialRequest('login.respond', { id: officialCatalogue.login.id, promptId: officialCatalogue.login.prompt.id, value: officialReply }) }, '提交回调')),
             ['running','prompt'].includes(officialCatalogue.login.status) && h('button', { type: 'button', disabled: officialBusy, onClick: () => void officialRequest('login.cancel', { id: officialCatalogue.login.id }) }, '取消登录')),
           officialCatalogue && !(officialCatalogue.accounts || []).length && h('p', { className: 'pet-account-empty' }, '还没有绑定账号，点击「添加账号」开始。'),
-          h('p', { className: 'pet-settings-hint' }, '本服务默认只影响 default: 入口；固定账号模型和已有会话不会自动切换。DSH 默认模型需在模型设置中单独确认。'),
           officialError && officialCatalogue && h('p', { role: 'alert', className: 'pet-settings-error', 'data-official-stale-directory': true }, '以下是上次读取的目录，不代表重新验证成功。操作已暂停；请先刷新核验，勿重复提交上次操作。'),
-          officialCatalogue && h('details', { className: 'pet-settings-details pet-account-tools', 'data-official-tools': true },
-            h('summary', null, '批量查询与脱敏诊断'),
-            h('p', { className: 'pet-settings-hint' }, '先在账号行勾选，再明确点击查询；最多八个账号、并发两个。不会登录、切号、预热或调用模型；未确认的共享错误会停止队列。'),
-            h('div', { className: 'pet-account-actions' },
-              h('button', { type: 'button', disabled: officialBusy || officialError, 'data-official-batch-select': true, onClick: () => setBatchKeys((officialSnapshot.current?.accounts || []).filter(row => row.bound === true).slice(0, 8).map(row => row.accountKey)) }, '勾选可用账号（最多八个）'),
-              h('button', { type: 'button', disabled: officialBusy || officialError || !batchKeys.length, 'data-official-batch-read': true, onClick: () => void batchQuota() }, `刷新所选额度（${batchKeys.length}）`),
-              batchRunning && h('button', { type: 'button', 'data-official-batch-cancel': true, onClick: cancelBatch }, '取消剩余查询')),
-            h('p', { role: 'status', className: 'pet-settings-hint', 'data-official-batch-status': true }, batchNote || '勾选或展开本区域不会发送查询。'),
-            h('button', { type: 'button', 'data-official-diagnostics': true, onClick: generateDiagnostics }, '生成本地脱敏诊断'),
-            h('p', { className: 'pet-settings-hint' }, '仅导出本地缓存的白名单统计与兼容状态，不含昵称、邮箱、账号标识、凭据、路径、回调、原始错误或预热账本。不会上传或新增请求。'),
-            diagnosticText && h('div', null, h('textarea', { className: 'pet-account-diagnostic', readOnly: true, value: diagnosticText, rows: 9, 'aria-label': '可核对的脱敏诊断 JSON', 'data-official-diagnostic-json': true }), h('button', { type: 'button', 'data-official-diagnostics-download': true, onClick: downloadDiagnostics }, '下载这份诊断 JSON')),
-            diagnosticNote && h('p', { role: 'status', className: 'pet-settings-hint' }, diagnosticNote)),
-          ...(officialCatalogue?.accounts || []).map(row => {
+          officialCatalogue && accountRows.length > 0 && h('div', { className: 'pet-account-workspace', 'data-account-layout': 'split' },
+            h('aside', { className: 'pet-account-rail', 'aria-label': '查看账号', 'data-official-rail': true },
+              h('div', { className: 'pet-account-rail-title' }, h('strong', null, '账号'), h('span', { className: 'pet-account-state' }, String(accountRows.length))),
+              h('p', { className: 'pet-settings-hint' }, '仅查看，不切号'),
+              h('div', { className: 'pet-account-rail-list', onKeyDown: event => {
+                const current = accountRows.findIndex(row => row.accountKey === viewedAccount?.accountKey);
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? accountRows.length - 1 : event.key === 'ArrowDown' ? (current + 1) % accountRows.length : event.key === 'ArrowUp' ? (current - 1 + accountRows.length) % accountRows.length : -1;
+                if (next < 0) return;
+                event.preventDefault(); if (viewAccount(accountRows[next])) event.currentTarget.querySelectorAll('[data-official-view]')[next]?.focus();
+              } }, ...accountRows.map(row => h('button', { key: row.accountKey, type: 'button', className: 'pet-account-view', 'data-official-view': row.accountKey, 'aria-pressed': viewedAccount?.accountKey === row.accountKey, 'aria-controls': 'pet-account-detail', disabled: officialBusy, onClick: () => viewAccount(row) },
+                h('span', { className: 'pet-account-avatar', 'aria-hidden': true }, [...(row.label || '账号')][0]),
+                h('span', { className: 'pet-account-view-text' }, h('strong', null, row.label), h('small', null, `#${row.accountKey.slice(0, 8)}${row.bound !== true ? ' · 待核验' : ''}`)),
+                row.selected && h('span', { className: 'pet-account-default-badge' }, '默认'))))),
+            h('div', { id: 'pet-account-detail', className: 'pet-account-detail', role: 'region', 'aria-label': '当前查看账号详情', 'data-official-viewed': viewedAccount?.accountKey },
+          ...accountRows.map(row => {
             const report = accountQuotaPresentation(row.quota, accountNow), pending = officialBusy && (officialAction.current.action === 'quota.read' && officialAction.current.accountKey === row.accountKey || batchResults[row.accountKey]?.status === 'running');
             const target = `${row.label} #${row.accountKey.slice(0, 8)}`;
-            return h('div', { key: row.accountKey, className: `pet-account-row${officialError ? ' is-unverified' : ''}`, 'data-official-account-row': row.accountKey },
-              h('label', { className: 'pet-settings-toggle pet-account-batch-check' }, h('input', { type: 'checkbox', checked: batchKeys.includes(row.accountKey), disabled: officialBusy || officialError || row.bound !== true || !batchKeys.includes(row.accountKey) && batchKeys.length >= 8, 'data-official-batch-account': row.accountKey, onChange: event => { if (!alive.current || officialAction.current.busy || officialBlocked.current || officialAction.current.generation !== officialGeneration) return; const checked = event.target.checked; setBatchKeys(previous => checked ? previous.includes(row.accountKey) || previous.length >= 8 ? previous : [...previous, row.accountKey] : previous.filter(key => key !== row.accountKey)); } }), `批量查询：${row.label}`),
+            return h('div', { key: row.accountKey, hidden: viewedAccount?.accountKey !== row.accountKey, className: `pet-account-row${officialError ? ' is-unverified' : ''}`, 'data-official-account-row': row.accountKey },
               h('div', { className: 'pet-account-info' }, h('strong', null, row.label),
                 h('span', { className: 'pet-settings-hint' }, `#${row.accountKey.slice(0, 8)}${row.selected ? ' · 本服务默认' : ''}`),
                 h('span', { className: 'pet-settings-hint', 'data-official-credential': row.accountKey }, accountCredentialSummary(row))),
               h('div', { className: 'pet-account-actions' },
                 h('button', { type: 'button', disabled: officialBusy || officialError || row.bound !== true || row.selected || officialCatalogue.busy, 'aria-label': `设 ${target} 为本服务默认并更新模型目录`, 'data-official-select': row.accountKey, onClick: () => void officialRequest('account.select', { accountKey: row.accountKey, expectedGeneration: officialCatalogue.generation }) }, row.selected ? '本服务默认' : '设默认并更新目录'),
-                h('button', { type: 'button', disabled: officialBusy || officialError || row.bound !== true || officialCatalogue.capabilities?.models !== true, 'aria-label': `${target} 的模型设置`, 'data-official-models-open': row.accountKey, onClick: () => openModels(row.accountKey) }, '模型设置'),
+                h('button', { type: 'button', disabled: officialBusy || officialError || row.bound !== true || officialCatalogue.capabilities?.models !== true, 'aria-label': `${target} 的模型设置`, 'data-official-models-open': row.accountKey, onClick: () => openModels(row.accountKey) }, '模型设置')),
+              h('details', { className: 'pet-settings-details pet-account-management', 'data-official-manage': row.accountKey }, h('summary', null, '账号管理'),
+                h('div', { className: 'pet-account-actions' },
                 h('button', { type: 'button', disabled: officialBusy || officialError || row.bound !== true || !!renameTarget || officialCatalogue.capabilities?.rename !== true, 'aria-label': `更改 ${target} 的本机昵称`, 'data-official-rename': row.accountKey, onClick: () => beginRename(row) }, '改本机昵称'),
-                h('button', { type: 'button', disabled: officialBusy || officialError, 'aria-label': `移除 ${target} 的本地绑定`, 'data-official-remove': row.accountKey, onClick: event => beginRemove(row, event) }, '移除')),
+                h('button', { type: 'button', disabled: officialBusy || officialError, 'aria-label': `移除 ${target} 的本地绑定`, 'data-official-remove': row.accountKey, onClick: event => beginRemove(row, event) }, '移除'))),
               renameTarget?.accountKey === row.accountKey && h('div', { className: 'pet-account-rename', 'data-official-rename-editor': row.accountKey },
                 h('label', { className: 'pet-settings-row' }, h('span', null, '本机昵称 · 停笔自动保存'), h('input', { value: renameTarget.label, maxLength: 128, autoFocus: true, disabled: officialBusy || officialError || ['conflict','unverified'].includes(renameTarget.status), 'data-official-rename-input': row.accountKey, onChange: event => changeRename(event.target.value), onKeyDown: event => { if (event.key === 'Escape' && !officialAction.current.busy) { event.preventDefault?.(); closeRename(); } } })),
                 h('p', { role: 'status', className: 'pet-settings-hint', 'data-official-rename-status': row.accountKey }, ({ saved: '仅更改本机昵称；授权、默认账号、模型和预算均不改变。', waiting: '等待自动保存昵称…', saving: '正在保存并回读昵称…', invalid: '昵称需为 1–64 个 Unicode 字符，不含控制字符；尚未保存。', conflict: '目录已变化，草稿保留但停止提交。请关闭编辑、刷新目录，再核对目标。', unverified: '改名结果尚未核验，可能已提交；请先刷新，不要重发。', error: '昵称未保存，草稿保留；没有自动重试。' })[renameTarget.status]),
                 renameTarget.status === 'error' && h('button', { type: 'button', 'data-official-rename-retry': row.accountKey, onClick: () => changeRename(renameEditor.current.label) }, '重试自动保存昵称'),
                 h('button', { type: 'button', disabled: officialBusy, 'data-official-rename-close': row.accountKey, onClick: closeRename }, '关闭改名')),
-              batchResults[row.accountKey] && h('p', { role: 'status', className: 'pet-settings-hint', 'data-official-batch-result': row.accountKey }, ({ queued: '批量查询：排队中', running: '批量查询：查询中', success: '批量查询：已收到额度响应', failed: '批量查询：失败 · 未自动重试', cancelled: '批量查询：已取消或未执行 · 未重试' })[batchResults[row.accountKey].status]),
               removeTarget?.accountKey === row.accountKey && h('div', { role: 'group', className: 'pet-account-remove-confirm', 'aria-label': `确认移除 ${target}`, 'data-official-remove-prompt': row.accountKey, onKeyDown: event => { if (event.key === 'Escape') { event.preventDefault?.(); cancelRemove(true); } } },
                 h('strong', null, `移除 ${removeTarget.label} #${removeTarget.accountKey.slice(0, 8)}${removeTarget.selected ? '（本服务默认）' : ''}？`),
                 h('p', null, '仅移除本插件的本地绑定，会中止此账号在本服务的在途请求，并清除其默认选择；不是官方远端退出，不清每日预热账本，不自动选择其它账号。'),
@@ -713,15 +743,24 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
                   h('button', { type: 'button', autoFocus: true, 'data-official-remove-cancel': row.accountKey, onClick: () => cancelRemove(true) }, '取消，保留绑定'),
                   h('button', { type: 'button', disabled: officialBusy || officialError, 'data-official-remove-confirm': row.accountKey, onClick: confirmRemove }, '确认移除此绑定'))),
               h('div', { className: `pet-account-row-quota${report.stale ? ' is-stale' : ''}`, 'data-official-quota-report': row.accountKey },
-                h('span', { role: 'status', className: 'pet-account-quota-state' }, pending ? '查询及核验中 · 原读数仅供参考' : report.status),
-                h('div', { className: 'pet-account-quota-windows' }, ...report.windows.map(window => h('div', { key: window.label }, h('span', null, `${window.label} ${window.value}`), h('small', null, window.reset)))),
+                h('div', { className: 'pet-account-quota-heading' }, h('div', null, h('strong', null, '订阅额度'), h('span', { role: 'status', className: 'pet-account-quota-state' }, pending ? '查询及核验中 · 原读数仅供参考' : report.status)),
+                  h('button', { type: 'button', disabled: officialBusy || officialError || row.bound !== true, 'aria-label': `刷新 ${target} 的额度`, 'data-official-quota': row.accountKey, onClick: () => void officialRequest('quota.read', { accountKey: row.accountKey }) }, '刷新额度')),
+                h('div', { className: 'pet-account-quota-windows' }, ...report.windows.map(window => {
+                  const percent = Number.parseInt(window.value, 10);
+                  return h('div', { key: window.label, className: `pet-account-quota-card${Number.isFinite(percent) && percent <= 20 ? ' is-low' : ''}` },
+                    h('div', { className: 'pet-account-quota-value' }, h('span', null, window.label), h('strong', null, window.value)),
+                    Number.isFinite(percent) && h('div', { className: 'pet-account-quota-bar', role: 'progressbar', 'aria-label': `${target} ${window.label}剩余额度`, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': percent }, h('span', { style: { width: `${percent}%` } })), h('small', null, window.reset));
+                })),
                 h('small', null, `${report.received}；不是服务器采样时间`),
-                report.restricted && h('span', { className: 'pet-settings-error' }, '服务报告普通用量受限；不会据旧百分比推断可用。'),
-                h('button', { type: 'button', disabled: officialBusy || officialError || row.bound !== true, 'aria-label': `刷新 ${target} 的额度`, 'data-official-quota': row.accountKey, onClick: () => void officialRequest('quota.read', { accountKey: row.accountKey }) }, '刷新额度')),
+                report.restricted && h('span', { className: 'pet-settings-error' }, '服务报告普通用量受限；不会据旧百分比推断可用。')),
               officialRowNotes[row.accountKey] && h('p', { role: 'alert', className: 'pet-settings-error', 'data-official-row-error': row.accountKey }, officialRowNotes[row.accountKey]));
           }),
           officialCatalogue?.capabilities?.models!==true&&officialCatalogue&&h('p',{className:'pet-settings-hint'},'当前账号服务尚未提供模型设置。若仍启用了旧独立账号包，请停用旧包并完整重启，以加载 simple-pet 内置服务。'),
-          modelControls(),
+          officialModels?.accountKey === viewedAccount?.accountKey ? modelControls() : viewedAccount && h('div', { className: 'pet-account-model-summary', 'data-official-model-summary': viewedAccount.accountKey },
+            h('div', null, h('strong', null, '首选模型'), h('p', { className: 'pet-settings-hint' }, '点击「模型设置」读取当前账号目录。查看账号不会发起查询。')))
+          )),
+          accountTools(),
+          h('details', { className: 'pet-settings-details', 'data-official-default-help': true }, h('summary', null, '查看、默认账号与模型的区别'), h('p', { className: 'pet-settings-hint' }, '左侧只改变当前查看的账号，不查询额度或切号。本服务默认只影响 default: 入口；固定账号模型和已有会话不会自动切换。DSH 默认模型需在模型设置中单独确认。')),
           !officialCatalogue && !officialError && h('p', { className: 'pet-account-empty' }, '点击「刷新」查看账号，或「添加账号」开始授权。'),
           h('p', { role: officialError ? 'alert' : 'status', className: officialError ? 'pet-settings-error' : 'pet-settings-hint', 'data-official-status': true }, officialNote || '刷新与添加账号不会调用模型。'))),
       codex && group('多账号管理（桌宠面板切换）',

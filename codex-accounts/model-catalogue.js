@@ -3,14 +3,17 @@
 // Protocol target: official rust-v0.163.0 models-manager + provider version
 // header. Keep our own integration identity; do not impersonate codex_cli_rs or
 // confuse this compatibility version with the plugin's release version.
-export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.3' });
+export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.4' });
 export const MODEL_CATALOGUE_CLIENT_VERSION = MODEL_CATALOGUE_PROFILE.clientVersion;
+// The wire catalogue contains instruction templates, including compatibility
+// copies of base_instructions. Bound decoded bytes, not a small quota-DTO size.
+export const MODEL_CATALOGUE_LIMITS = Object.freeze({ maxBytes: 8 * 1024 * 1024, maxModels: 1000, timeoutMs: 10000 });
 export const modelIdOK = id => typeof id === 'string' && id.trim() === id && id.length <= 128 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id);
 const levels = ['off','minimal','low','medium','high','xhigh','max'];
 const label = (v, fallback) => typeof v === 'string' && v.length <= 160 && !/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(v) ? v : fallback;
 const positive = n => Number.isSafeInteger(n) && n > 0 && n <= 10_000_000;
 export function inspectAccountModelCatalogue(raw, builtin) {
-  if (!raw || !Array.isArray(raw.models) || raw.models.length > 1000) throw new Error('MODEL_CATALOG_INVALID');
+  if (!raw || !Array.isArray(raw.models) || raw.models.length > MODEL_CATALOGUE_LIMITS.maxModels) throw new Error('MODEL_CATALOG_INVALID');
   const template = builtin.find(m => !/spark|reserve/i.test(m.id));
   const result = [], omitted = [], capabilityGaps = [], seen = new Set();
   const targetReceived = raw.models.some(row => row?.slug === 'gpt-6.1-sol');
@@ -59,28 +62,39 @@ export function mergeAccountModels(raw, builtin) {
   return report.models;
 }
 export async function fetchAccountModels({ auth, accountId, signal, fetchImpl = globalThis.fetch, etag = null }) {
-  const combined=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(10000)]);
+  const combined=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(MODEL_CATALOGUE_LIMITS.timeoutMs)]);
   const wait=async value=>{combined.throwIfAborted();let cancel;const interrupted=new Promise((_,reject)=>{cancel=()=>reject(new Error('MODEL_CATALOG_UNAVAILABLE'));combined.addEventListener('abort',cancel,{once:true});});try{const result=await Promise.race([Promise.resolve(value),interrupted]);combined.throwIfAborted();return result;}finally{combined.removeEventListener('abort',cancel);}};
-  let reader;
+  let reader, body;
   try {
     if(![auth,accountId].every(v=>typeof v==='string'&&v.length>0&&v.length<=65536&&!/[\x00-\x1f\x7f]/.test(v)))throw new Error('MODEL_CATALOG_AUTH_REQUIRED');
     const headers = { Authorization: `Bearer ${auth}`, 'chatgpt-account-id': accountId, Accept: 'application/json', version: MODEL_CATALOGUE_PROFILE.versionHeader, originator: MODEL_CATALOGUE_PROFILE.originator, 'User-Agent': MODEL_CATALOGUE_PROFILE.userAgent };
     if (typeof etag==='string'&&etag.length<=256&&!/[\x00-\x1f\x7f]/.test(etag)) headers['If-None-Match'] = etag;
     combined.throwIfAborted();
     const response=await wait(fetchImpl(`https://chatgpt.com/backend-api/codex/models?client_version=${MODEL_CATALOGUE_CLIENT_VERSION}`,{method:'GET',headers,redirect:'error',signal:combined}));
+    body=response.body;
     if(response.status===304)return {notModified:true};
     if(!response.ok)throw new Error(response.status===401||response.status===403?'MODEL_CATALOG_AUTH_REQUIRED':'MODEL_CATALOG_UNAVAILABLE');
-    if(!response.body||Number(response.headers.get('content-length')||0)>524288)throw new Error('MODEL_CATALOG_INVALID');
-    reader=response.body.getReader();const chunks=[];let size=0;
-    for(;;){const part=await wait(reader.read());if(part.done)break;size+=part.value.byteLength;if(size>524288)throw new Error('MODEL_CATALOG_INVALID');chunks.push(part.value);}
-    const bytes=new Uint8Array(size);let offset=0;for(const part of chunks){bytes.set(part,offset);offset+=part.byteLength;}
-    let raw;try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new Error('MODEL_CATALOG_INVALID');}
+    if(!body)throw new Error('MODEL_CATALOG_INVALID');
+    reader=body.getReader();
+    if(Number(response.headers.get('content-length')||0)>MODEL_CATALOGUE_LIMITS.maxBytes)throw new Error('MODEL_CATALOG_TOO_LARGE');
+    // Grow one bounded buffer rather than retaining an unbounded number of tiny
+    // stream chunks. The limit also applies to decompressed/chunked responses.
+    let bytes=new Uint8Array(65536),size=0;
+    for(;;){
+      const part=await wait(reader.read());if(part.done)break;
+      if(!(part.value instanceof Uint8Array))throw new Error('MODEL_CATALOG_INVALID');
+      const next=size+part.value.byteLength;
+      if(next>MODEL_CATALOGUE_LIMITS.maxBytes)throw new Error('MODEL_CATALOG_TOO_LARGE');
+      if(next>bytes.length){const grown=new Uint8Array(Math.min(MODEL_CATALOGUE_LIMITS.maxBytes,Math.max(next,bytes.length*2)));grown.set(bytes.subarray(0,size));bytes=grown;}
+      bytes.set(part.value,size);size=next;
+    }
+    let raw;try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)));}catch{throw new Error('MODEL_CATALOG_INVALID');}
     const tag=response.headers.get('etag');
     return {raw,etag:typeof tag==='string'&&tag.length<=256&&!/[\x00-\x1f\x7f]/.test(tag)?tag:null};
   } catch(error) {
-    const code=['MODEL_CATALOG_AUTH_REQUIRED','MODEL_CATALOG_INVALID'].includes(error?.message)?error.message:'MODEL_CATALOG_UNAVAILABLE';
+    const code=['MODEL_CATALOG_AUTH_REQUIRED','MODEL_CATALOG_INVALID','MODEL_CATALOG_TOO_LARGE'].includes(error?.message)?error.message:'MODEL_CATALOG_UNAVAILABLE';
     throw new Error(code); // No URL, token, abort reason, response body or cause escapes.
-  } finally { if(reader){try{Promise.resolve(reader.cancel()).catch(()=>{});}catch{}try{reader.releaseLock();}catch{}} }
+  } finally { if(reader){try{Promise.resolve(reader.cancel()).catch(()=>{});}catch{}try{reader.releaseLock();}catch{}}else if(body){try{Promise.resolve(body.cancel()).catch(()=>{});}catch{}} }
 }
 export function validModelSettings(x) {
   return x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).every(k => ['enabled','defaultModel','reasoningEffort'].includes(k))

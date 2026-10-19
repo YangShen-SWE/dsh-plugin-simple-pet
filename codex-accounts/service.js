@@ -151,7 +151,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     if (!local) throw error;
     const credentialStatus = new Map([['OAUTH_REQUIRED', 'missing'], ['OAUTH_IDENTITY_INVALID', 'invalid'], ['OAUTH_IDENTITY_CHANGED', 'identity-mismatch']]).get(error.code);
     if (credentialStatus) return { credentialStatus, credentialErrorCode: error.code };
-    if (/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error.code)) return { modelStatus: 'unavailable', modelError: error.code };
+    if (/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|TOO_LARGE|EMPTY|UNAVAILABLE)$/.test(error.code)) return { modelStatus: 'unavailable', modelError: error.code };
     throw error;
   };
   const notify = () => { if (!disposed) try { changed(); } catch { /* committed configuration remains committed */ } };
@@ -168,7 +168,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     let rows=await engine.listModels();const meta=(await directory.read()).rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked);
     const desired=[...(meta?.modelHints||[]),meta?.modelSettings?.defaultModel,hint].filter(modelIdOK);
     if(engine.catalogStatus?.().source==='builtin'&&desired.some(id=>!rows.some(row=>row.id===id))&&typeof engine.refreshModels==='function'){
-      try{await engine.refreshModels(AbortSignal.any([c.controller.signal,AbortSignal.timeout(10000)]));}catch(error){throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message||'')?error.message:'MODEL_CATALOG_UNAVAILABLE',503);}
+      try{await engine.refreshModels(AbortSignal.any([c.controller.signal,AbortSignal.timeout(10000)]));}catch(error){throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|TOO_LARGE|EMPTY|UNAVAILABLE)$/.test(error?.message||'')?error.message:'MODEL_CATALOG_UNAVAILABLE',503);}
       await validCapture(c);rows=await engine.listModels();await rememberModels(c,rows);notify();
     }
     return rows;
@@ -354,7 +354,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       if (refresh) {
         if (typeof engine.refreshModels !== 'function') throw fail('MODEL_CATALOG_UNAVAILABLE',503);
         try { await engine.refreshModels(AbortSignal.any([...(signal ? [signal] : []),c.controller.signal]), { force: true }); }
-        catch (error) { throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|EMPTY|UNAVAILABLE)$/.test(error?.message || '') ? error.message : 'MODEL_CATALOG_UNAVAILABLE',503); }
+        catch (error) { throw fail(/^MODEL_CATALOG_(AUTH_REQUIRED|INVALID|TOO_LARGE|EMPTY|UNAVAILABLE)$/.test(error?.message || '') ? error.message : 'MODEL_CATALOG_UNAVAILABLE',503); }
         await validCapture(c);await rememberModels(c,await engine.listModels());notify();
       }
       const rows = await modelsFor(c,engine), snapshot=await directory.read();

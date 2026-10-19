@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectAccountModelCatalogue, mergeAccountModels, fetchAccountModels, modelIdOK, validModelSettings, MODEL_CATALOGUE_PROFILE, MODEL_CATALOGUE_CLIENT_VERSION } from './model-catalogue.js';
+import { inspectAccountModelCatalogue, mergeAccountModels, fetchAccountModels, modelIdOK, validModelSettings, MODEL_CATALOGUE_PROFILE, MODEL_CATALOGUE_CLIENT_VERSION, MODEL_CATALOGUE_LIMITS } from './model-catalogue.js';
 import { createOfficialDriver } from './official-driver.js';
 
 // All catalogue responses and OAuth values below are synthetic. No real fetch,
@@ -17,11 +17,11 @@ const privateText = 'PRIVATE_MOCK_ACCESS PRIVATE_MOCK_ACCOUNT PRIVATE_MOCK_REFRE
 const request = extra => fetchAccountModels({ auth: 'PRIVATE_MOCK_ACCESS', accountId: 'PRIVATE_MOCK_ACCOUNT',
   fetchImpl: async () => Response.json({ models: [row()] }), ...extra });
 function fakeBody(chunks) {
-  let cancelled = 0;
+  let cancelled = 0, reads = 0;
   return { response: { ok: true, status: 200, headers: new Headers(), body: { getReader() {
-    let i = 0; return { async read() { return i < chunks.length ? { value: chunks[i++], done: false } : { done: true }; },
+    let i = 0; return { async read() { reads++; return i < chunks.length ? { value: chunks[i++], done: false } : { done: true }; },
       async cancel() { cancelled++; } };
-  } } }, get cancelled() { return cancelled; } };
+  } } }, get cancelled() { return cancelled; }, get reads() { return reads; } };
 }
 
 test('unknown model never inherits image or reasoning capabilities missing from account metadata',()=>{
@@ -159,20 +159,49 @@ for (const [status, code] of [[401, 'AUTH_REQUIRED'], [403, 'AUTH_REQUIRED'], [4
 test('transport exceptions do not leak upstream sensitive text', async () => {
   await assert.rejects(request({ fetchImpl: async () => { throw new Error(privateText); } }), e => !String(e).includes('PRIVATE') && /^MODEL_CATALOG_/.test(e.message));
 });
-test('content-length over byte limit and absent response body rejected before reading', async () => {
-  await assert.rejects(request({ fetchImpl: async () => new Response('{}', { headers: { 'content-length': '524289' } }) }), /MODEL_CATALOG_INVALID/);
+test('valid catalogue with large instruction metadata is not mistaken for an incompatible model schema', async () => {
+  // Synthetic application of the public legacy serializer: the instruction
+  // template is also emitted as base_instructions. No real account response.
+  const instructions = 'Synthetic instructions. '.repeat(16000);
+  const raw = { models: [row({ base_instructions: instructions, model_messages: { instructions_template: instructions } })] };
+  const text = JSON.stringify(raw); assert(Buffer.byteLength(text) > 524288);
+  for (const declared of [false, true]) {
+    const bytes = Buffer.from(text), f = fakeBody([bytes.subarray(0, 350000), bytes.subarray(350000)]);
+    if (declared) f.response.headers = new Headers({ 'content-length': String(bytes.length) });
+    const result = await request({ fetchImpl: async () => f.response });
+    assert.equal(mergeAccountModels(result.raw, builtin())[0].id, 'gpt-6.1-sol');
+    assert.equal(f.cancelled, 1);
+  }
+});
+test('limits remain frozen local resource bounds, not model permissions', () => {
+  assert(Object.isFrozen(MODEL_CATALOGUE_LIMITS));
+  assert.deepEqual(MODEL_CATALOGUE_LIMITS, { maxBytes: 8388608, maxModels: 1000, timeoutMs: 10000 });
+});
+test('content-length above the byte limit is rejected without reading and releases its reader', async () => {
+  const f = fakeBody([Buffer.from('{}')]);
+  f.response.headers = new Headers({ 'content-length': String(MODEL_CATALOGUE_LIMITS.maxBytes + 1) });
+  await assert.rejects(request({ fetchImpl: async () => f.response }), /MODEL_CATALOG_TOO_LARGE/);
+  assert.equal(f.reads, 0); assert.equal(f.cancelled, 1);
   await assert.rejects(request({ fetchImpl: async () => new Response(null) }), /MODEL_CATALOG_INVALID/);
 });
-test('streamed byte limit is enforced even without content-length and cancels reader', async () => {
-  const f = fakeBody([new Uint8Array(300000), new Uint8Array(224289)]);
-  await assert.rejects(request({ fetchImpl: async () => f.response }), /MODEL_CATALOG_INVALID/); assert.equal(f.cancelled, 1);
+test('streamed byte limit is enforced without content-length and cancels reader', async () => {
+  const f = fakeBody([new Uint8Array(MODEL_CATALOGUE_LIMITS.maxBytes), new Uint8Array(1)]);
+  await assert.rejects(request({ fetchImpl: async () => f.response }), /MODEL_CATALOG_TOO_LARGE/);
+  assert.equal(f.cancelled, 1);
 });
 test('exact byte boundary accepted, larger UTF8 payload rejected based on bytes not characters', async () => {
-  const text = JSON.stringify({ text: '汉'.repeat(174750) });
-  assert(text.length < 524288); assert(Buffer.byteLength(text) < 524288);
-  const exact = text + ' '.repeat(524288 - Buffer.byteLength(text));
-  assert.equal((await request({ fetchImpl: async () => new Response(exact) })).raw.text.length, 174750);
-  await assert.rejects(request({ fetchImpl: async () => new Response(exact + '汉') }), /MODEL_CATALOG_INVALID/);
+  const count = Math.floor((MODEL_CATALOGUE_LIMITS.maxBytes - 20) / 3);
+  const text = JSON.stringify({ text: '汉'.repeat(count) });
+  assert(text.length < MODEL_CATALOGUE_LIMITS.maxBytes); assert(Buffer.byteLength(text) < MODEL_CATALOGUE_LIMITS.maxBytes);
+  const exact = text + ' '.repeat(MODEL_CATALOGUE_LIMITS.maxBytes - Buffer.byteLength(text));
+  assert.equal((await request({ fetchImpl: async () => new Response(exact) })).raw.text.length, count);
+  await assert.rejects(request({ fetchImpl: async () => new Response(exact + '汉') }), /MODEL_CATALOG_TOO_LARGE/);
+});
+test('many tiny chunks are joined without corrupting a valid catalogue', async () => {
+  const bytes = Buffer.from(JSON.stringify({ models: [row({ base_instructions: 'mock'.repeat(20000) })] }));
+  const f = fakeBody(Array.from({ length: Math.ceil(bytes.length / 7) }, (_, i) => bytes.subarray(i * 7, i * 7 + 7)));
+  assert.equal(mergeAccountModels((await request({ fetchImpl: async () => f.response })).raw, builtin())[0].id, 'gpt-6.1-sol');
+  assert.equal(f.cancelled, 1);
 });
 test('UTF8 decoding is fatal and malformed JSON cannot expose raw contents', async () => {
   for (const bytes of [new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]), Buffer.from(privateText)]) {
@@ -282,6 +311,27 @@ test('failed refresh keeps last catalogue but marks it stale without leaking sec
   await f.driver.refreshModels(); broken = true;
   await assert.rejects(f.driver.refreshModels(), e => e.message === 'MODEL_CATALOG_UNAVAILABLE');
   assert.equal((await f.driver.listModels())[0].id, 'gpt-6.1-sol'); assert.equal(f.driver.catalogStatus().status, 'stale');
+  assert(!JSON.stringify(f.driver.catalogStatus()).includes('PRIVATE'));
+});
+test('a too-large refresh keeps the last successful catalogue and ETag with an explicit stale error', async () => {
+  let calls = 0, tag;
+  const f = await mockOfficial({ fetch: async (_url, init) => {
+    tag = new Headers(init.headers).get('if-none-match');
+    calls++;
+    if (calls === 1) return Response.json({ models: [row()] }, { headers: { etag: '"v1"' } });
+    if (calls === 2) return new Response('{}', { headers: { etag: '"must-not-save"', 'content-length': String(MODEL_CATALOGUE_LIMITS.maxBytes + 1) } });
+    return new Response(null, { status: 304 });
+  } });
+  await f.driver.refreshModels(); const first = f.driver.catalogStatus();
+  await assert.rejects(f.driver.refreshModels(undefined, { force: true }), /MODEL_CATALOG_TOO_LARGE/);
+  assert.equal(tag, null);
+  assert.equal(f.driver.catalogStatus().revision, first.revision);
+  assert.equal(f.driver.catalogStatus().error, 'MODEL_CATALOG_TOO_LARGE');
+  assert.equal(f.driver.catalogStatus().status, 'stale');
+  assert.equal((await f.driver.listModels())[0].id, 'gpt-6.1-sol');
+  await f.driver.refreshModels();
+  assert.equal(tag, '"v1"'); assert.equal(f.driver.catalogStatus().status, 'ready');
+  assert.equal(f.driver.catalogStatus().revision, first.revision); assert.equal(calls, 3);
   assert(!JSON.stringify(f.driver.catalogStatus()).includes('PRIVATE'));
 });
 test('official catalogue rejects non-OAuth resolution without network', async () => {

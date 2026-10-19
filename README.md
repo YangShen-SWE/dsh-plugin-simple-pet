@@ -1,6 +1,6 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.0.3 · 真正自动保存与多账号工具](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.3)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.0.4 · B 双栏工作台与模型目录兼容](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.4)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
@@ -14,7 +14,7 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 
 ![Codex 模式：额度、示例邮箱与面板切换按钮](docs/screenshots/codex.png)
 
-![顶部保存、导航与简洁账号列表](docs/screenshots/settings.png)
+![B 双栏工作台：账号导航、额度卡片与自动保存；合成演示](docs/screenshots/settings.png)
 
 ![多账号每日授权及明确禁用的启动和5h满额触发](docs/screenshots/multi-account-warmup.png)
 
@@ -25,6 +25,18 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 > **兼容 / Compatibility:** 面向 DSH `0.2.0-rc.1`、`0.2.0-rc.2`；DeepSeek 功能已在 Windows + `0.2.0-rc.2` 实机验证，`rc.1` 尚待实机回归。Codex 额度需要宿主公共进程内连接；旧路径需支持的订阅插件，官方路径已内置于桌宠，安装包声明所需公开组件。旧独立账号包请在插件管理中停用后自行完整重启 DSH，不要删除账号数据或 grant。仅有 DSH 版本号不保证接口或真实账号资格可用。This is an unofficial community project, not a DeepSeek product.
 
 > **v0.6.4 更新：** 新增「陪伴与舒适」：安静模式、经典／温和反馈、减少动态、关闭闪光／暴击标记、关闭用量飘字。安静停止在播视觉效果，真实余额、额度和统计继续更新，退出不补播；温和使用中性姿态与轻量确认。默认仍为经典，新开关关闭；保留六款人物、五款双模式信息框、右键无交互、拖动与原有预热偏好。升级不启用预热、不新增模型请求；升级后请完整退出并重启 DSH 一次。
+
+## v1.0.4：B 双栏工作台与模型目录兼容（2026-10-19）
+
+- **B 双栏账号页：** 左边选查看对象，右边集中显示 5h / 每周额度、模型与管理入口；设置容器较窄时自动上下排列，适配明暗主题。
+- **浏览不等于切号：** 点击或键盘导航只查看，不查额度、不读模型、不改默认；设本服务默认、刷新额度、更新模型与设 DSH 默认仍分别明确操作。
+- **更简洁但不丢功能：** 管理、批量查询、脱敏诊断和来源说明默认折叠；普通/模型/昵称自动保存、草稿保护和消费授权边界不变。
+- **大目录不再误判：** 8 MiB 有界解码读取替代旧 512 KiB，保留数量/时间/结构校验；超限单独分类，失败保留标旧模型缓存，不建议无依据地重新授权。
+- **真实连接通过：** 界面完成并本地同步后，单独授权的当前默认绑定账号目录 GET 与 gpt-6.1-sol 最小请求均 HTTP 200，正常返回 OK；各一次，无自动重试、切号或预热。结论仅限该账号/时刻/最小生产服务链路，不代表所有账号、已有会话或运行中设置页都已验收。
+
+完整操作见 [v1.0.4 使用指南](USAGE.md)，验证边界见 [产品评审](ACCOUNT-MANAGEMENT-REVIEW.md) 与 [隐私说明](PRIVACY.md)。升级保留账号、凭据、偏好及未知预热记录；公共依赖版本不变，请自行完整退出（含托盘）并重开 DSH。不会因升级、浏览设置或这次开发测试自动新增消费授权。
+
+以下是历史版本记录，早期“待真实核验”描述按其当时状态保留，不覆盖上面的限定实测结论。
 
 ## v1.0.3：真正自动保存与多账号工具（2026-10-17）
 

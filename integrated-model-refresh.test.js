@@ -218,7 +218,7 @@ test('hint revalidation failure rejects models(false) rather than publishing sav
   assert.deepEqual(refreshLabels(f), ['A']); assertPassive(f);
 });
 
-for (const code of ['MODEL_CATALOG_AUTH_REQUIRED', 'MODEL_CATALOG_UNAVAILABLE']) test(`restart ${code} is isolated from other account picker models`, async t => {
+for (const code of ['MODEL_CATALOG_AUTH_REQUIRED', 'MODEL_CATALOG_INVALID', 'MODEL_CATALOG_TOO_LARGE', 'MODEL_CATALOG_EMPTY', 'MODEL_CATALOG_UNAVAILABLE']) test(`restart ${code} is isolated from other account picker models`, async t => {
   const f = await restarted(t, { refresh: async label => { assert.equal(label, 'A'); throw Error(code); } });
   const bytes = await fs.readFile(f.directory.file, 'utf8');
   const bindings = await f.restored.bindings();

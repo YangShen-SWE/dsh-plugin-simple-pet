@@ -46,6 +46,96 @@ function fixture(t, hooks = {}) {
   return { ui, state, calls, posts, click, ready };
 }
 
+test('B workspace browses account details without changing defaults or making a request', async t => {
+  const f = fixture(t); await f.ready();
+  assert.equal(f.ui.find('data-account-layout').props['data-account-layout'], 'split');
+  assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], A);
+  assert.equal(f.ui.find('data-official-account-row', B).props.hidden, true);
+  const before = f.calls.length;
+  await f.click('data-official-view', B);
+  assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
+  assert.equal(f.ui.find('data-official-account-row', A).props.hidden, true);
+  assert.equal(f.ui.find('data-official-account-row', B).props.hidden, false);
+  assert.equal(f.ui.find('data-official-view', B).props['aria-pressed'], true);
+  assert.equal(f.state.catalogue.defaultKey, A); assert.equal(f.calls.length, before);
+  await f.click('data-official-view', A); assert.equal(f.calls.length, before); assert.deepEqual(f.posts(), []);
+});
+
+test('B rail keyboard navigation changes only the viewed account and restores focus', async t => {
+  const f = fixture(t); await f.ready(); let focused = -1, prevented = 0;
+  const event = key => ({ key, preventDefault() { prevented++; }, currentTarget: { querySelectorAll() { return [0, 1].map(n => ({ focus() { focused = n; } })); } } });
+  f.ui.nodes().find(node => node.props.className === 'pet-account-rail-list').props.onKeyDown(event('End')); f.ui.render();
+  assert.equal(focused, 1); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
+  f.ui.nodes().find(node => node.props.className === 'pet-account-rail-list').props.onKeyDown(event('ArrowDown')); f.ui.render();
+  assert.equal(focused, 0); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], A);
+  assert.equal(prevented, 2); assert.equal(f.state.catalogue.defaultKey, A); assert.deepEqual(f.posts(), []);
+});
+
+test('B viewing another account cancels the old remove prompt without transferring its target', async t => {
+  const f = fixture(t); await f.ready(); await f.click('data-official-remove', A);
+  const oldConfirm = f.ui.find('data-official-remove-confirm', A).props.onClick;
+  await f.click('data-official-view', B); assert(!f.ui.find('data-official-remove-prompt'));
+  oldConfirm(); await settle(); assert.deepEqual(f.posts(), []); assert.equal(f.state.catalogue.accounts.length, 2);
+});
+
+const browseModels = key => ({ accountKey: key, generation: 1, settings: { enabled: null, defaultModel: null, reasoningEffort: null }, catalog: { source: 'account-catalog', status: 'ready', targetModel: { received: true, accepted: true } }, models: [{ id: 'gpt-6.1-sol', name: 'GPT 6.1 Sol', modelKey: 'synthetic-sol', inputModalities: ['text'], reasoning: { efforts: [] } }] });
+test('B never shows an account model editor under a different viewed account', async t => {
+  const f = fixture(t, { post: body => body.action === 'models.refresh' ? Response.json(browseModels(body.accountKey)) : undefined });
+  await f.ready(); await f.click('data-official-models-open', A); const before = f.calls.length;
+  assert.equal(f.ui.find('data-official-model-panel').props['data-official-model-panel'], A);
+  await f.click('data-official-view', B); assert(!f.ui.find('data-official-model-panel'));
+  assert(f.ui.find('data-official-model-summary', B)); assert.equal(f.calls.length, before);
+  await f.click('data-official-view', A); assert(f.ui.find('data-official-model-panel', A)); assert.equal(f.calls.length, before);
+});
+
+test('B preserves a pending model autosave rather than hiding or retargeting the draft', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(t, { post: body => body.action === 'models.refresh' ? Response.json(browseModels(body.accountKey)) : undefined });
+  await f.ready(); await f.click('data-official-models-open', A);
+  f.ui.find('data-model-default').props.onChange({ target: { value: 'gpt-6.1-sol' } }); f.ui.render();
+  await f.click('data-official-view', B);
+  assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], A);
+  assert.equal(f.ui.find('data-model-default').props.value, 'gpt-6.1-sol'); assert.match(f.ui.text(), /等待自动保存完成或关闭编辑/);
+  assert.deepEqual(f.posts(), [{ action: 'models.refresh', accountKey: A }]);
+});
+
+test('B retains a viewed non-default account across directory updates and safely falls back when it disappears', async t => {
+  const f = fixture(t); await f.ready(); await f.click('data-official-view', B);
+  f.state.catalogue = { ...f.state.catalogue, generation: 2, accounts: f.state.catalogue.accounts.map(row => ({ ...row, label: row.label + '更新' })) };
+  await f.click('data-official-read'); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
+  f.state.catalogue = { ...f.state.catalogue, generation: 3, accounts: f.state.catalogue.accounts.filter(row => row.accountKey !== B) };
+  await f.click('data-official-read'); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], A);
+  assert.equal(f.state.catalogue.defaultKey, A); assert.deepEqual(f.posts(), []);
+});
+
+test('B browsing stale directory is local-only and keeps write controls blocked', async t => {
+  let broken = false;
+  const f = fixture(t, { get: () => broken ? Response.json({ error: '目录暂不可读', code: 'DIRECTORY_UNAVAILABLE' }, { status: 503 }) : undefined });
+  await f.ready(); broken = true; await f.click('data-official-read'); const before = f.calls.length;
+  await f.click('data-official-view', B); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
+  assert(f.ui.find('data-official-stale-directory')); assert.equal(f.ui.find('data-official-quota', B).props.disabled, true);
+  assert.equal(f.ui.find('data-official-select', B).props.disabled, true); assert.equal(f.calls.length, before); assert.deepEqual(f.posts(), []);
+});
+
+test('B previous source browse handlers cannot restore accounts after backend ABA', async t => {
+  const f = fixture(t); await f.ready(); const oldBrowse = f.ui.find('data-official-view', B).props.onClick;
+  for (const value of ['legacy', 'official']) { f.ui.nodes().find(node => node.props.name === 'codexAccountBackend').props.onChange({ target: { value } }); f.ui.render(); }
+  oldBrowse(); await settle(); f.ui.render(); assert(!f.ui.find('data-official-viewed')); assert.deepEqual(f.posts(), []);
+});
+
+test('B quota cards preserve zero and unknown readings without inventing a full progress bar', async t => {
+  const f = fixture(t); f.state.catalogue.accounts[0].quota = { status: 'stale', clientObservedAt: Date.now() - 1000, fiveHour: { remainingPercent: 0 }, weekly: null };
+  await f.ready(); const report = f.ui.find('data-official-quota-report', A), bars = f.ui.nodes(report).filter(node => node.props.role === 'progressbar');
+  assert.equal(bars.length, 1); assert.equal(bars[0].props['aria-valuenow'], 0); assert.match(f.ui.text(report), /刷新失败.*0%.*未报告/s);
+  assert.equal(f.ui.nodes(f.ui.find('data-official-quota-report', B)).filter(node => node.props.role === 'progressbar').length, 0); assert.deepEqual(f.posts(), []);
+});
+
+test('B changes the service default only after the separate explicit action', async t => {
+  const f = fixture(t); await f.ready(); await f.click('data-official-view', B); assert.equal(f.state.catalogue.defaultKey, A);
+  await f.click('data-official-select', B); assert.equal(f.state.catalogue.defaultKey, B);
+  assert.deepEqual(f.posts(), [{ action: 'account.select', accountKey: B, expectedGeneration: 1 }]);
+});
+
 test('local account error preserves both rows and healthy account operations without an automatic retry', async t => {
   const f = fixture(t, { post: body => body.action === 'quota.read' ? Response.json({ error: '此账号的本地授权不可读。', code: 'OAUTH_REQUIRED' }, { status: 409 }) : undefined });
   await f.ready(); await f.click('data-official-quota', A);
@@ -56,6 +146,16 @@ test('local account error preserves both rows and healthy account operations wit
   assert(!f.posts().some(body => /warmup|stream|responses/.test(body.action)));
 });
 
+test('a model catalogue size failure remains account-local without removing bindings or retrying', async t => {
+  const f = fixture(t, { post: body => body.action === 'models.refresh' ? Response.json({ error: '模型目录超过安全读取上限，不代表授权失效。', code: 'MODEL_CATALOG_TOO_LARGE' }, { status: 503 }) : undefined });
+  await f.ready(); await f.click('data-official-models-open', A);
+  assert(f.ui.find('data-official-account-row', A)); assert(f.ui.find('data-official-account-row', B));
+  assert(f.ui.find('data-official-row-error', A)); assert(!f.ui.find('data-official-stale-directory'));
+  assert.equal(f.ui.find('data-official-select', B).props.disabled, false);
+  assert.deepEqual(f.posts(), [{ action: 'models.refresh', accountKey: A }]);
+  assert.equal(f.state.gets, 1); assert.match(f.ui.text(), /不代表授权失效/);
+  assert(!f.posts().some(body => /login|remove|warmup|stream|responses/.test(body.action)));
+});
 test('global directory failure retains only a clearly stale read-only snapshot and revokes captured writes', async t => {
   let broken = false;
   const f = fixture(t, { get: () => broken ? Response.json({ error: '账号目录暂不可读。', code: 'DIRECTORY_UNAVAILABLE' }, { status: 503 }) : undefined });
