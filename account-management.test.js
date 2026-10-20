@@ -195,8 +195,8 @@ test('actual service/RPC/proxy conflict reaches the settings component, retainin
   const text = (node = tree) => node && typeof node === 'object' ? node.children.map(text).join('') : String(node ?? '');
   const until = async predicate => { for (let attempt = 0; attempt < 300; attempt++) { await pause(10); render(); if (predicate()) return; } assert.fail('Synthetic account UI did not settle'); };
   t.after(() => { for (const cleanup of cleanups) cleanup?.(); });
-  render(); await until(() => find('data-official-read')?.props.disabled === false);
-  find('data-official-read').props.onClick(); await until(() => !!find('data-official-account-row', f.key(0)));
+  render(); await until(() => !!find('data-pet-tab'));
+  nodes().find(n=>n.props['data-pet-tab']==='accounts').props.onClick();render(); await until(() => !!find('data-official-account-row', f.key(0)));
   find('data-official-models-open').props.onClick(); await until(() => !!find('data-model-default'));
   find('data-model-default').props.onChange({ target: { value: 'codex-mini' } }); render();
   await f.directory.update(data => { data.rows[1].label = 'Changed elsewhere'; });

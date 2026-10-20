@@ -1,4 +1,17 @@
 .pet-settings [hidden]{display:none!important}
+/* Read-only sync is quiet; one-time credit consumption remains an explicit action. */
+.pet-settings .pet-account-sync{font-size:12px;opacity:.68;white-space:normal}
+.pet-settings .pet-reset-panel{border:1px solid var(--dsw-alias-border-default,#7774);border-radius:14px;padding:16px;min-width:0;margin-top:14px}
+.pet-settings .pet-reset-heading,.pet-settings .pet-reset-card{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+.pet-settings .pet-reset-heading strong{font-size:14px}.pet-settings .pet-reset-heading p{font-size:12px}
+.pet-settings .pet-reset-count{font-size:12px;border-radius:20px;background:#80808018;padding:4px 9px;white-space:nowrap}
+.pet-settings .pet-reset-status{font-size:12px;opacity:.75;overflow-wrap:anywhere}
+.pet-settings .pet-reset-card{padding:12px 0;border-top:1px solid #80808028}.pet-settings .pet-reset-card>div{min-width:0;overflow-wrap:anywhere}.pet-settings .pet-reset-card small{display:block;font-size:12px;opacity:.65;margin-top:4px}
+.pet-settings .pet-reset-confirm{border-radius:10px;background:#80808012;padding:14px;margin-top:10px;overflow-wrap:anywhere}
+.pet-settings .pet-reset-ack{display:flex;align-items:flex-start;gap:8px;margin:12px 0}.pet-settings .pet-reset-ack input{flex:0 0 auto;margin-top:4px}
+.pet-settings .pet-reset-help{font-size:12px;margin-top:10px;opacity:.8}.pet-settings .pet-reset-help summary{cursor:pointer}
+@container pet-settings (max-width:400px){.pet-settings .pet-reset-panel{padding:12px}.pet-settings .pet-reset-card{align-items:stretch;flex-direction:column}.pet-settings .pet-reset-card button{align-self:flex-end}}
+
 /* B 整套设置：同一壳层、四个主页面；统计是桌宠页的二级入口。 */
 .pet-settings.pet-settings-workbench{font:13px/1.65 "Segoe UI","Microsoft YaHei",sans-serif;max-width:1040px;margin:0 auto;padding:0 20px 20px;border-radius:16px;background:#27272d;background:linear-gradient(var(--dsw-alias-bg-layer-2,#27272d),var(--dsw-alias-bg-layer-2,#27272d)),#27272d;background:rgb(from var(--dsw-alias-bg-layer-2,#27272d) r g b / 1)}
 .pet-settings.pet-settings-workbench p{margin-top:6px;margin-bottom:8px}

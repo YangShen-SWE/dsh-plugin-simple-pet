@@ -11,10 +11,11 @@ function harness(send) {
     useRef(initial) { return cells[index++] ??= { current: initial }; },
     useEffect(fn) { const n = index++; if (!(n in cells)) { cells[n] = true; cleanups.push(fn()); } },
   };
-  const client = createSimplePetClient(React, send), render = () => { index = 0; return tree = client.SimplePetSettings(); };
+  let backgroundTick, backgroundClock=0; const services={scheduleAccountReads:fn=>{backgroundTick=fn;return()=>{};},accountReadNow:()=>backgroundClock};
+  const client = createSimplePetClient(React, send, services), render = () => { index = 0; return tree = client.SimplePetSettings(); };
   const nodes = (node = tree) => node && typeof node === 'object' ? [node, ...node.children.flatMap(nodes)] : [];
   const text = (node = tree) => node && typeof node === 'object' ? node.children.map(text).join('') : String(node ?? ''); render();
-  return { render, nodes, text, find: (attribute, value) => nodes().find(node => node.props[attribute] !== undefined && (value === undefined || node.props[attribute] === value)), cleanup() { for (const fn of cleanups.splice(0)) fn?.(); } };
+  return { sync:async(ms=60001)=>{backgroundClock+=ms;backgroundTick();await settle();await settle();render();}, render, nodes, text, find: (attribute, value) => nodes().find(node => node.props[attribute] !== undefined && (value === undefined || node.props[attribute] === value)), cleanup() { for (const fn of cleanups.splice(0)) fn?.(); } };
 }
 function fixture(t, hooks = {}) {
   const state = { gets: 0, catalogue: { generation: 1, defaultKey: A, busy: false, capabilities: { models: true }, accounts: [
@@ -42,7 +43,7 @@ function fixture(t, hooks = {}) {
   t.after(() => ui.cleanup());
   const posts = () => calls.filter(call => call.url.endsWith('/official-accounts') && call.method === 'POST').map(call => JSON.parse(call.body));
   const click = async (attribute, value) => { const node = ui.find(attribute, value); assert(node, attribute); assert.notEqual(node.props.disabled, true, attribute + ' disabled'); node.props.onClick(); await settle(); await settle(); ui.render(); };
-  const ready = async () => { await settle(); ui.render(); ui.nodes().find(node => node.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render(); await click('data-official-read'); };
+  const ready = async () => { await settle(); ui.render(); ui.nodes().find(node => node.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render(); await ui.sync(); };
   return { ui, state, calls, posts, click, ready };
 }
 
@@ -102,16 +103,16 @@ test('B preserves a pending model autosave rather than hiding or retargeting the
 test('B retains a viewed non-default account across directory updates and safely falls back when it disappears', async t => {
   const f = fixture(t); await f.ready(); await f.click('data-official-view', B);
   f.state.catalogue = { ...f.state.catalogue, generation: 2, accounts: f.state.catalogue.accounts.map(row => ({ ...row, label: row.label + '更新' })) };
-  await f.click('data-official-read'); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
+  await f.ui.sync(); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
   f.state.catalogue = { ...f.state.catalogue, generation: 3, accounts: f.state.catalogue.accounts.filter(row => row.accountKey !== B) };
-  await f.click('data-official-read'); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], A);
+  await f.ui.sync(); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], A);
   assert.equal(f.state.catalogue.defaultKey, A); assert.deepEqual(f.posts(), []);
 });
 
 test('B browsing stale directory is local-only and keeps write controls blocked', async t => {
   let broken = false;
   const f = fixture(t, { get: () => broken ? Response.json({ error: '目录暂不可读', code: 'DIRECTORY_UNAVAILABLE' }, { status: 503 }) : undefined });
-  await f.ready(); broken = true; await f.click('data-official-read'); const before = f.calls.length;
+  await f.ready(); broken = true; await f.ui.sync(); const before = f.calls.length;
   await f.click('data-official-view', B); assert.equal(f.ui.find('data-official-viewed').props['data-official-viewed'], B);
   assert(f.ui.find('data-official-stale-directory')); assert.equal(f.ui.find('data-official-quota', B).props.disabled, true);
   assert.equal(f.ui.find('data-official-select', B).props.disabled, true); assert.equal(f.calls.length, before); assert.deepEqual(f.posts(), []);
@@ -160,11 +161,11 @@ test('global directory failure retains only a clearly stale read-only snapshot a
   let broken = false;
   const f = fixture(t, { get: () => broken ? Response.json({ error: '账号目录暂不可读。', code: 'DIRECTORY_UNAVAILABLE' }, { status: 503 }) : undefined });
   await f.ready(); const oldSelect = f.ui.find('data-official-select', B).props.onClick;
-  broken = true; await f.click('data-official-read');
+  broken = true; await f.ui.sync();
   assert(f.ui.find('data-official-account-row', B)); assert(f.ui.find('data-official-stale-directory')); assert.match(f.ui.text(), /上次读取.*不代表重新验证/);
   for (const attribute of ['data-official-select', 'data-official-quota', 'data-official-remove', 'data-official-models-open']) assert.equal(f.ui.find(attribute, B).props.disabled, true);
   assert.equal(f.ui.find('data-official-add').props.disabled, true); oldSelect(); await settle(); assert.equal(f.posts().length, 0);
-  broken = false; await f.click('data-official-read'); assert(!f.ui.find('data-official-stale-directory')); assert.equal(f.ui.find('data-official-select', B).props.disabled, false);
+  broken = false; await f.ui.sync(); assert(!f.ui.find('data-official-stale-directory')); assert.equal(f.ui.find('data-official-select', B).props.disabled, false);
 });
 
 test('first remove click, cancel and Escape do not submit; cancellation restores focus to the target', async t => {
@@ -191,7 +192,8 @@ test('a refreshed generation or replaced target invalidates the old confirmation
   const f = fixture(t); await f.ready(); await f.click('data-official-remove', A);
   const oldConfirm = f.ui.find('data-official-remove-confirm').props.onClick;
   f.state.catalogue = { ...f.state.catalogue, generation: 2, accounts: f.state.catalogue.accounts.map(row => row.accountKey === A ? { ...row, label: '新绑定', epoch: 2 } : row) };
-  await f.click('data-official-read'); assert(!f.ui.find('data-official-remove-prompt'));
+  await f.ui.sync(); assert(f.ui.find('data-official-remove-prompt'), 'background reads pause during confirmation');
+  await f.click('data-official-remove-cancel', A); await f.ui.sync(); assert(!f.ui.find('data-official-remove-prompt'));
   oldConfirm(); await settle(); assert.equal(f.posts().length, 0);
 });
 
@@ -207,14 +209,14 @@ test('an acknowledged remove followed by failed GET is not called a failed delet
   await f.ready(); await f.click('data-official-remove', A); await f.click('data-official-remove-confirm', A);
   assert.equal(f.posts().length, 1); assert(f.ui.find('data-official-stale-directory')); assert.match(f.ui.text(), /移除操作已提交.*核验失败/); assert(!f.ui.find('data-official-remove-confirm'));
   assert.equal(f.ui.find('data-official-remove', B).props.disabled, true);
-  readBroken = false; await f.click('data-official-read'); assert.equal(f.posts().length, 1); assert(!f.ui.find('data-official-account-row', A));
+  readBroken = false; await f.ui.sync(); assert.equal(f.posts().length, 1); assert(!f.ui.find('data-official-account-row', A));
 });
 
 test('unknown removal failure does not imply the durable tombstone was undone', async t => {
   const f = fixture(t, { post(body, state) { if (body.action === 'account.remove') { state.catalogue = { ...state.catalogue, generation: 2, defaultKey: null, accounts: state.catalogue.accounts.filter(row => row.accountKey !== A) }; return Response.json({ error: '清理结果未确认。', code: 'OFFICIAL_SERVICE_UNAVAILABLE' }, { status: 503 }); } } });
   await f.ready(); await f.click('data-official-remove', A); await f.click('data-official-remove-confirm', A);
   assert.match(f.ui.text(), /移除结果未确认.*可能已在本机撤销/); assert.equal(f.posts().length, 1);
-  await f.click('data-official-read'); assert(!f.ui.find('data-official-account-row', A)); assert.equal(f.posts().length, 1);
+  await f.ui.sync(); assert(!f.ui.find('data-official-account-row', A)); assert.equal(f.posts().length, 1);
 });
 
 test('quota receipts remain visible and age past reset on local clock ticks without any new quota query', async t => {

@@ -7,9 +7,10 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function harness(send){
  const cells=[],cleanups=[];let index=0,tree;
  const React={createElement(type,props,...children){return{type,props:props??{},children:children.flat().filter(v=>v!==false&&v!=null)};},useState(initial){const n=index++;if(!(n in cells))cells[n]=initial;return[cells[n],v=>{cells[n]=typeof v==='function'?v(cells[n]):v;}];},useRef(initial){return cells[index++]??={current:initial};},useEffect(fn){const n=index++;if(!(n in cells)){cells[n]=true;cleanups.push(fn());}}};
- const component=createSimplePetClient(React,send),render=()=>{index=0;return tree=component.SimplePetSettings();};
+  let backgroundTick, backgroundClock=0; const services={scheduleAccountReads:fn=>{backgroundTick=fn;return()=>{};},accountReadNow:()=>backgroundClock};
+ const component=createSimplePetClient(React,send,services),render=()=>{index=0;return tree=component.SimplePetSettings();};
  const nodes=(node=tree)=>node&&typeof node==='object'?[node,...node.children.flatMap(nodes)]:[],text=(node=tree)=>node&&typeof node==='object'?node.children.map(text).join(''):String(node??'');render();
- return{render,nodes,text,find:(attr,value)=>nodes().find(n=>n.props[attr]!==undefined&&(value===undefined||n.props[attr]===value)),cleanup(){cleanups.splice(0).forEach(fn=>fn?.());}};
+ return{sync:async(ms=60001)=>{backgroundClock+=ms;backgroundTick();await settle();await settle();render();},render,nodes,text,find:(attr,value)=>nodes().find(n=>n.props[attr]!==undefined&&(value===undefined||n.props[attr]===value)),cleanup(){cleanups.splice(0).forEach(fn=>fn?.());}};
 }
 function fixture(t,hooks={}){
  t.mock.timers.enable({apis:['setTimeout']});
@@ -32,7 +33,7 @@ function fixture(t,hooks={}){
  t.after(()=>ui.cleanup());
  const posts=()=>calls.filter(call=>call.method==='POST').map(call=>JSON.parse(call.body));
  const click=async(attr,value)=>{const node=ui.find(attr,value);assert(node,attr);assert.notEqual(node.props.disabled,true,attr+' disabled');node.props.onClick();await settle();await settle();ui.render();};
- const ready=async()=>{await settle();ui.render();ui.find('data-pet-tab','accounts').props.onClick();ui.render();await click('data-official-read');};
+ const ready=async()=>{await settle();ui.render();ui.find('data-pet-tab','accounts').props.onClick();ui.render();await ui.sync();};
  const tick=async(ms=450)=>{t.mock.timers.tick(ms);await settle();await settle();ui.render();};
  const edit=value=>{ui.find('data-official-rename-input',A).props.onChange({target:{value}});ui.render();};
  return{ui,calls,state,posts,click,ready,tick,edit};
@@ -104,8 +105,8 @@ test('downloading a diagnostic uses only an in-memory local blob, then revokes t
 test('unmount revokes pending nickname autosave without issuing a request',async t=>{
  const f=fixture(t);await f.ready();await f.click('data-official-rename',A);f.edit('不得迟到保存');f.ui.cleanup();await f.tick(5000);assert.equal(f.posts().length,0);
 });
-test('a failed directory check stops a pending rename and marks its preserved draft as conflicted',async t=>{
- const f=fixture(t,{get(state){if(state.gets>1)return Response.json({error:'目录不可用。'},{status:503});}});await f.ready();await f.click('data-official-rename',A);f.edit('读取失败时保留');await f.click('data-official-read');await f.tick(5000);assert.equal(f.posts().length,0);assert.equal(f.ui.find('data-official-rename-input',A).props.value,'读取失败时保留');assert.match(f.ui.text(f.ui.find('data-official-rename-status',A)),/目录已变化/);
+test('background reads yield to a rename; failed post-save verification preserves an unverified draft',async t=>{
+ const f=fixture(t,{get(state){if(state.gets>1)return Response.json({error:'目录不可用。'},{status:503});}});await f.ready();await f.click('data-official-rename',A);f.edit('读取失败时保留');await f.ui.sync();await f.tick(5000);assert.equal(f.posts().length,1);assert.equal(f.ui.find('data-official-rename-input',A).props.value,'读取失败时保留');assert.match(f.ui.text(f.ui.find('data-official-rename-status',A)),/结果尚未核验/);
 });
 test('a runtime without rename support cannot receive a captured rename action',async t=>{
  const f=fixture(t);f.state.catalogue.capabilities.rename=false;await f.ready();const button=f.ui.find('data-official-rename',A);assert.equal(button.props.disabled,true);button.props.onClick();await f.tick(5000);assert.equal(f.posts().length,0);assert.equal(f.ui.find('data-official-rename-editor',A),undefined);

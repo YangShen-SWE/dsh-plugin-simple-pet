@@ -1,12 +1,18 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.1.0 · 会话推理、Fast 与重置卡安全流程](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.0)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.1.1 · 后台只读加载与重置卡界面](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.1)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
 A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the integrated official-component account service; both default off. Install only the simple-pet package.
 
-## v1.1.0 重点
+## v1.1.1 重点
+
+- 可见账号/模型页自动读取目录与当前账号卡片，取消相关手动检查按钮；失败同样节流，隐藏/离页可取消。
+- 重置卡直接展示可用与保护暂停数量，统一深浅主题和窄屏；准备、五秒等待和独立消费确认保留。
+- 不自动切号、查额度、预热或调用模型；未知消费保护和普通自动保存不变。
+
+## v1.1.0 重点（历史）
 
 - 会话推理选择与账号默认分开，“模型默认”不再继承账号高推理档位。
 - 标准 / Fast 按账号返回的模型能力开放；Fast 可能增加用量，必须单独确认，预热不继承。不提供 Ultrafast，不保证速度/资格。

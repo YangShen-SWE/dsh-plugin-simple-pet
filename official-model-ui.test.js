@@ -8,9 +8,10 @@ const key='a'.repeat(16),hash=id=>createHash('sha256').update(`${key}:${id}`).di
 function harness(send){
  const cells=[],cleanups=[];let index=0,tree;
  const React={createElement(type,props,...children){return{type,props:props??{},children:children.flat().filter(v=>v!==false&&v!=null)};},useState(initial){const n=index++;if(!(n in cells))cells[n]=initial;return[cells[n],v=>{cells[n]=typeof v==='function'?v(cells[n]):v;}];},useRef(initial){return cells[index++]??={current:initial};},useEffect(fn){const n=index++;if(!(n in cells)){cells[n]=true;cleanups.push(fn());}}};
- const component=createSimplePetClient(React,send),render=()=>{index=0;return tree=component.SimplePetSettings();};
+  let backgroundTick, backgroundClock=0; const services={scheduleAccountReads:fn=>{backgroundTick=fn;return()=>{};},accountReadNow:()=>backgroundClock};
+ const component=createSimplePetClient(React,send,services),render=()=>{index=0;return tree=component.SimplePetSettings();};
  const nodes=(n=tree)=>n&&typeof n==='object'?[n,...n.children.flatMap(nodes)]:[],text=(n=tree)=>n&&typeof n==='object'?n.children.map(text).join(''):String(n??'');render();
- return{render,nodes,text,find:k=>nodes().find(n=>n.props[k]!==undefined),cleanup(){cleanups.splice(0).forEach(fn=>fn?.());}};
+ return{sync:async(ms=60001)=>{backgroundClock+=ms;backgroundTick();await settle();await settle();render();},render,nodes,text,find:k=>nodes().find(n=>n.props[k]!==undefined),cleanup(){cleanups.splice(0).forEach(fn=>fn?.());}};
 }
 function fixture(t, options = {}){
  if(!t.modelTimers){t.mock.timers.enable({apis:['setTimeout']});t.modelTimers=true;}
@@ -47,7 +48,7 @@ function fixture(t, options = {}){
  t.after(()=>ui.cleanup());
  const posts=()=>calls.filter(c=>c.method==='POST').map(c=>JSON.parse(c.body));
  const click=async name=>{const node=ui.find(name);assert(node,name+' missing');assert.notEqual(node.props.disabled,true,name+' disabled');node.props.onClick();await settle();ui.render();};
- const open=async()=>{await settle();ui.render();ui.nodes().find(n=>n.props['data-pet-tab']==='accounts').props.onClick();ui.render();await click('data-official-read');await click('data-official-models-open');};
+ const open=async()=>{await settle();ui.render();ui.nodes().find(n=>n.props['data-pet-tab']==='accounts').props.onClick();ui.render();await ui.sync();await click('data-official-models-open');};
  const persist=async(ms=450)=>{t.mock.timers.tick(ms);await settle();ui.render();};
  return{ui,calls,posts,click,open,persist,conflict(){conflict=true;}};
 }
@@ -62,7 +63,7 @@ test('gpt-6.1-sol appears only after explicit account directory response; no war
  assert.deepEqual(f.posts().map(b=>b.action),['models.refresh']);assert(!f.calls.some(c=>/warmup|stream|responses/.test(c.body||'')));
 });
 test('ordinary and model preferences autosave without save buttons; host selection remains explicit',async t=>{
- const f=fixture(t);await f.open();await f.click('data-model-refresh');
+ const f=fixture(t);await f.open();assert.equal(f.ui.find('data-model-refresh'),undefined);
  f.ui.find('data-model-default').props.onChange({target:{value:'gpt-6.1-sol'}});f.ui.render();
  f.ui.find('data-model-reasoning').props.onChange({target:{value:'high'}});f.ui.render();assert.equal(f.ui.find('data-model-use').props.disabled,true);
  assert.equal(f.ui.find('data-settings-save'),undefined);assert.equal(f.ui.find('data-model-save'),undefined);
@@ -74,7 +75,7 @@ test('ordinary and model preferences autosave without save buttons; host selecti
 });
 test('dirty model draft blocks refresh until explicit discard; generic top save does not consume it',async t=>{
  const f=fixture(t);await f.open();f.ui.find('data-model-default').props.onChange({target:{value:'gpt-5.5'}});f.ui.render();
- const count=f.posts().length;await f.click('data-model-refresh');assert.equal(f.posts().length,count);assert.match(f.ui.text(),/模型草稿尚未保存/);
+ const count=f.posts().length;assert.equal(f.ui.find('data-model-refresh'),undefined);assert.equal(f.posts().length,count);assert.equal(f.ui.find('data-model-refresh'),undefined);
  await f.click('data-model-discard');assert.equal(f.posts().at(-1).action,'models.read');assert.equal(f.ui.find('data-model-default').props.value,'');
 });
 test('a busy account read delays model autosave rather than dropping the only pending write',async t=>{
@@ -163,7 +164,7 @@ test('unknown Fast capabilities stay unavailable and session reasoning help is e
 for(const unknown of [false,true])test('reset card requires inspect, prepare and separate ack; consume is never replayed '+unknown,async t=>{
  const f=fixture(t,{resets:true,resetUnknown:unknown});await f.open();
  assert(!f.posts().some(b=>b.action.startsWith('reset.')));
- await f.click('data-reset-inspect');assert.equal(f.posts().at(-1).action,'reset.inspect');
+ f.ui.nodes().find(n=>n.props['data-pet-tab']==='accounts').props.onClick();f.ui.render();await f.ui.sync();await f.ui.sync(0);assert.equal(f.posts().at(-1).action,'reset.inspect');
  await f.click('data-reset-prepare');assert.equal(f.posts().at(-1).action,'reset.prepare');
  assert.equal(f.ui.find('data-reset-consume').props.disabled,true);
  f.ui.find('data-reset-ack').props.onChange({target:{checked:true}});f.ui.render();

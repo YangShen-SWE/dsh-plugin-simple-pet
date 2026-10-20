@@ -243,7 +243,7 @@ test('B model page is independent, starts empty and never reads accounts or mode
     assert.equal(ui.find(n => n.props['data-settings-design']).props['data-settings-design'], 'b-complete');
     assert(visible.some(n => n.props['data-model-workbench']));
     assert(!visible.some(n => n.props['data-official-panel']));
-    assert.match(ui.text(ui.find(n => n.props['data-model-workbench'])), /先读取账号/);
+    assert.match(ui.text(ui.find(n => n.props['data-model-workbench'])), /正在后台读取账号/);
     assert(!ui.nodes().some(n => n.props['data-official-model-panel']));
     assert.equal(transport.calls.length, 4); assert(transport.calls.every(c => c.method === undefined || c.method === 'GET'));
   } finally { ui.cleanup(); }
