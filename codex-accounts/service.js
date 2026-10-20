@@ -4,6 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseQuota, fetchQuota } from './quota.js';
 import { modelIdOK, validModelSettings, defaultModelSettings, requestFailure } from './model-catalogue.js';
+import { accountReplayMessages, accountReplayEvent } from './replay.js';
 
 export const PROVIDER = 'codex-accounts';
 export const hash = value => createHash('sha256').update(value).digest('hex');
@@ -14,6 +15,8 @@ const localErrors = new WeakSet();
 export const isAccountError = error => localErrors.has(error);
 const fail = (code, status = 409, requestNotSent = true) => { const error = Object.assign(new Error(code), { code, status, requestNotSent }); localErrors.add(error); return error; };
 const requestMessages = Object.freeze({
+  CONTEXT_WINDOW_EXCEEDED: '请求超出模型上下文窗口，交由宿主压缩策略处理。',
+  EMPTY_RESPONSE: '模型返回空响应。', INVALID_REQUEST: '上游拒绝该请求格式或请求体大小。',
   BOUND_CANCELLED: '请求已取消。', BOUND_CONTENT_UNSUPPORTED: '无法处理该请求的输入或图片附件。',
   BOUND_IMAGE_SERVICE_UNAVAILABLE: '当前图片请求缺少可用的持久附件服务。',
   BOUND_HISTORY_IMAGE_UNSUPPORTED: '当前适配器不支持历史 assistant/system 消息中的图片；未删除历史或自动重发。',
@@ -316,14 +319,17 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       notify(); await credentials.deleteRecord(`codex-accounts/account-${privateKey}`); return { ok: true };
     },
     async select(key, expectedGeneration, signal) {
+      const guard = () => { ensure(); if (signal?.aborted) throw fail('REQUEST_ABORTED', 503); };
+      guard();
       if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) throw fail('SOURCE_CHANGED');
       await directory.update(async data => {
+        guard();
         if ((data.generation ?? 0) !== expectedGeneration) throw fail('SOURCE_CHANGED');
         const row = data.rows.find(r => publicKey(r) === key && r.bound && !r.revoked);
         if (!row) throw fail('ACCOUNT_NOT_BOUND');
         if (!await fixedCredentialView(credentials, directory, row, () => !disposed).read('openai-codex')) throw fail('OAUTH_REQUIRED');
-        data.defaultKey = row.key;
-      }); defaultGeneration++; defaultKey = key; notify();
+        guard(); data.defaultKey = row.key;
+      }, guard); defaultGeneration++; defaultKey = key; notify();
       // Explicit selection also discovers that account's current models. A failed
       // catalogue refresh does not undo the already committed account selection.
       let models = null, modelError = null;
@@ -370,7 +376,9 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
           enabled:settings.enabled===null||settings.enabled.includes(m.id),inputModalities:m.inputModalities ?? ['text'],
           contextWindow:m.context?.contextWindow ?? null,reasoning:m.reasoning ?? null})) };
     },
-    async configureModels(key, expectedGeneration, settings) {
+    async configureModels(key, expectedGeneration, settings, signal) {
+      const guard = () => { ensure(); if (signal?.aborted) throw fail('REQUEST_ABORTED', 503); };
+      guard();
       if (!validModelSettings(settings) || !Number.isSafeInteger(expectedGeneration)) throw fail('INVALID_MODEL_SETTINGS',400);
       const c=await capture(key), engine=await c.engine, rows=await engine.listModels();await validCapture(c);
       const enabled=rows.filter(m=>settings.enabled===null||settings.enabled.includes(m.id));
@@ -379,9 +387,9 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         const model=enabled.find(m=>m.id===settings.defaultModel);
         if (!model?.reasoning?.efforts?.some(e=>e.id===settings.reasoningEffort)) throw fail('REASONING_UNAVAILABLE');
       }
-      await directory.update(data=>{if((data.generation??0)!==expectedGeneration)throw fail('SOURCE_CHANGED');
+      await directory.update(data=>{guard();if((data.generation??0)!==expectedGeneration)throw fail('SOURCE_CHANGED');
         const row=data.rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked&&r.bound);if(!row)throw fail('ACCOUNT_REVOKED');
-        row.modelSettings={enabled:settings.enabled===null?null:[...settings.enabled],defaultModel:settings.defaultModel,reasoningEffort:settings.reasoningEffort};});
+        row.modelSettings={enabled:settings.enabled===null?null:[...settings.enabled],defaultModel:settings.defaultModel,reasoningEffort:settings.reasoningEffort};},guard);
       notify();return api.models(key);
     },
     async selectHostModel(key, modelKey) {
@@ -408,7 +416,11 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
             ...problem, models: [], modelError: problem.modelError ?? problem.credentialErrorCode });
           continue;
         }
-        accounts.push({ accountKey: c.accountKey, label: row.label, selected:row.selected, maskedEmail: null, credentialStatus: 'available', modelStatus: 'ready',
+        // Passive reads intentionally do not authenticate or fetch a catalogue.
+        // Builtin/stale availability is not evidence of current account entitlement.
+        const catalog = engine.catalogStatus?.() ?? { source: 'builtin', status: 'not-refreshed' };
+        const modelStatus = catalog.source === 'account-catalog' && catalog.status === 'ready' ? 'ready' : catalog.status === 'stale' ? 'stale' : 'unverified';
+        accounts.push({ accountKey: c.accountKey, label: row.label, selected:row.selected, maskedEmail: null, credentialStatus: 'available', modelStatus,
           models: models.filter(m => modelIdOK(m.id) && (settings.enabled===null||settings.enabled.includes(m.id))).map(m => ({ modelKey: hash(`${c.accountKey}:${m.id}`), modelName: m.name || m.id, baseId: m.id, inputModalities:m.inputModalities ?? ['text'] })) });
       }
       ensure();
@@ -427,18 +439,18 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
           const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), c.controller.signal]);
           return (async function* () {
             await validCapture(c); activeRequests++; let observedStreamEvent = false;
-            try { for await (const event of prepared.stream({ ...(defaultReasoning?{reasoningEffort:defaultReasoning}:{}), ...options, provider: 'openai-codex', model: model.id, signal })) {
+            try { for await (const event of prepared.stream({ ...(defaultReasoning?{reasoningEffort:defaultReasoning}:{}), ...options, messages: accountReplayMessages(options.messages, c.accountKey, model.id), provider: 'openai-codex', model: model.id, signal })) {
               observedStreamEvent = true;
               // The real SDK reports terminal usage even after abort. Preserve that
               // accounting, but never resume text/tool output or call it success.
               if (event.type === 'usage') { yield event; continue; }
               signal.throwIfAborted();
-              if (event.type === 'finish' && event.reason?.kind === 'error') {
-                const code = requestFailure(event.reason.failure, signal);
+              if (event.type === 'finish' && ['error', 'aborted'].includes(event.reason?.kind)) {
+                const code = event.reason.kind === 'aborted' ? 'BOUND_CANCELLED' : requestFailure(event.reason.failure, signal);
                 // In-band SDK errors do not reach catch. Do not forward raw HTTP
                 // bodies, arbitrary failure extensions, or upstream error text.
                 yield { type: 'finish', reason: { kind: 'error', failure: { code, message: `[${code}] ${requestMessages[code] ?? requestMessages.BOUND_REQUEST_FAILED}` } } };
-              } else yield event;
+              } else yield accountReplayEvent(event, c.accountKey, model.id);
             } }
             catch (error) {
               if (!observedStreamEvent && !signal.aborted) { const control = engine.preflightFailure?.(error); if (control) throw control; }

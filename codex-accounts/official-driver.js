@@ -15,7 +15,7 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
   const models = createModels(auth); models.setProvider(provider);
   const retryPolicy = Object.freeze({ mode: 'normal', maxRetries: 0, retryableCodes: ['TRANSPORT'], initialDelayMs: 500, maxDelayMs: 10000, jitterRatio: 0 });
   let profiles = new Map([['openai-codex', { provider: 'openai-codex', displayName: 'ChatGPT Codex OAuth',
-    piProvider: provider, transport: 'sse', streamIdleTimeoutMs: 60000, maxRequestImageBytes: 10485760, requestImagePixelBudget: 16777216, requestImageMaxBytes: 10485760,
+    piProvider: provider, transport: 'sse', streamIdleTimeoutMs: 600000, maxRequestImageBytes: 10485760, requestImagePixelBudget: 16777216, requestImageMaxBytes: 10485760,
     retryPolicy, modelErrors: new Map(), configuredMaxTokens: new Map() }]]);
   const adapter = new PiAiAdapter({ profiles: () => profiles, resolveApiKey: async () => undefined, auth,
     resolveAttachments: () => runtime.attachments?.(),

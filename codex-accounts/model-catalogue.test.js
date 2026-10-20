@@ -96,6 +96,13 @@ test('known model may retain verified static context and pricing', () => {
   const [model] = merge(row({ slug: 'codex-mini', context_window: undefined }));
   assert.equal(model.contextWindow, 200000); assert.deepEqual(model.cost, builtin()[0].cost);
 });
+test('explicit remote limits never inherit another model extended/output capacity',()=>{
+ const template=[{...builtin()[0],maxTokens:128000,maxContextWindow:1000000}];
+ const [small]=mergeAccountModels({models:[row({context_window:8192,max_context_window:32768})]},template);
+ assert.equal(small.contextWindow,8192);assert.equal(small.maxContextWindow,32768);assert.equal(small.maxTokens,4096);
+ const [single]=mergeAccountModels({models:[row({context_window:8192})]},template);assert.equal(single.maxContextWindow,undefined);assert.equal(single.maxTokens,4096);
+ for(const field of ['context_window','max_context_window'])assert.throws(()=>merge(row({slug:'codex-mini',[field]:0})),/MODEL_CATALOG_EMPTY/);
+});
 test('max_context_window accepted when primary context is missing', () => {
   assert.equal(merge(row({ context_window: undefined, max_context_window: 123456 }))[0].contextWindow, 123456);
 });

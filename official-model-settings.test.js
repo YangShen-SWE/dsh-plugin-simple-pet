@@ -76,6 +76,7 @@ test('models read, catalogue and bindings do not automatically fetch/authenticat
   await f.service.catalogue(); await f.service.bindings();
   assert.equal(a.accountKey, f.keys[0]); assert.deepEqual(a.settings, settings());
   assert.equal(a.catalog.source, 'builtin'); assert.equal(a.models[0].contextWindow, 400000);
+  assert.equal((await f.service.bindings()).accounts[0].modelStatus, 'unverified');
   assertNoAccountWork(f);
 });
 test('explicit refresh updates only captured account, never the other account', async t => {
@@ -84,6 +85,11 @@ test('explicit refresh updates only captured account, never the other account', 
   assert(a.models.some(m => m.id === 'gpt-6.1-sol')); assert(!b.models.some(m => m.id === 'gpt-6.1-sol'));
   assert.deepEqual(f.calls.filter(c => c[0] === 'refresh').map(c => c[1]), ['A']);
   assert.equal(b.catalog.source, 'builtin'); assert.equal(f.calls.filter(c => c[0] === 'stream').length, 0);
+  const bindings = await f.service.bindings();
+  assert.equal(bindings.accounts.find(row => row.accountKey === f.keys[0]).modelStatus, 'ready');
+  assert.equal(bindings.accounts.find(row => row.accountKey === f.keys[1]).modelStatus, 'unverified');
+  f.engines.get('A').catalogStatus = () => ({ source: 'account-catalog', status: 'stale' });
+  assert.equal((await f.service.bindings()).accounts.find(row => row.accountKey === f.keys[0]).modelStatus, 'stale');
 });
 test('refresh passes a cancellable signal and never sends a model request', async t => {
   const entered = deferred(), f = await fixture(t, { refresh: async (_label, signal) => {
@@ -276,7 +282,7 @@ test('model RPC actions dispatch exact arguments and a bounded abort signal', as
   }
   assert.deepEqual(calls[0].slice(0, 3), ['models', key, false]); assert(calls[0][3] instanceof AbortSignal);
   assert.deepEqual(calls[1].slice(0, 3), ['models', key, true]); assert(calls[1][3] instanceof AbortSignal);
-  assert.deepEqual(calls[2], ['configure', key, 7, config]); assert.deepEqual(calls[3], ['host', key, modelKey]);
+  assert.deepEqual(calls[2].slice(0,4), ['configure', key, 7, config]); assert(calls[2][4] instanceof AbortSignal); assert.deepEqual(calls[3], ['host', key, modelKey]);
 });
 test('model actions reject missing/extra fields before touching service', async () => {
   let calls = 0; const service = new Proxy({}, { get: () => () => { calls++; throw Error('UNEXPECTED_CALL'); } });
@@ -355,7 +361,7 @@ for(const mode of ['caller-abort','account-revoke']) test(`reported terminal usa
  await assert.rejects(async()=>{for await(const event of prepared.stream({signal:controller.signal,messages:[]}))events.push(event);},error=>error.code==='BOUND_CANCELLED'&&error.requestNotSent===false&&!JSON.stringify(error).includes('PRIVATE_ABORT'));
  assert.deepEqual(events,[{type:'usage',usage}]);assert.equal(f.calls.filter(c=>['auth','network','stream'].includes(c[0])).length,0);
 });
-for(const [code,category] of [['AUTH','BOUND_AUTH_REQUIRED'],['RATE_LIMIT','BOUND_QUOTA_LIMITED'],['TRANSPORT','BOUND_TRANSPORT_FAILED'],['UNKNOWN','BOUND_REQUEST_FAILED']])test(`in-band SDK ${code} failure is normalized without losing reported usage`,async t=>{
+for(const [code,category] of [['AUTH','BOUND_AUTH_REQUIRED'],['RATE_LIMIT','BOUND_QUOTA_LIMITED'],['TRANSPORT','BOUND_TRANSPORT_FAILED'],['STREAM_CLOSED','BOUND_TRANSPORT_FAILED'],['SERVER','BOUND_TRANSPORT_FAILED'],['CONTEXT_WINDOW_EXCEEDED','CONTEXT_WINDOW_EXCEEDED'],['EMPTY_RESPONSE','EMPTY_RESPONSE'],['INVALID_REQUEST','INVALID_REQUEST'],['UNKNOWN','BOUND_REQUEST_FAILED']])test(`in-band SDK ${code} failure is normalized without losing reported usage`,async t=>{
  const f=await fixture(t),usage={inputTokens:17,outputTokens:5,totalTokens:22};await f.service.models(f.keys[0]);
  f.engines.get('A').prepare=async id=>({model:model(id),stream:()=> (async function*(){yield{type:'usage',usage};yield{type:'finish',reason:{kind:'error',failure:{code,message:'PRIVATE_MOCK_ACCESS PRIVATE_MOCK_ACCOUNT',cause:{secret:'PRIVATE_CAUSE'}}},privateExtension:'PRIVATE_TOP_LEVEL'};})()});
  const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini'),events=[];for await(const event of prepared.stream({messages:[]}))events.push(event);
@@ -379,6 +385,22 @@ test('apply uses injected FakeStore/FakeDriver and registers only codex-accounts
   const source = await fs.readFile(new URL('./codex-accounts/index.js', import.meta.url), 'utf8');
   assert.match(source, /hostModel\s*:\s*\(\)\s*=>\s*get\(['"]agentDefaultModel['"]\)/);
   assertNoAccountWork(f);
+});
+
+for (const operation of ['select', 'configure']) for (const phase of ['queued', 'beforeCommit']) test(`${operation} cancellation at ${phase} never persists new defaults/settings`, async t => {
+  const f=await fixture(t), before=await f.service.models(f.keys[0]), controller=new AbortController();
+  const entered=deferred(),gate=deferred(),update=f.directory.update.bind(f.directory),bytes=await fs.readFile(f.directory.file,'utf8');
+  f.directory.update=(fn,beforeCommit)=>update(async data=>{entered.resolve();await gate.promise;return fn(data);},()=>{if(phase==='beforeCommit')controller.abort();beforeCommit?.();});
+  const pending=operation==='select'?f.service.select(f.keys[1],before.generation,controller.signal):f.service.configureModels(f.keys[0],before.generation,settings({enabled:[]}),controller.signal);
+  const rejected=assert.rejects(pending,/REQUEST_ABORTED/);await entered.promise;if(phase==='queued')controller.abort();gate.resolve();await rejected;
+  assert.equal(await fs.readFile(f.directory.file,'utf8'),bytes);assertNoAccountWork(f);
+});
+
+test('upstream aborted finish is sanitized instead of leaking private failure',async t=>{
+ const f=await fixture(t);await f.service.models(f.keys[0]);
+ f.engines.get('A').prepare=async id=>({model:model(id),stream:()=> (async function*(){yield{type:'usage',usage:{inputTokens:3}};yield{type:'finish',reason:{kind:'aborted',failure:{code:'ABORTED',message:'PRIVATE_ABORT_REASON',cause:{secret:'PRIVATE'}}}};})()});
+ const prepared=await f.service.prepareSlug(f.keys[0],'codex-mini'),events=[];for await(const event of prepared.stream({messages:[]}))events.push(event);
+ assert.equal(events[0].usage.inputTokens,3);assert.equal(events[1].reason.failure.code,'BOUND_CANCELLED');assert(!JSON.stringify(events).includes('PRIVATE'));
 });
 
 test('validated image offload preflight survives bound service without retry or private facts', async t => {

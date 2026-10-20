@@ -3,7 +3,7 @@
 // Protocol target: official rust-v0.163.0 models-manager + provider version
 // header. Keep our own integration identity; do not impersonate codex_cli_rs or
 // confuse this compatibility version with the plugin's release version.
-export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.5' });
+export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.6' });
 export const MODEL_CATALOGUE_CLIENT_VERSION = MODEL_CATALOGUE_PROFILE.clientVersion;
 // The wire catalogue contains instruction templates, including compatibility
 // copies of base_instructions. Bound decoded bytes, not a small quota-DTO size.
@@ -31,6 +31,7 @@ export function inspectAccountModelCatalogue(raw, builtin) {
     // plugin also uses SDK defaults). Missing metadata must not erase an online
     // model. This is a conservative LOCAL budget, not its advertised context or
     // an account entitlement. Explicitly malformed limits still fail closed.
+    if ((row.context_window != null && !positive(row.context_window)) || (row.max_context_window != null && !positive(row.max_context_window))) { omit(row, 'missing-context'); continue; }
     const localContext = !original && row.context_window == null && row.max_context_window == null && positive(base?.contextWindow);
     const context = positive(row.context_window) ? row.context_window : positive(row.max_context_window) ? row.max_context_window : original?.contextWindow ?? (localContext ? Math.min(base.contextWindow, 8192) : undefined);
     if (!base || !positive(context)) { omit(row, 'missing-context'); continue; }
@@ -44,10 +45,11 @@ export function inspectAccountModelCatalogue(raw, builtin) {
     seen.add(row.slug);
     const merged={ ...base, id: row.slug, name: label(row.display_name, row.slug), input: [...new Set(input)], contextWindow: context,
       reasoning: supported ? supported.length > 0 : (original?.reasoning ?? false), ...(thinkingLevelMap ? { thinkingLevelMap } : {}), pricingKnown:!!original };
-    if (localContext) {
-      merged.maxTokens = Math.min(positive(base.maxTokens) ? base.maxTokens : 4096, Math.floor(context / 2));
-      delete merged.maxContextWindow; // Never advertise the template's extended context.
-    }
+    // Do not inherit another slug's extended context or output limit.
+    if (!original || row.max_context_window != null || row.context_window != null) delete merged.maxContextWindow;
+    if (positive(row.max_context_window) && row.max_context_window >= context) merged.maxContextWindow = row.max_context_window;
+    if (!original) merged.maxTokens = Math.min(positive(base.maxTokens) ? base.maxTokens : 4096, Math.max(1, Math.floor(context / 2)));
+    if (localContext) delete merged.maxContextWindow;
     if(!original&&!supported)delete merged.thinkingLevelMap;
     if(!original)delete merged.cost; // Unknown subscription price is not a free model.
     result.push(merged);
@@ -105,6 +107,9 @@ export const defaultModelSettings = () => ({ enabled: null, defaultModel: null, 
 export function requestFailure(error, signal) {
   if (signal?.aborted || error?.name === 'AbortError') return 'BOUND_CANCELLED';
   const code = error?.code;
+  // The host compactor keys off this public control code, not our UI category.
+  if (['CONTEXT_WINDOW_EXCEEDED','EMPTY_RESPONSE','INVALID_REQUEST'].includes(code)) return code;
+  if (code === 'ABORTED') return 'BOUND_CANCELLED';
   if (code === 'UNSUPPORTED_CONTENT') {
     const message = error?.message;
     if (message === 'pi-ai image input requires the durable attachment service' || message === 'pi-ai image conversion requires the durable attachment service') return 'BOUND_IMAGE_SERVICE_UNAVAILABLE';
@@ -119,6 +124,6 @@ export function requestFailure(error, signal) {
   if (['UNKNOWN_MODEL','MODEL_NOT_FOUND'].includes(code)) return 'BOUND_MODEL_UNAVAILABLE';
   if (['AUTH','INVALID_CREDENTIAL','INVALID_API_KEY','UNAUTHORIZED','AUTHENTICATION'].includes(code)) return 'BOUND_AUTH_REQUIRED';
   if (['QUOTA_EXCEEDED','RATE_LIMITED','RATE_LIMIT'].includes(code)) return 'BOUND_QUOTA_LIMITED';
-  if (['TRANSPORT','NETWORK','TIMEOUT','LLM_STREAM_IDLE_TIMEOUT'].includes(code)) return 'BOUND_TRANSPORT_FAILED';
+  if (['TRANSPORT','NETWORK','TIMEOUT','LLM_STREAM_IDLE_TIMEOUT','STREAM_CLOSED','SERVER'].includes(code)) return 'BOUND_TRANSPORT_FAILED';
   return 'BOUND_REQUEST_FAILED';
 }

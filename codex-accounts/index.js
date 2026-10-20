@@ -46,7 +46,7 @@ export function accountServiceHandler(service, authorize) {
         case 'quota.read': result = await service.quota(body.accountKey, signal); break;
         case 'models.read': result=await service.models(body.accountKey,false,signal);break;
         case 'models.refresh': result=await service.models(body.accountKey,true,signal);break;
-        case 'models.configure': result=await service.configureModels(body.accountKey,body.expectedGeneration,body.settings);break;
+        case 'models.configure': result=await service.configureModels(body.accountKey,body.expectedGeneration,body.settings,signal);break;
         case 'host-model.select': result=await service.selectHostModel(body.accountKey,body.modelKey);break;
         case 'bindings': result = await service.bindings(); break;
         case 'warmup.run': result = await service.warmup(body.accountKey, body.modelKey, signal); break;
@@ -98,7 +98,7 @@ export async function apply(ctx, { directoryFile, driver, fetchImpl } = {}) {
     };
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: '/api/dsh-plugin-codex-accounts', handler: accountServiceHandler(service, authorize) }), 'codex-accounts: authenticated service');
     if (typeof routeCtx.connection.fetch?.register === 'function') {
-      routeCtx.connection.fetch.register({ path: '/api/dsh-plugin-codex-accounts', methods: ['GET', 'HEAD', 'POST'], requestBody: 'buffered', fetch: accountServiceFetchHandler(service) });
+      routeCtx.effect(() => routeCtx.connection.fetch.register({ path: '/api/dsh-plugin-codex-accounts', methods: ['GET', 'HEAD', 'POST'], requestBody: 'buffered', fetch: accountServiceFetchHandler(service) }), 'codex-accounts: shared fetch service');
     }
   });
   ctx.effect(() => () => service.dispose(), 'codex-accounts: lifetime');
