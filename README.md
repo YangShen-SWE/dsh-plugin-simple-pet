@@ -1,10 +1,17 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.0.6 · Codex 长会话与账号连接兼容补丁](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.0.6)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.1.0 · 会话推理、Fast 与重置卡安全流程](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.0)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
 A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the integrated official-component account service; both default off. Install only the simple-pet package.
+
+## v1.1.0 重点
+
+- 会话推理选择与账号默认分开，“模型默认”不再继承账号高推理档位。
+- 标准 / Fast 按账号返回的模型能力开放；Fast 可能增加用量，必须单独确认，预热不继承。不提供 Ultrafast，不保证速度/资格。
+- 固定账号重置卡检查与五秒等待后的独立兑换确认；POST 前持久防重放，未知结果暂停，不自动重试。本轮仅离线模拟验证，未真实兑换卡。
+- 收录默认关闭的精确专家会话迁移机制，不附带任何本机迁移策略或会话身份。
 
 ## 界面展示 / Screenshots
 

@@ -29,7 +29,7 @@ export function accountServiceHandler(service, authorize) {
       if (cancelled()) return;
       let body;
       try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); } catch { reply(400, { error: 'INVALID_JSON' }); return; }
-      const schema = { 'login.start': ['label'], 'login.cancel': ['id'], 'login.respond': ['id', 'promptId', 'value'], 'account.rename': ['accountKey', 'label', 'expectedGeneration'], 'account.remove': ['accountKey', 'expectedGeneration'], 'account.select': ['accountKey', 'expectedGeneration'], 'quota.read': ['accountKey'], 'models.read':['accountKey'], 'models.refresh':['accountKey'], 'models.configure':['accountKey','expectedGeneration','settings'], 'host-model.select':['accountKey','modelKey'], bindings: [], 'warmup.run': ['accountKey', 'modelKey'] };
+      const schema = { 'login.start': ['label'], 'login.cancel': ['id'], 'login.respond': ['id', 'promptId', 'value'], 'account.rename': ['accountKey', 'label', 'expectedGeneration'], 'account.remove': ['accountKey', 'expectedGeneration'], 'account.select': ['accountKey', 'expectedGeneration'], 'quota.read': ['accountKey'], 'reset.inspect':['accountKey'], 'reset.prepare':['accountKey','creditRef'], 'reset.consume':['accountKey','challengeId','acknowledged'], 'models.read':['accountKey'], 'models.refresh':['accountKey'], 'models.configure':['accountKey','expectedGeneration','settings'], 'host-model.select':['accountKey','modelKey'], bindings: [], 'warmup.run': ['accountKey', 'modelKey'] };
       const keys = schema[body?.action];
       if (!keys || !body || Array.isArray(body) || Object.keys(body).sort().join(',') !== ['action', ...keys].sort().join(',')) { reply(400, { error: 'INVALID_ACTION' }); return; }
       const signal = AbortSignal.any([sourceSignal, AbortSignal.timeout(body.action === 'warmup.run' ? 90000 : 20000)]);
@@ -43,6 +43,9 @@ export function accountServiceHandler(service, authorize) {
         case 'account.rename': result = await service.rename(body.accountKey, body.label, body.expectedGeneration, signal); break;
         case 'account.remove': result = await service.remove(body.accountKey, body.expectedGeneration); break;
         case 'account.select': result = await service.select(body.accountKey, body.expectedGeneration, signal); break;
+        case 'reset.inspect': result=await service.resetInspect(body.accountKey,signal);break;
+        case 'reset.prepare': result=await service.resetPrepare(body.accountKey,body.creditRef,signal);break;
+        case 'reset.consume': result=await service.resetConsume(body.accountKey,body.challengeId,body.acknowledged,signal);break;
         case 'quota.read': result = await service.quota(body.accountKey, signal); break;
         case 'models.read': result=await service.models(body.accountKey,false,signal);break;
         case 'models.refresh': result=await service.models(body.accountKey,true,signal);break;

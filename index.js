@@ -21,6 +21,7 @@ import { MultiWarmupStore, MultiWarmupScheduler, multiWarmupHandler } from './mu
 import { discoverBoundAccounts, runBoundWarmup } from './multi-warmup-provider.js';
 import { officialAccountRpc, readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy } from './official-accounts.js';
 import { embeddedAccountsPlugin } from './embedded-accounts.js';
+import { loadExpertRoutePolicy, installExpertSessionCompatibility, loadExpertMessageFactory } from './expert-session-compat.js';
 
 export const name = 'dsh-plugin-simple-pet';
 export const inject = ['sessions', 'credentials', 'settings', 'llm'];
@@ -169,6 +170,19 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   const statsFile = join(dataDir, `stats-${profile}.json`);
   const codexStatsFile = join(dataDir, `stats-codex-${profile}.json`);
   const prefsFile = join(dataDir, 'settings.json');
+  // Optional public Agent services must not become mandatory dependencies of
+  // the pet. No policy file means no route changes for any agent.
+  if (typeof ctx.inject === 'function') ctx.inject(['agents','sessionProjections'], async agentCtx => {
+    const policyFile = join(dataDir, `expert-routes-${profile}.json`);
+    if (!agentCtx.agents?.list || !agentCtx.sessionProjections?.stateOf) return;
+    try {
+      if (loadExpertRoutePolicy(policyFile).length === 0) return;
+      const createUserMessage = await loadExpertMessageFactory();
+      agentCtx.effect(() => installExpertSessionCompatibility(agentCtx, {
+        readPolicy: () => loadExpertRoutePolicy(policyFile), createUserMessage,
+      }));
+    } catch { agentCtx.logger?.warn?.('simple-pet: explicit expert route compatibility unavailable; original routes retained.'); }
+  });
   const warmupFile = join(dataDir, 'warmup.json');
   const initialWarmup = readLegacyWarmup(warmupFile);
   let storedWarmup = initialWarmup.journal, warmupJournalReadable = initialWarmup.readable, warmupJournalAlert = null;
@@ -177,7 +191,8 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   const codexLedger = loadLedger(storedCodexStats);
   let codex = { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
   let codexIdentity = null; // Memory only: never included in snapshots, ledgers or preferences.
-  let codexBridge = null;
+  let codexBridge = null,officialRequests=new AbortController();
+  const revokeOfficialRequests=()=>{officialRequests.abort();officialRequests=new AbortController();};
   let codexBusy = false;
   let codexProvider = 'openai-codex';
   let accountBackend = 'legacy';
@@ -188,7 +203,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     if (next === accountBackend) return;
     if (warmup.active || multiWarmup.active) warmupModeUncertain = true;
     warmup.active?.abort(); multiWarmup.active?.abort();
-    accountBackend = next; accountSourceGeneration++; codexRevision++; codexIdentity = null; warmupQuota = null;
+    revokeOfficialRequests();accountBackend = next; accountSourceGeneration++; codexRevision++; codexIdentity = null; warmupQuota = null;
     codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
   }
   function refreshAccountBackend() {
@@ -491,7 +506,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     const bridge = quotaCtx.connection.createSharedFetchHandler('/api');
     multiWarmup.active?.abort();
     bridgeRevision++;
-    codexBridge = bridge;
+    revokeOfficialRequests();codexBridge = bridge;
     codexIdentity = null;
     codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
     void pollCodex();
@@ -501,7 +516,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       if (codexBridge === bridge) {
         clearInterval(quotaPollTimer); quotaPollTimer = null;
         bridgeRevision++;
-        codexBridge = null; codexIdentity = null;
+        revokeOfficialRequests();codexBridge = null; codexIdentity = null;
         warmup.active?.abort(); multiWarmup.active?.abort();
         warmupQuota = null; warmupPollAt = 0;
         codex = { status: 'unsupported', fiveHour: null, weekly: null, observedAt: null };
@@ -682,7 +697,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       }),
     }), 'simple-pet: explicitly authorized account-bound warmup');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: '/api/dsh-plugin-simple-pet/official-accounts',
-      handler: officialAccountsProxy({ bridge: () => live && refreshAccountBackend() === 'official' ? codexBridge : null, authorize: (req, res) => guard(routeCtx, req, res) }),
+      handler: officialAccountsProxy({ bridge: () => live && refreshAccountBackend() === 'official' ? codexBridge : null,sourceSignal:()=>officialRequests.signal, authorize: (req, res) => guard(routeCtx, req, res) }),
     }), 'simple-pet: explicit official OAuth account management');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
@@ -748,7 +763,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   }, 'deepseek-pet: window');
   ctx.effect(() => async () => {
     live = false; accountControl.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
-    clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await Promise.all([warmup.stop(), multiWarmup.stop()]); await snapshotTask;
+    officialRequests.abort();clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await Promise.all([warmup.stop(), multiWarmup.stop()]); await snapshotTask;
     if (warmupUsageDirty) {
       try {
         await mkdir(dataDir, { recursive: true });

@@ -14,6 +14,28 @@ const messages = Object.freeze({
   MODEL_CATALOG_EMPTY:'该账号未返回当前适配器可用的模型；不会虚构 gpt-6.1-sol 权限。',
   MODEL_REVOKED:'所选模型已不在账号目录或已被隐藏，请刷新目录并重新选择。',
   INVALID_MODEL_SETTINGS:'模型设置不完整或格式不正确。',
+  RESET_UNCERTAIN: '重置卡兑换可能已发送，结果未知。已持久暂停此卡，不会自动再兑换；请人工核验官方额度。',
+  RESET_CLAIM_PAUSED: '此卡已有兑换或未知记录，已保守暂停，不能通过刷新、重绑或重启重新兑换。',
+  RESET_RESPONSE_INVALID: '重置卡响应未通过安全校验，不能据此判断没有卡或兑换成功。',
+  RESET_HTTP_FAILED: '重置卡服务未接受查询；该账号资格或接口可用性尚未确认。',
+  RESET_TRANSPORT_FAILED: '无法读取重置卡服务；未自动重试。',
+  RESET_TIMEOUT: '重置卡查询超时，未自动重试。',
+  RESET_IDENTITY_CHANGED: '目标账号或授权代际已变化，请重新检查卡片。',
+  RESET_CARD_INVALID: '卡片选择已失效，请明确重新检查。',
+  RESET_CARD_EXPIRES_SOON: '卡片即将过期，无法安全完成确认。',
+  RESET_CHALLENGE_INVALID: '兑换确认已失效，请重新检查。',
+  RESET_CHALLENGE_EXPIRED: '兑换确认已过期，未自动重做。',
+  RESET_WAIT_REQUIRED: '请等待服务端规定的确认时间。',
+  RESET_ACK_REQUIRED: '需要单独确认消耗此重置卡。',
+  RESET_IN_PROGRESS: '此兑换正在进行，请勿重复提交。',
+  RESET_ALREADY_USED: '此确认已经处理，不能再次提交。',
+  RESET_CANCELLED: '重置卡操作已取消；若结果未知请人工核验。',
+  RESET_CLOSED: '账号服务已关闭，未自动重试。',
+  RESET_STORE_UNAVAILABLE: '兑换保护记录不可用，已阻止操作；不要删除保护文件来重试。',
+  RESET_STORE_FULL: '兑换保护记录已达上限，已阻止操作；不会删除旧记录。',
+  RESET_CAPACITY: '重置卡操作达到安全容量，请稍后重新检查。',
+  RESET_FAILED: '重置卡操作未完成，不会自动重试。',
+  SPEED_UNAVAILABLE: '此账号模型未验证支持 Fast；请更新目录或明确改选标准速度。不会静默改档或换账号。',
   REASONING_UNAVAILABLE:'所选推理档位不受该模型支持。',
   HOST_MODEL_UNAVAILABLE:'当前宿主不支持保存新会话默认模型；可在会话顶部手动选择。',
   HOST_MODEL_NOT_SAVED:'宿主未保存所选模型，请在会话顶部手动选择。',
@@ -81,13 +103,15 @@ export async function runOfficialWarmup({ bridge, accountKey, modelKey, signal, 
   if (!isCurrent() || result?.status !== 'completed' || result.accountKey !== accountKey || result.modelKey !== modelKey) throw new Error('Official request unconfirmed');
   return result;
 }
-export function officialAccountsProxy({ bridge, authorize }) {
-  const permitted = new Set(['login.start', 'login.cancel', 'login.respond', 'account.rename', 'account.remove', 'account.select', 'quota.read', 'models.read', 'models.refresh', 'models.configure', 'host-model.select']);
+export function officialAccountsProxy({ bridge, authorize,sourceSignal=()=>undefined }) {
+  const permitted = new Set(['login.start', 'login.cancel', 'login.respond', 'account.rename', 'account.remove', 'account.select', 'quota.read', 'models.read', 'models.refresh', 'models.configure', 'host-model.select', 'reset.inspect', 'reset.prepare', 'reset.consume']);
   return async (req, res) => {
     if (!authorize(req, res)) return;
     const method = req.method || 'GET';
     const reply = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(method === 'HEAD' ? undefined : JSON.stringify(value)); };
     if (!['GET','HEAD','POST'].includes(method)) { reply(405, { error: 'Method not allowed' }); return; }
+    const disconnected=new AbortController(),abort=()=>disconnected.abort(),closed=()=>{if(res.writableEnded!==true)abort();};
+    req.once?.('aborted',abort);res.once?.('close',closed);
     try {
       let action = null, payload = {};
       if (method === 'POST') {
@@ -101,12 +125,14 @@ export function officialAccountsProxy({ bridge, authorize }) {
       }
       const current = bridge();
       if (!current) { reply(503, { error: '内置账号服务尚不可用，请检查 simple-pet 运行状态；不会回退第三方账号。', code: 'OFFICIAL_SERVICE_UNAVAILABLE' }); return; }
-      const result = await officialAccountRpc(current, action, payload, AbortSignal.timeout(20000));
+      const signal=AbortSignal.any([disconnected.signal,AbortSignal.timeout(20000),...[req.signal,sourceSignal()].filter(Boolean)]);
+      signal.throwIfAborted();
+      const result = await officialAccountRpc(current, action, payload, signal);
       if (bridge() !== current) throw new Error('source changed');
       reply(200, result);
     } catch (error) {
       const known = localErrors.has(error) ? error : serviceError('OFFICIAL_SERVICE_UNAVAILABLE');
       reply(known.status, { error: known.message, code: known.code, requestNotSent: known.requestNotSent === true });
-    }
+    } finally {req.off?.('aborted',abort);res.off?.('close',closed);}
   };
 }

@@ -3,7 +3,8 @@
 // Protocol target: official rust-v0.163.0 models-manager + provider version
 // header. Keep our own integration identity; do not impersonate codex_cli_rs or
 // confuse this compatibility version with the plugin's release version.
-export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.0.6' });
+import { accountSpeedModes } from './request-preferences.js';
+export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.1.0' });
 export const MODEL_CATALOGUE_CLIENT_VERSION = MODEL_CATALOGUE_PROFILE.clientVersion;
 // The wire catalogue contains instruction templates, including compatibility
 // copies of base_instructions. Bound decoded bytes, not a small quota-DTO size.
@@ -44,7 +45,7 @@ export function inspectAccountModelCatalogue(raw, builtin) {
     const thinkingLevelMap = supported ? Object.fromEntries(levels.map(v => [v, supported.includes(v === 'off' ? 'none' : v) ? (v === 'off' ? 'none' : v) : null])) : base.thinkingLevelMap;
     seen.add(row.slug);
     const merged={ ...base, id: row.slug, name: label(row.display_name, row.slug), input: [...new Set(input)], contextWindow: context,
-      reasoning: supported ? supported.length > 0 : (original?.reasoning ?? false), ...(thinkingLevelMap ? { thinkingLevelMap } : {}), pricingKnown:!!original };
+      speedModes: accountSpeedModes(row), reasoning: supported ? supported.length > 0 : (original?.reasoning ?? false), ...(thinkingLevelMap ? { thinkingLevelMap } : {}), pricingKnown:!!original };
     // Do not inherit another slug's extended context or output limit.
     if (!original || row.max_context_window != null || row.context_window != null) delete merged.maxContextWindow;
     if (positive(row.max_context_window) && row.max_context_window >= context) merged.maxContextWindow = row.max_context_window;
@@ -99,9 +100,10 @@ export async function fetchAccountModels({ auth, accountId, signal, fetchImpl = 
   } finally { if(reader){try{Promise.resolve(reader.cancel()).catch(()=>{});}catch{}try{reader.releaseLock();}catch{}}else if(body){try{Promise.resolve(body.cancel()).catch(()=>{});}catch{}} }
 }
 export function validModelSettings(x) {
-  return x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).every(k => ['enabled','defaultModel','reasoningEffort'].includes(k))
+  return x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).every(k => ['enabled','defaultModel','reasoningEffort','speedMode'].includes(k))
     && (x.enabled === null || (Array.isArray(x.enabled) && x.enabled.length <= 128 && new Set(x.enabled).size === x.enabled.length && x.enabled.every(modelIdOK)))
-    && (x.defaultModel === null || modelIdOK(x.defaultModel)) && (x.reasoningEffort === null || levels.includes(x.reasoningEffort));
+    && (x.defaultModel === null || modelIdOK(x.defaultModel)) && (x.reasoningEffort === null || levels.includes(x.reasoningEffort))
+    && (x.speedMode === undefined || ['standard','fast'].includes(x.speedMode));
 }
 export const defaultModelSettings = () => ({ enabled: null, defaultModel: null, reasoningEffort: null });
 export function requestFailure(error, signal) {

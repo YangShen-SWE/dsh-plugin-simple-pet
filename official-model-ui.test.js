@@ -18,15 +18,18 @@ function fixture(t, options = {}){
  const values={...DEFAULT_PREFERENCES,codexAccountBackend:'official',billingMode:'codex'};
  let settings={enabled:options.enabled??null,defaultModel:null,reasoningEffort:null};
  let host={available:true,managed:false};
- const row=id=>({id,modelKey:hash(id),name:id==='gpt-6.1-sol'?'GPT 6.1 Sol':id,inputModalities:['text','image'],reasoning:{efforts:[{id:'low'},{id:'high'}]}});
+ const row=id=>({id,modelKey:hash(id),name:id==='gpt-6.1-sol'?'GPT 6.1 Sol':id,speedModes:options.fast?['standard','fast']:['standard'],inputModalities:['text','image'],reasoning:{efforts:[{id:'low'},{id:'high'}]}});
  const models=()=>({accountKey:key,generation,settings:structuredClone(settings),hostModel:host,catalog:{source:remote?'account-catalog':'builtin',status:remote?'ready':'not-refreshed',omitted:options.omitted??[],capabilityGaps:options.capabilityGaps??[],receivedCount:3,includedCount:options.noSol?2:3,requestMode:'full',clientVersion:'0.153.4',targetModel:options.noTarget?undefined:{received:!options.noSol||!!options.omitted?.length,accepted:!options.noSol,reason:options.omitted?.[0]?.reason??null}},models:[row('gpt-5.5'),row('gpt-5.5-mini'),...(remote&&!options.noSol?[row('gpt-6.1-sol')]:[])]});
- const catalogue=()=>({generation,implementation:options.oldOwner?undefined:{owner:'simple-pet',modelDiscovery:2},capabilities:{models:true},busy:false,hostModel:host,accounts:[{accountKey:key,label:'合成工作账号',bound:true,selected:true}]});
+ const catalogue=()=>({generation,implementation:options.oldOwner?undefined:{owner:'simple-pet',modelDiscovery:2},capabilities:{models:true,resetCredits:options.resets===true},busy:false,hostModel:host,accounts:[{accountKey:key,label:'合成工作账号',epoch:1,bound:true,selected:true}]});
  const ui=harness(async(url,init={})=>{
   calls.push({url,...init});
   if(url.endsWith('/preferences')){if(init.method==='PUT')Object.assign(values,JSON.parse(init.body).patch);return Response.json({values,revision:'r'});}
   if(!url.endsWith('/official-accounts'))return Response.json({});
   if(init.method!=='POST')return Response.json(catalogue());
   const b=JSON.parse(init.body);
+  if(b.action==='reset.inspect')return Response.json({availableCount:1,credits:[{ref:'opaque-card',paused:false}]});
+  if(b.action==='reset.prepare')return Response.json({challengeId:'opaque-confirm',readyAt:Date.now()-1000,expiresAt:Date.now()+60000});
+  if(b.action==='reset.consume')return options.resetUnknown?Response.json({code:'RESET_UNCERTAIN',error:'兑换可能已发送，结果未知；不再自动重试。'},{status:503}):Response.json({code:'reset',windowsResetCount:1});
   if(b.action==='models.configure'){
    if(options.failSave)throw new Error('Synthetic network failure');
    if(options.saveGate)await options.saveGate;
@@ -65,7 +68,7 @@ test('ordinary and model preferences autosave without save buttons; host selecti
  assert.equal(f.ui.find('data-settings-save'),undefined);assert.equal(f.ui.find('data-model-save'),undefined);
  f.ui.nodes().find(n=>n.props.name==='size').props.onChange({target:{value:'small'}});f.ui.render();await f.persist();
  const preferenceSave=JSON.parse(f.calls.find(c=>c.method==='PUT').body);assert.deepEqual(preferenceSave.patch,{size:'small'});assert.equal(f.ui.find('data-model-default').props.value,'gpt-6.1-sol');
- const saved=f.posts().at(-1);assert.deepEqual(saved,{action:'models.configure',accountKey:key,expectedGeneration:1,settings:{enabled:null,defaultModel:'gpt-6.1-sol',reasoningEffort:'high'}});
+ const saved=f.posts().at(-1);assert.deepEqual(saved,{action:'models.configure',accountKey:key,expectedGeneration:1,settings:{enabled:null,defaultModel:'gpt-6.1-sol',reasoningEffort:'high',speedMode:'standard'}});
  assert.equal(f.ui.find('data-model-save'),undefined);assert(!f.posts().some(b=>b.action==='host-model.select'));
  await f.click('data-model-use');assert.deepEqual(f.posts().at(-1),{action:'host-model.select',accountKey:key,modelKey:hash('gpt-6.1-sol')});assert.match(f.ui.text(),/已有会话/);
 });
@@ -116,7 +119,7 @@ test('model preferences debounce latest combined draft with CAS and do not chang
  f.ui.find('data-model-reasoning').props.onChange({target:{value:'high'}});f.ui.render();
  assert.equal(f.posts().filter(b=>b.action==='models.configure').length,0);
  await f.persist(520);f.ui.render();
- assert.deepEqual(f.posts().filter(b=>b.action==='models.configure'),[{action:'models.configure',accountKey:key,expectedGeneration:1,settings:{enabled:null,defaultModel:'gpt-6.1-sol',reasoningEffort:'high'}}]);
+ assert.deepEqual(f.posts().filter(b=>b.action==='models.configure'),[{action:'models.configure',accountKey:key,expectedGeneration:1,settings:{enabled:null,defaultModel:'gpt-6.1-sol',reasoningEffort:'high',speedMode:'standard'}}]);
  assert(!f.posts().some(b=>b.action==='host-model.select'));assert.equal(f.ui.find('data-model-save'),undefined);
  f.ui.find('data-model-reasoning').props.onChange({target:{value:'low'}});f.ui.render();await f.persist(520);f.ui.render();
  assert.equal(f.posts().filter(b=>b.action==='models.configure').at(-1).expectedGeneration,2);
@@ -144,6 +147,30 @@ test('model controls are disabled while an autosave request owns the account ope
  await f.persist(520);f.ui.render();assert.equal(f.posts().filter(b=>b.action==='models.configure').length,1);
  assert.equal(f.ui.find('data-model-default').props.disabled,true);assert.equal(f.ui.find('data-model-use').props.disabled,true);
  release();await settle();f.ui.render();assert.equal(f.ui.find('data-model-save'),undefined);
+});
+test('Fast is capability gated and requires a separate confirmation before preference autosave',async t=>{
+ const f=fixture(t,{fast:true});await f.open();
+ f.ui.find('data-model-default').props.onChange({target:{value:'gpt-6.1-sol'}});f.ui.render();await f.persist();
+ const before=f.posts().length;await f.click('data-speed-request');await f.persist();assert.equal(f.posts().length,before);
+ assert.match(f.ui.text(f.ui.find('data-speed-confirmation')),/可能增加用量/);
+ await f.click('data-speed-confirm');await f.persist();
+ assert.equal(f.posts().at(-1).action,'models.configure');assert.equal(f.posts().at(-1).settings.speedMode,'fast');
+ assert(!f.posts().some(b=>/stream|warmup|host-model/.test(b.action)));
+});
+test('unknown Fast capabilities stay unavailable and session reasoning help is explicit',async t=>{
+ const f=fixture(t);await f.open();assert.equal(f.ui.find('data-speed-request').props.disabled,true);assert.match(f.ui.text(f.ui.find('data-session-reasoning-help')),/当前会话.*不会修改/);
+});
+for(const unknown of [false,true])test('reset card requires inspect, prepare and separate ack; consume is never replayed '+unknown,async t=>{
+ const f=fixture(t,{resets:true,resetUnknown:unknown});await f.open();
+ assert(!f.posts().some(b=>b.action.startsWith('reset.')));
+ await f.click('data-reset-inspect');assert.equal(f.posts().at(-1).action,'reset.inspect');
+ await f.click('data-reset-prepare');assert.equal(f.posts().at(-1).action,'reset.prepare');
+ assert.equal(f.ui.find('data-reset-consume').props.disabled,true);
+ f.ui.find('data-reset-ack').props.onChange({target:{checked:true}});f.ui.render();
+ const consume=f.ui.find('data-reset-consume').props.onClick;consume();consume();await settle();f.ui.render();
+ assert.equal(f.posts().filter(b=>b.action==='reset.consume').length,1);assert.equal(f.ui.find('data-reset-consume'),undefined);
+ await f.persist(5000);assert.equal(f.posts().filter(b=>b.action==='reset.consume').length,1);
+ assert(!f.posts().some(b=>/warmup|host-model|quota.read/.test(b.action)));
 });
 test('captured model-save/use callbacks cannot survive backend ABA or unmount',async t=>{
  for(const mode of ['ABA','unmount']){

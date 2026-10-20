@@ -1,5 +1,6 @@
 // Public packages only. This module never reads the host's global Codex slot,
 // environment keys, ~/.codex, or an installation-private path.
+import { withSpeedPreference } from './request-preferences.js';
 import { inspectAccountModelCatalogue, fetchAccountModels, MODEL_CATALOGUE_CLIENT_VERSION, MODEL_CATALOGUE_PROFILE } from './model-catalogue.js';
 
 export async function createOfficialDriver({ credentials, runtime = {} }, load = async () => {
@@ -22,6 +23,7 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
     resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess?.(attachments, hostPath => runtime.filesystem?.()?.processPathFromHostPath(hostPath), ref),
   });
   const builtin = provider.getModels?.() ?? [];
+  let speedCapabilities = new Map();
   let etag = null, revision = 0, refreshGeneration = 0, catalog = { source: 'builtin', status: 'not-refreshed', clientObservedAt: null, error: null, clientVersion: MODEL_CATALOGUE_CLIENT_VERSION, requestProfile: MODEL_CATALOGUE_PROFILE.id, requestMode: null };
   const safeAuth = async signal => {
     const resolution = await models.getAuth('openai-codex', { signal });
@@ -62,6 +64,7 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
           const piProvider = { ...provider, getModels: () => sdkRows };
           // PiAiAdapter snapshots by Map identity: replacing only the array is insufficient.
           profiles = new Map([['openai-codex', { ...profiles.get('openai-codex'), piProvider }]]);
+          speedCapabilities = new Map(next.map(row => [row.id, row.speedModes]));
           etag = response.etag; revision++;
         } else if (!revision) throw new Error('MODEL_CATALOG_INVALID');
         catalog = { ...catalog, source: 'account-catalog', status: 'ready', clientObservedAt: Date.now(), error: null };
@@ -74,10 +77,19 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
     },
     async listModels() {
       const rows = await adapter.listModels('openai-codex');
-      return Promise.all(rows.map(async row => ({ ...row, ...await adapter.resolveModel?.('openai-codex', row.id) })));
+      return Promise.all(rows.map(async row => ({ ...row, ...await adapter.resolveModel?.('openai-codex', row.id),
+        speedModes: catalog.status === 'ready' ? speedCapabilities.get(row.id) ?? ['standard'] : ['standard'] })));
     },
-    async prepare(model) {
-      const prepared = await adapter.prepareCall('openai-codex', model);
+    async prepare(model, { speedMode = 'standard' } = {}) {
+      if (!['standard','fast'].includes(speedMode) || (speedMode === 'fast' && (catalog.status !== 'ready' || !speedCapabilities.get(model)?.includes('fast')))) throw new Error('SPEED_UNAVAILABLE');
+      // A separate profile captures speed for this prepared request. Never mutate
+      // a shared provider or read a changing setting during an in-flight stream.
+      const profile = profiles.get('openai-codex');
+      const localProfiles = new Map([['openai-codex', { ...profile, piProvider: withSpeedPreference(profile.piProvider, speedMode) }]]);
+      const localAdapter = new PiAiAdapter({ profiles: () => localProfiles, resolveApiKey: async () => undefined, auth,
+        resolveAttachments: () => runtime.attachments?.(),
+        resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess?.(attachments, hostPath => runtime.filesystem?.()?.processPathFromHostPath(hostPath), ref) });
+      const prepared = await localAdapter.prepareCall('openai-codex', model);
       return { ...prepared, stream(options) {
         // Codex subscription Responses does not support temperature. Do not leak
         // generic chat defaults into a request which otherwise has valid OAuth.
@@ -94,9 +106,9 @@ export async function createOfficialDriver({ credentials, runtime = {} }, load =
 export function createBoundAdapter(service) {
   const routes = async () => {
     const data = await service.bindings(), all = [];
-    for (const row of data.accounts) for (const model of row.models) all.push({ provider: 'codex-accounts', id: `${row.accountKey}:${model.baseId}`, name: `${row.label} · ${model.modelName}`, inputModalities: model.inputModalities ?? ['text'] });
+    for (const row of data.accounts) for (const model of row.models) all.push({ provider: 'codex-accounts', id: `${row.accountKey}:${model.baseId}`, name: `${row.label} · ${model.modelName}`, inputModalities: model.inputModalities ?? ['text'], ...(model.reasoning ? {reasoning:model.reasoning} : {}) });
     const selected = data.accounts.find(row=>row.selected===true);
-    if (selected) for (const model of selected.models) all.push({ provider: 'codex-accounts', id: `default:${model.baseId}`, name: `默认新请求账号 · ${model.modelName}`, inputModalities: model.inputModalities ?? ['text'] });
+    if (selected) for (const model of selected.models) all.push({ provider: 'codex-accounts', id: `default:${model.baseId}`, name: `默认新请求账号 · ${model.modelName}`, inputModalities: model.inputModalities ?? ['text'], ...(model.reasoning ? {reasoning:model.reasoning} : {}) });
     return all;
   };
   const resolve = (model, data) => {

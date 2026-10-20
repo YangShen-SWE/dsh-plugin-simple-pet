@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseQuota, fetchQuota } from './quota.js';
 import { modelIdOK, validModelSettings, defaultModelSettings, requestFailure } from './model-catalogue.js';
 import { accountReplayMessages, accountReplayEvent } from './replay.js';
+import { createResetCredits } from './reset-credits.js';
 
 export const PROVIDER = 'codex-accounts';
 export const hash = value => createHash('sha256').update(value).digest('hex');
@@ -198,6 +199,34 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     return result;
   };
   const validCapture = async c => { if (!await c.store.read('openai-codex')) throw fail('OAUTH_REQUIRED'); ensure(); c.controller.signal.throwIfAborted(); };
+  let resets;
+  const resetCapture = identity => [...captures.values()].find(c=>c.accountKey===identity.accountKey&&c.key===identity.bindingInstance&&c.epoch===identity.epoch&&!c.controller.signal.aborted);
+  const resetManager = () => {
+    if (!resets) {
+      if (typeof directory.file !== 'string') throw fail('RESET_STORE_UNAVAILABLE',503);
+      resets = createResetCredits({storeFile:path.join(path.dirname(directory.file),'reset-credit-claims.json'),fetchImpl,now:clock,
+        validate:async identity=>{const c=resetCapture(identity);if(!c||disposed)return false;await validCapture(c);const grant=await c.store.read('openai-codex');return grant?.accountId===identity.accountId&&!disposed&&!c.controller.signal.aborted;},
+        revalidate:identity=>!disposed&&Boolean(resetCapture(identity)) });
+    }
+    return resets;
+  };
+  const resetOperation = async (action,key,payload,signal) => {
+    const c=await capture(key),engine=await c.engine;
+    await validCapture(c);
+    const combined=AbortSignal.any([c.controller.signal,...(signal?[signal]:[])]);
+    combined.throwIfAborted();
+    const auth=await engine.auth(combined),grant=await c.store.read('openai-codex');
+    await validCapture(c);combined.throwIfAborted();
+    if(!grant||grant.access!==auth?.apiKey)throw fail('OAUTH_REQUIRED');
+    try {
+      const result=await resetManager()[action]({...payload,identity:{accountKey:c.accountKey,epoch:c.epoch,bindingInstance:c.key,accountId:grant.accountId,access:auth.apiKey},signal:combined});
+      if(action==='consume') { observations.delete(c.key);notify(); }
+      return result;
+    } catch(error) {
+      const allowed=['RESET_CANCELLED','RESET_CLOSED','RESET_TIMEOUT','RESET_IDENTITY_CHANGED','RESET_HTTP_FAILED','RESET_RESPONSE_INVALID','RESET_TRANSPORT_FAILED','RESET_CARD_INVALID','RESET_CARD_EXPIRES_SOON','RESET_CHALLENGE_INVALID','RESET_CHALLENGE_EXPIRED','RESET_WAIT_REQUIRED','RESET_ACK_REQUIRED','RESET_IN_PROGRESS','RESET_ALREADY_USED','RESET_CLAIM_PAUSED','RESET_UNCERTAIN','RESET_STORE_UNAVAILABLE','RESET_STORE_FULL','RESET_CAPACITY','RESET_FAILED'];
+      throw fail(allowed.includes(error?.code)?error.code:'RESET_FAILED',503,error?.requestNotSent===true);
+    }
+  };
   const catalogue = async () => {
     ensure(); const generation = defaultGeneration;
     // Snapshot progress before I/O: never combine a newly completed login with
@@ -219,11 +248,14 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
     ensure();
     const accounts = results.filter(Boolean), selectedKey = selected && accounts.some(r => r.accountKey === publicKey(selected)) ? publicKey(selected) : null;
     if (generation === defaultGeneration) defaultKey = selectedKey;
-    return { version: 1, provider: PROVIDER, implementation: { owner: 'simple-pet', modelDiscovery: 2 }, capabilities:{models:true,rename:true}, generation: data.generation ?? 0, defaultKey: selectedKey, busy: activeRequests > 0,
+    return { version: 1, provider: PROVIDER, implementation: { owner: 'simple-pet', modelDiscovery: 2 }, capabilities:{models:true,rename:true,resetCredits:true}, generation: data.generation ?? 0, defaultKey: selectedKey, busy: activeRequests > 0,
       accounts, hostModel: hostStatus(),
       login: loginSummary };
   };
   const api = {
+    resetInspect: (key,signal) => resetOperation('inspect',key,{},signal),
+    resetPrepare: (key,creditRef,signal) => resetOperation('prepare',key,{creditRef},signal),
+    resetConsume: (key,challengeId,acknowledged,signal) => resetOperation('consume',key,{challengeId,acknowledged},signal),
     catalogue, capture,
     async beginLogin(label = '') {
       ensure(); if (!cleanLabel(label)) throw fail('INVALID_LABEL', 400);
@@ -374,7 +406,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         catalog:engine.catalogStatus?.() ?? {source:'builtin',status:'not-refreshed'},
         models:rows.filter(m=>modelIdOK(m.id)).map(m=>({id:m.id,modelKey:hash(`${c.accountKey}:${m.id}`),name:cleanLabel(m.name)?m.name:m.id,
           enabled:settings.enabled===null||settings.enabled.includes(m.id),inputModalities:m.inputModalities ?? ['text'],
-          contextWindow:m.context?.contextWindow ?? null,reasoning:m.reasoning ?? null})) };
+          contextWindow:m.context?.contextWindow ?? null,reasoning:m.reasoning ?? null,speedModes:m.speedModes ?? ['standard']})) };
     },
     async configureModels(key, expectedGeneration, settings, signal) {
       const guard = () => { ensure(); if (signal?.aborted) throw fail('REQUEST_ABORTED', 503); };
@@ -387,9 +419,10 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         const model=enabled.find(m=>m.id===settings.defaultModel);
         if (!model?.reasoning?.efforts?.some(e=>e.id===settings.reasoningEffort)) throw fail('REASONING_UNAVAILABLE');
       }
+      if (settings.speedMode === 'fast' && (!settings.defaultModel || !enabled.find(m=>m.id===settings.defaultModel)?.speedModes?.includes('fast'))) throw fail('SPEED_UNAVAILABLE');
       await directory.update(data=>{guard();if((data.generation??0)!==expectedGeneration)throw fail('SOURCE_CHANGED');
         const row=data.rows.find(r=>r.key===c.key&&r.epoch===c.epoch&&!r.revoked&&r.bound);if(!row)throw fail('ACCOUNT_REVOKED');
-        row.modelSettings={enabled:settings.enabled===null?null:[...settings.enabled],defaultModel:settings.defaultModel,reasoningEffort:settings.reasoningEffort};},guard);
+        row.modelSettings={enabled:settings.enabled===null?null:[...settings.enabled],defaultModel:settings.defaultModel,reasoningEffort:settings.reasoningEffort,...(settings.speedMode ? {speedMode:settings.speedMode} : {})};},guard);
       notify();return api.models(key);
     },
     async selectHostModel(key, modelKey) {
@@ -421,21 +454,27 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
         const catalog = engine.catalogStatus?.() ?? { source: 'builtin', status: 'not-refreshed' };
         const modelStatus = catalog.source === 'account-catalog' && catalog.status === 'ready' ? 'ready' : catalog.status === 'stale' ? 'stale' : 'unverified';
         accounts.push({ accountKey: c.accountKey, label: row.label, selected:row.selected, maskedEmail: null, credentialStatus: 'available', modelStatus,
-          models: models.filter(m => modelIdOK(m.id) && (settings.enabled===null||settings.enabled.includes(m.id))).map(m => ({ modelKey: hash(`${c.accountKey}:${m.id}`), modelName: m.name || m.id, baseId: m.id, inputModalities:m.inputModalities ?? ['text'] })) });
+          models: models.filter(m => modelIdOK(m.id) && (settings.enabled===null||settings.enabled.includes(m.id))).map(m => ({ modelKey: hash(`${c.accountKey}:${m.id}`), modelName: m.name || m.id, baseId: m.id, inputModalities:m.inputModalities ?? ['text'], reasoning:m.reasoning ?? null })) });
       }
       ensure();
       return { provider: PROVIDER, binding: 'official-isolated', accounts };
     },
     prepareSlug(key, model) { if(!modelIdOK(model))throw fail('MODEL_REVOKED');return api.prepare(key,hash(`${key}:${model}`),model); },
-    async prepare(key, modelKey, hint=null) {
+    async prepare(key, modelKey, hint=null, { speedMode: forcedSpeed } = {}) {
       const c = await capture(key), engine = await c.engine, models = await modelsFor(c,engine,modelIdOK(hint)&&hash(`${key}:${hint}`)===modelKey?hint:null); await validCapture(c);
       const settings=await settingsFor(c);
       const model = models.find(m => hash(`${c.accountKey}:${m.id}`) === modelKey && (settings.enabled===null||settings.enabled.includes(m.id)));
       if (!model) throw fail('MODEL_REVOKED');
-      const prepared = await engine.prepare(model.id); await validCapture(c);
+      const speedMode = forcedSpeed ?? (settings.defaultModel===model.id ? settings.speedMode ?? 'standard' : 'standard');
+      if (!['standard','fast'].includes(speedMode) || (speedMode==='fast' && !model.speedModes?.includes('fast'))) throw fail('SPEED_UNAVAILABLE');
+      const prepared = await engine.prepare(model.id, { speedMode }); await validCapture(c);
       const defaultReasoning=settings.defaultModel===model.id?settings.reasoningEffort:null;
       return { accountKey: c.accountKey, baseId:model.id, defaultReasoning, modelName: model.name || model.id, info: prepared.model,
         stream(options) {
+          // Omitted means inherit this captured account default. An explicit
+          // undefined/null means model default, as used by the host selector.
+          const effort = Object.hasOwn(options, 'reasoningEffort') ? options.reasoningEffort : defaultReasoning;
+          if (effort != null && !model.reasoning?.efforts?.some(e=>e.id===effort)) throw fail('REASONING_UNAVAILABLE');
           const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), c.controller.signal]);
           return (async function* () {
             await validCapture(c); activeRequests++; let observedStreamEvent = false;
@@ -469,7 +508,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       try {
         const quota = await api.quota(key, signal);
         if (quota.status !== 'reported' || quota.ordinaryUsageAllowed !== true || [quota.fiveHour, quota.weekly].some(w => w && w.remainingPercent <= 0)) throw fail('ORDINARY_QUOTA_NOT_ALLOWED');
-        const prepared = await api.prepare(key, modelKey); signal.throwIfAborted();
+        const prepared = await api.prepare(key, modelKey, null, { speedMode: 'standard' }); signal.throwIfAborted();
         modelName = prepared.modelName;
         const efforts = prepared.info?.reasoning?.efforts;
         const effort = ['off','none','minimal','low','medium','high','xhigh','max'].find(id => Array.isArray(efforts) && efforts.some(row => row.id === id));
@@ -486,7 +525,7 @@ export function createAccountService({ credentials, directory, driver, fetchImpl
       } catch { throw Object.assign(fail('WARMUP_UNCONFIRMED', 503, !crossed), { usage, modelName }); }
     },
     async dispose() {
-      disposed = true; login?.controller.abort(); for (const c of captures.values()) c.controller.abort();
+      disposed = true; resets?.dispose(); login?.controller.abort(); for (const c of captures.values()) c.controller.abort();
       if (login && ['running','prompt'].includes(login.status)) await api.remove(login.key).catch(() => {});
       if (login?.task) await Promise.race([login.task.catch(() => {}), delay(2000, undefined, { ref: false })]);
       await directory.tail;

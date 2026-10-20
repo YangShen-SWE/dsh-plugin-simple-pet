@@ -267,7 +267,13 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     const accountRows = officialCatalogue?.accounts || [];
     const viewedAccount = accountRows.find(row => row.accountKey === viewAccountKey) || accountRows.find(row => row.selected) || accountRows[0] || null;
     const cancelRemove = (restoreFocus = false) => { removeConfirmation.current = null; setRemoveTarget(null); if (restoreFocus) removeTrigger.current?.focus?.(); };
+    const viewedAccountRef=useRef(null);viewedAccountRef.current=viewedAccount;
     const [officialModels,setOfficialModels]=useState(null),[modelDraft,setModelDraft]=useState(null),[modelNote,setModelNote]=useState('');
+    const [fastConfirmation,setFastState]=useState(null),fastConfirmationRef=useRef(null);
+    const setFastConfirmation=value=>{fastConfirmationRef.current=value;setFastState(value);};
+    const [resetView,setResetState]=useState(null),resetViewRef=useRef(null),resetConsumed=useRef(new Set());
+    const setResetView=value=>{const next=typeof value==='function'?value(resetViewRef.current):value;resetViewRef.current=next;setResetState(next);};
+    const resetFlight=useRef(false);
     const modelEditor=useRef({data:null,draft:null}), modelSaveTimer=useRef(null), modelSaveFailure=useRef(null);
     const cancelModelSave=()=>{if(modelSaveTimer.current!==null)clearTimeout(modelSaveTimer.current);modelSaveTimer.current=null;};
     const officialAction = useRef({ busy: false, controller: null, generation: 0 }), officialPromptId = useRef(null);
@@ -304,14 +310,15 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       };
       void refresh();
       const timer = setInterval(refresh, 5000);
-      return () => { alive.current = false; cancelModelSave(); cancelRenameTimer(); autosave.current?.dispose(); officialAction.current.controller?.abort(); multiAction.current.controller?.abort(); controller.abort(); clearInterval(timer); };
+      const resetClock = setInterval(() => {if(alive.current&&resetViewRef.current?.challenge)setAccountNow(Date.now());},1000);
+      return () => { alive.current = false; cancelModelSave(); cancelRenameTimer(); autosave.current?.dispose(); officialAction.current.controller?.abort(); multiAction.current.controller?.abort(); controller.abort(); clearInterval(timer);clearInterval(resetClock); };
     }, []);
     const invalidateOfficial = () => {
       cancelModelSave(); modelSaveFailure.current=null; closeRename(); setViewAccountKey(null); setBatchKeys([]); setBatchResults({}); setBatchNote(''); setBatchRunning(false); setDiagnosticText(''); setDiagnosticNote('');
       const previous = officialAction.current; previous.controller?.abort();
       officialAction.current = { busy: false, controller: null, generation: previous.generation + 1 };
       officialPromptId.current = null; officialSnapshot.current = null; officialBlocked.current = false; cancelRemove(); setOfficialRowNotes({}); setOfficialBusy(false); setOfficialCatalogue(null); setOfficialNote(''); setOfficialError(false); setOfficialReply(''); setOfficialAdding(false);
-      modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('');
+      modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('');setFastConfirmation(null);setResetView(null);
     };
     const officialGeneration = officialAction.current.generation;
     const officialRequest = async (action = null, payload = {}) => {
@@ -351,7 +358,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         }
         if(action==='account.select'&&!modelsResult){modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('账号已选中，但目录更新失败；并非确认没有 gpt-6.1-sol，请重试更新目录。');}
         if(action==='host-model.select')setModelNote('已回读确认 DSH 默认模型。已有会话若固定了旧模型，请在会话顶部手动重选。');
-        if(action==='account.remove'&&modelEditor.current.data?.accountKey===payload.accountKey){modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('');}
+        if(action==='account.remove'&&modelEditor.current.data?.accountKey===payload.accountKey){modelEditor.current={data:null,draft:null};setOfficialModels(null);setModelDraft(null);setModelNote('');setFastConfirmation(null);setResetView(null);}
         if (action === 'account.remove') officialReadButton.current?.focus?.();
         if (action === 'login.respond' || data.login?.prompt?.id !== officialPromptId.current) setOfficialReply('');
         officialPromptId.current = data.login?.prompt?.id ?? null;
@@ -450,11 +457,34 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       void officialRequest('account.remove', { accountKey: target.accountKey, expectedGeneration: target.generation });
     };
     const modelDirty=()=>!!modelEditor.current.data&&JSON.stringify(modelEditor.current.draft)!==JSON.stringify(modelEditor.current.data.settings);
+    const resetAction = async (action,row,payload={}) => {
+      if(resetFlight.current||officialAction.current.busy||officialAction.current.generation!==officialGeneration||officialBlocked.current||!alive.current||viewedAccountRef.current?.accountKey!==row.accountKey||viewedAccountRef.current?.epoch!==row.epoch||loaded?.values?.codexAccountBackend!=='official'||draftRef.current?.codexAccountBackend!=='official')return;
+      const snapshot=officialSnapshot.current;
+      if(!snapshot?.accounts?.some(r=>r.accountKey===row.accountKey&&r.epoch===row.epoch&&r.bound))return;
+      if(action==='reset.consume'&&(!payload.acknowledged||resetView?.accountKey!==row.accountKey||resetView?.epoch!==row.epoch||resetView?.generation!==snapshot.generation||resetView?.challenge?.challengeId!==payload.challengeId||accountNow<resetView.challenge.readyAt||accountNow>=resetView.challenge.expiresAt))return;
+      if(action==='reset.consume'){
+        if(resetViewRef.current?.challenge?.challengeId!==payload.challengeId||!resetViewRef.current.acknowledged||resetConsumed.current.has(payload.challengeId))return;
+        resetConsumed.current.add(payload.challengeId);
+      }
+      const controller=new AbortController(),generation=officialAction.current.generation;
+      resetFlight.current=true;officialAction.current={busy:true,controller,generation,action,accountKey:row.accountKey};setOfficialBusy(true);
+      const base={accountKey:row.accountKey,epoch:row.epoch,generation:snapshot.generation};
+      setResetView(previous=>({...previous,...base,busy:true,note:'正在处理；不会自动重试。'}));
+      const current=()=>alive.current&&officialAction.current.generation===generation&&draftRef.current?.codexAccountBackend==='official'&&officialSnapshot.current?.generation===snapshot.generation&&officialSnapshot.current?.accounts?.some(r=>r.accountKey===row.accountKey&&r.epoch===row.epoch);
+      try {
+        const result=await request('official-accounts',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({action,accountKey:row.accountKey,...payload})});
+        if(!current())return;
+        if(action==='reset.inspect')setResetView({...base,cards:result.credits||[],note:result.availableCount?'已读取卡片；仅符合官方资格的账号可兑换。':'未返回可用卡；不据此判断账号套餐。'});
+        else if(action==='reset.prepare')setResetView({...base,challenge:result,acknowledged:false,note:'请核对目标并等待后单独确认；关闭不会提交兑换。'});
+        else setResetView({...base,done:true,note:result.code==='reset'?'官方报告已重置；旧额度显示不作为新报告，请手动刷新额度。':result.code==='nothing_to_reset'?'官方报告当前没有可重置窗口；此卡操作已记账，不会重发。':result.code==='no_credit'?'官方报告没有可用卡。':'官方报告此卡已兑换；不会重发。'});
+      } catch(error) {if(current())setResetView({...base,done:action==='reset.consume',note:error.status?error.message:'结果无法确认，未自动重试；若兑换可能已发送，请人工核验，勿反复提交。'});}
+      finally {resetFlight.current=false;if(alive.current&&officialAction.current.controller===controller){officialAction.current={busy:false,controller:null,generation};setOfficialBusy(false);}}
+    };
     const viewAccount = row => {
       if (!alive.current || officialAction.current.generation !== officialGeneration || officialAction.current.busy || draftRef.current?.codexAccountBackend !== 'official') return false;
       if (modelDirty() || renameEditor.current) { setOfficialNote('请先等待自动保存完成或关闭编辑，再查看其他账号；草稿保留，没有发送请求。'); return false; }
       if (!officialSnapshot.current?.accounts?.some(value => value.accountKey === row.accountKey && value.epoch === row.epoch)) return false;
-      cancelRemove(); setViewAccountKey(row.accountKey); return true;
+      cancelRemove(); setResetView(null);setFastConfirmation(null);setViewAccountKey(row.accountKey); return true;
     };
     const openModels=(key,refresh=true,discard=false)=>{
       if(!alive.current||officialAction.current.generation!==officialGeneration||officialAction.current.busy||loaded?.values?.codexAccountBackend!=='official'||draftRef.current?.codexAccountBackend!=='official')return false;
@@ -469,7 +499,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
       if (officialModels?.accountKey === row.accountKey || openModels(row.accountKey)) setTab('models');
     };
     const changeModel=patch=>{
-      if(!alive.current||officialAction.current.busy||!modelEditor.current.data)return;
+      if(!alive.current||officialAction.current.busy||officialAction.current.generation!==officialGeneration||!modelEditor.current.data||modelEditor.current.data.accountKey!==officialModels?.accountKey||modelEditor.current.data.generation!==officialModels?.generation||draftRef.current?.codexAccountBackend!=='official')return;
       const next={...modelEditor.current.draft,...patch};modelEditor.current={...modelEditor.current,draft:next};setModelDraft(next);cancelModelSave();
       if(modelSaveFailure.current){setModelNote('模型自动保存已暂停；草稿保留，请核验后重试保存或明确放弃并重新读取。');return;}
       if(!modelDirty()){setModelNote('模型设置已保存；没有更改 DSH 默认或发送模型请求。');return;}
@@ -614,18 +644,28 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
         officialCatalogue?.implementation?.modelDiscovery !== 2 && h('p', { className: 'pet-settings-error', 'data-model-owner-unconfirmed': true }, '当前账号服务实现尚未确认。旧独立插件或尚未退出的宿主进程可能仍占用路由；安装文件更新不代表运行中服务已切换。请自行完整退出并重开 DSH 后再更新目录，不要删除授权或预热记录。'),
         officialModels.catalog?.capabilityGaps?.some(row=>row.reason==='context-limit-unreported')&&h('p',{className:'pet-settings-hint','data-model-context-note':true},'部分新模型未报告上下文上限，已保留为可选模型并暂用本地 8192-token 请求预算；这不是服务端真实上限，也不保证该账号有使用权限。'),
         h('p',{className:'pet-settings-hint','data-host-model-state':true},`DSH 默认：${/^[a-f0-9]{64}$/.test(currentModel)?'旧版模型入口，请重新选择':currentModel}。已有会话若锁定旧模型，需在会话顶部手动重选。`),
-        h('label',{className:'pet-settings-row'},h('span',null,'该账号首选模型'),h('select',{'data-model-default':true,value:modelDraft.defaultModel||'',disabled,onChange:e=>changeModel({defaultModel:e.target.value||null,reasoningEffort:null})},
+        h('label',{className:'pet-settings-row'},h('span',null,'该账号首选模型'),h('select',{'data-model-default':true,value:modelDraft.defaultModel||'',disabled,onChange:e=>{setFastConfirmation(null);changeModel({defaultModel:e.target.value||null,reasoningEffort:null,speedMode:'standard'});}},
           h('option',{value:''},'未指定'),
           modelDraft.defaultModel&&!selected&&h('option',{value:modelDraft.defaultModel},'已保存模型不可用，请重选'),
           ...rows.filter(row=>enabled(row.id)).map(row=>h('option',{key:row.id,value:row.id},`${row.name} · ${row.id}`)))),
         h('label',{className:'pet-settings-row'},h('span',null,'推理档位'),h('select',{'data-model-reasoning':true,value:modelDraft.reasoningEffort||'',disabled:disabled||!selected,onChange:e=>changeModel({reasoningEffort:e.target.value||null})},
           h('option',{value:''},'按模型默认'),...(selected?.reasoning?.efforts||[]).map(e=>h('option',{key:e.id,value:e.id},effortName[e.id]||e.id)))),
+        h('p',{className:'pet-settings-hint','data-session-reasoning-help':true},'当前会话推理档位请在聊天输入框的模型菜单选择；会话选择不会修改这里的账号默认。选择模型默认时不应继承更高的账号档位。此处仅保存该账号首选模型的默认推理。'),
+        h('div',{className:'pet-account-actions','data-model-speed':true},
+          h('span',null,`此账号首选模型速度：${modelDraft.speedMode==='fast'?'Fast（可能增加用量）':'标准'}`),
+          h('button',{type:'button',disabled:disabled||modelDraft.speedMode!=='fast',onClick:()=>{setFastConfirmation(null);changeModel({speedMode:'standard'});}},'使用标准速度'),
+          h('button',{type:'button','data-speed-request':true,disabled:disabled||!selected?.speedModes?.includes('fast')||modelDraft.speedMode==='fast',onClick:()=>setFastConfirmation(`${officialModels.accountKey}:${selected.id}:${officialModels.generation}`)},'启用 Fast…')),
+        h('p',{className:'pet-settings-hint'},'Fast 为 priority 服务档位，可能增加额度消耗，不保证更快。只影响本账号首选模型的后续普通请求；不会改变已开始的请求或预热。未验证的模型能力不开放 Fast；暂不提供 Ultrafast。'),
+        fastConfirmation===`${officialModels.accountKey}:${selected?.id}:${officialModels.generation}`&&h('div',{role:'group','aria-label':'确认 Fast 用量','data-speed-confirmation':true},
+          h('p',null,`确认给 ${owner?.label||'此账号'} 的 ${selected?.name||selected?.id} 开启持续 Fast 偏好？可能增加用量；这是账号偏好，不是仅下一条消息。`),
+          h('button',{type:'button','data-speed-confirm':true,disabled,onClick:()=>{if(fastConfirmationRef.current!==`${officialModels.accountKey}:${selected.id}:${officialModels.generation}`)return;setFastConfirmation(null);changeModel({speedMode:'fast'});}},'确认开启 Fast 并自动保存'),
+          h('button',{type:'button',onClick:()=>setFastConfirmation(null)},'取消')),
         h('div',{className:'pet-model-availability'},h('div',{className:'pet-model-list-heading'},`可用模型（${rows.filter(row=>enabled(row.id)).length}/${rows.length}）`),
           h('label',{className:'pet-settings-toggle'},h('input',{type:'checkbox',checked:modelDraft.enabled===null,disabled,'data-model-follow':true,onChange:e=>changeModel({enabled:e.target.checked?null:rows.map(row=>row.id)})}),h('span',null,'跟随该账号目录，自动提供可用模型')),
           h('div',{className:'pet-model-list'},...rows.map(row=>h('label',{key:row.id,className:'pet-model-row'},
             h('input',{type:'checkbox',checked:enabled(row.id),disabled,'data-model-enabled':row.id,onChange:e=>{
               const ids=modelDraft.enabled===null?rows.map(item=>item.id):modelDraft.enabled;
-              changeModel({enabled:e.target.checked?[...new Set([...ids,row.id])]:ids.filter(id=>id!==row.id),...(!e.target.checked&&modelDraft.defaultModel===row.id?{defaultModel:null,reasoningEffort:null}:{})});
+              changeModel({enabled:e.target.checked?[...new Set([...ids,row.id])]:ids.filter(id=>id!==row.id),...(!e.target.checked&&modelDraft.defaultModel===row.id?{defaultModel:null,reasoningEffort:null,speedMode:'standard'}:{})});
             }}),h('span',null,h('strong',null,row.name),h('small',null,row.id)),h('span',{className:'pet-settings-hint'},row.inputModalities?.includes('image')?'文本 / 图片':'文本'))))),
         h('p',{className:'pet-settings-hint','data-model-sol-status':true},(()=>{
           const sol=rows.find(row=>row.id==='gpt-6.1-sol'),catalog=officialModels.catalog;
@@ -762,6 +802,18 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
                 })),
                 h('small', null, `${report.received}；不是服务器采样时间`),
                 report.restricted && h('span', { className: 'pet-settings-error' }, '服务报告普通用量受限；不会据旧百分比推断可用。')),
+              officialCatalogue.capabilities?.resetCredits===true&&h('details',{'data-reset-card-panel':row.accountKey,className:'pet-settings-details'},
+                h('summary',null,'额度重置卡 · 单独确认'),
+                h('p',{className:'pet-settings-hint'},'仅部分官方订阅可用；检查卡片不会兑换。兑换会消耗一次性卡，不是预热。结果未知会持久暂停，不能自动重试、重绑或清记录再兑换。'),
+                h('button',{type:'button','data-reset-inspect':true,disabled:officialBusy||officialError||row.bound!==true,onClick:()=>void resetAction('reset.inspect',row)},'检查本账号重置卡'),
+                resetView?.accountKey===row.accountKey&&resetView?.epoch===row.epoch&&resetView?.generation===officialCatalogue.generation&&h('div',null,
+                  h('p',{role:'status'},resetView.note),
+                  resetView.cards?.map((card,i)=>h('div',{key:card.ref},h('span',null,`卡片 ${i+1}${card.paused?' · 已暂停':''}${card.expiresAt?` · 到期 ${new Date(card.expiresAt).toLocaleString()}`:''}`),h('button',{type:'button','data-reset-prepare':card.ref,disabled:officialBusy||card.paused,onClick:()=>void resetAction('reset.prepare',row,{creditRef:card.ref})},'选择并核对'))),
+                  resetView.challenge&&h('div',{role:'group','aria-label':'重置卡兑换确认'},
+                    h('p',null,`目标：${target}。确认消耗此卡重置官方允许的额度窗口；不会保证重置全部窗口。确认有效期至 ${new Date(resetView.challenge.expiresAt).toLocaleTimeString()}。`),
+                    h('label',null,h('input',{type:'checkbox',checked:!!resetView.acknowledged,disabled:officialBusy,'data-reset-ack':true,onChange:e=>setResetView({...resetView,acknowledged:e.target.checked})}),'我已核对账号并同意消耗卡片'),
+                    h('button',{type:'button','data-reset-consume':true,disabled:officialBusy||!resetView.acknowledged||accountNow<resetView.challenge.readyAt||accountNow>=resetView.challenge.expiresAt,onClick:()=>void resetAction('reset.consume',row,{challengeId:resetView.challenge.challengeId,acknowledged:true})},accountNow<resetView.challenge.readyAt?'等待确认倒计时…':'确认消耗卡片'),
+                    h('button',{type:'button',disabled:officialBusy,onClick:()=>setResetView(null)},'取消')))),
               officialRowNotes[row.accountKey] && h('p', { role: 'alert', className: 'pet-settings-error', 'data-official-row-error': row.accountKey }, officialRowNotes[row.accountKey]));
           }),
           officialCatalogue?.capabilities?.models!==true&&officialCatalogue&&h('p',{className:'pet-settings-hint'},'当前账号服务尚未提供模型设置。若仍启用了旧独立账号包，请停用旧包并完整重启，以加载 simple-pet 内置服务。'),
