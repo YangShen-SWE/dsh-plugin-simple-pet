@@ -2,8 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { statBuckets, calendarDate, quotaStatus, quotaReset, createSimplePetClient } from './client-source.js';
+import { statBuckets, calendarDate, quotaStatus, quotaReset, createSimplePetClient, resetCreditExpiry, accountCredentialSummary } from './client-source.js';
 import { DEFAULT_PREFERENCES } from './preferences.js';
+
+test('concise account status retains errors and card expiry never invents unknown dates', () => {
+  assert.equal(accountCredentialSummary({credentialStatus:'available',bound:true}),'');
+  assert.equal(accountCredentialSummary({bound:true}),'');
+  assert.match(accountCredentialSummary({credentialStatus:'identity-mismatch'}),/已暂停/);
+  for(const value of [undefined,null,0,-1,NaN,Infinity,'2026-10-21',8640000000000001]) assert.equal(resetCreditExpiry(value),'到期时间未提供');
+  assert.match(resetCreditExpiry(Date.UTC(2026,9,21,12)),/^到期时间：2026/);
+  const source=readFileSync(new URL('./client-source.js',import.meta.url),'utf8');
+  assert.match(source,/resetCreditExpiry\(card\.expiresAt\)[\s\S]*card\.paused/);
+});
 
 function harness(send) {
   const cells = [], effects = [];

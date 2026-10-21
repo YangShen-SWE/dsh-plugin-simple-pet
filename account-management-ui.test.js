@@ -219,13 +219,13 @@ test('unknown removal failure does not imply the durable tombstone was undone', 
   await f.ui.sync(); assert(!f.ui.find('data-official-account-row', A)); assert.equal(f.posts().length, 1);
 });
 
-test('quota receipts remain visible and age past reset on local clock ticks without any new quota query', async t => {
+test('concise quota cards retain reset aging without receipt boilerplate or extra queries', async t => {
   const base = 1_790_000_000_000; let now = base;
   t.mock.method(Date, 'now', () => now); t.mock.timers.enable({ apis: ['setInterval'] });
   const f = fixture(t); f.state.catalogue.accounts[0].quota = { status: 'reported', clientObservedAt: base - 2000, fiveHour: { remainingPercent: 23, resetAt: base + 1000 }, weekly: null };
-  await f.ready(); assert.match(f.ui.text(f.ui.find('data-official-quota-report', A)), /最近报告.*23%.*本机收到/s);
+  await f.ready(); const initial = f.ui.text(f.ui.find('data-official-quota-report', A)); assert.match(initial, /23%/); assert.doesNotMatch(initial, /本机收到|本地凭据|不是服务器采样/);
   now += 5001; t.mock.timers.tick(5000); await settle(); f.ui.render();
-  const report = f.ui.text(f.ui.find('data-official-quota-report', A)); assert.match(report, /已过重置.*23%/s); assert.match(report, /不是服务器采样/);
+  const report = f.ui.text(f.ui.find('data-official-quota-report', A)); assert.match(report, /已过重置.*23%/s); assert.doesNotMatch(report, /本机收到|不是服务器采样/);
   assert.equal(f.state.gets, 1); assert.equal(f.posts().length, 0); assert.match(f.ui.text(f.ui.find('data-official-quota-report', B)), /尚未查询/);
 });
 

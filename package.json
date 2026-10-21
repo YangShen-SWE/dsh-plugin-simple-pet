@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-simple-pet",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "A Windows desktop companion with DeepSeek balances, integrated Codex multi-account OAuth, quota and model management, and autosaving settings.",
   "repository": { "type": "git", "url": "https://github.com/YangShen-SWE/dsh-plugin-simple-pet.git" },
   "license": "SEE LICENSE",
@@ -9,13 +9,17 @@
   "exports": { ".": "./index.js", "./client": "./lib/client.js", "./package.json": "./package.json" },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-settings-general", "@deepseek-ai/dsh-api-remotes"] }
+    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-settings-general", "@deepseek-ai/dsh-api-remotes", "@deepseek-ai/dsh-client-connection", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-model-selection", "@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-ui-tool", "@deepseek-ai/dsh-client-ui-primitives"] }
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.87.1",
-    "@deepseek-ai/dsh-llm-pi-ai": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.2.0-rc.2",
+    "https-proxy-agent": "7.0.6",
+    "ws": "8.21.3"
   },
   "scripts": {
+    "test:embedded-subscription": "node --test --test-isolation=none subscription-oauth.test.js embedded-subscription.test.js embedded-subscription-client.test.js index.test.js client.test.js",
     "build": "node build-client.js",
     "test:background-reads": "node --test --test-isolation=none background-reads.test.js official-model-ui.test.js account-management-ui.test.js",
     "test:reset-credits": "node --test --test-isolation=none reset-credits.test.js reset-service.test.js official-model-ui.test.js",
@@ -34,6 +38,6 @@
     "test:account-control": "node --test --test-isolation=none account-control.test.js account-control-ui.test.js",
     "test:panel-accounts": "node --test --test-isolation=none panel-accounts.test.js account-control-ui.test.js",
     "test:multi-warmup": "node --test --test-isolation=none multi-warmup.test.js multi-warmup-provider.test.js multi-warmup-ui.test.js",
-    "test": "node --test background-reads.test.js reset-credits.test.js reset-service.test.js request-preferences.test.js expert-session-compat.test.js codex-accounts/official-driver.test.js codex-accounts/replay.test.js account-management.test.js account-management-ui.test.js account-rename.test.js account-tools.test.js autosave.test.js embedded-accounts.test.js integrated-model-refresh.test.js codex-accounts/model-catalogue.test.js official-model-settings.test.js official-model-ui.test.js panel-accounts.test.js multi-warmup.test.js multi-warmup-provider.test.js multi-warmup-ui.test.js account-control.test.js account-control-ui.test.js account-identity.test.js compact.test.js preferences-applied.test.js companion.test.js card-themes.test.js billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js codex.test.js warmup.test.js warmup-call.test.js preferences.test.js preferences-route.test.js native-settings.test.js client.test.js"
+    "test": "node --test subscription-oauth.test.js embedded-subscription.test.js embedded-subscription-client.test.js background-reads.test.js reset-credits.test.js reset-service.test.js request-preferences.test.js expert-session-compat.test.js codex-accounts/official-driver.test.js codex-accounts/replay.test.js account-management.test.js account-management-ui.test.js account-rename.test.js account-tools.test.js autosave.test.js embedded-accounts.test.js integrated-model-refresh.test.js codex-accounts/model-catalogue.test.js official-model-settings.test.js official-model-ui.test.js panel-accounts.test.js multi-warmup.test.js multi-warmup-provider.test.js multi-warmup-ui.test.js account-control.test.js account-control-ui.test.js account-identity.test.js compact.test.js preferences-applied.test.js companion.test.js card-themes.test.js billing.test.js stats.test.js index.test.js launch.test.js ui.test.js skins.test.js codex.test.js warmup.test.js warmup-call.test.js preferences.test.js preferences-route.test.js native-settings.test.js client.test.js"
   }
 }

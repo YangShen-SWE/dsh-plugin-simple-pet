@@ -4,7 +4,7 @@
 // header. Keep our own integration identity; do not impersonate codex_cli_rs or
 // confuse this compatibility version with the plugin's release version.
 import { accountSpeedModes } from './request-preferences.js';
-export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.1.1' });
+export const MODEL_CATALOGUE_PROFILE = Object.freeze({ id: 'codex-models-v0.163.0', clientVersion: '0.163.0', versionHeader: '0.163.0', originator: 'pi', userAgent: 'dsh-plugin-simple-pet/1.1.2' });
 export const MODEL_CATALOGUE_CLIENT_VERSION = MODEL_CATALOGUE_PROFILE.clientVersion;
 // The wire catalogue contains instruction templates, including compatibility
 // copies of base_instructions. Bound decoded bytes, not a small quota-DTO size.

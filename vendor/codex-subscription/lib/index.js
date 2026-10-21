@@ -1,0 +1,6917 @@
+import { oauthCredentialForResolution, createSubscriptionRequestAuth } from "../../../subscription-oauth.js";
+import { createRequire } from "node:module";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { closeOpenAICodexWebSocketSessions, getOpenAICodexWebSocketDebugStats, resetOpenAICodexWebSocketDebugStats } from "@earendil-works/pi-ai/api/openai-codex-responses";
+import { execFile, spawn } from "node:child_process";
+import { request } from "node:https";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { PassThrough, Readable } from "node:stream";
+import { promisify } from "node:util";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import WebSocket from "ws";
+import { clientRequestSchema } from "@deepseek-ai/dsh-client-connection";
+import { lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { constants, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { defineTool } from "@deepseek-ai/dsh-tools";
+import * as dshLlm from "@deepseek-ai/dsh-llm";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import * as dshCredentials from "@deepseek-ai/dsh-credentials";
+import { dshHomePath, resolveDshHome } from "@deepseek-ai/dsh-home-paths";
+import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
+import { openaiCodexProvider as createOpenAICodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { createModels } from "@earendil-works/pi-ai";
+import { WebError } from "@deepseek-ai/dsh-web";
+//#region src/settings-adapter.js
+function createSettingsAdapter(ctx, schema, config, namespace) {
+	if (typeof ctx.settings.register === "function") return ctx.settings.register(namespace, schema);
+	if (typeof ctx.settings.configure !== "function" || typeof ctx.settings.update !== "function") throw new Error("DSH settings API is unavailable");
+	ctx.effect(() => ctx.settings.configure({ auto: false }));
+	const entry = ctx.fiber.entry;
+	const id = entry?.options?.id ?? entry?.id;
+	if (!id) throw new Error("DSH settings entry is unavailable");
+	const liveConfig = () => {
+		try {
+			const current = ctx.fiber?.config ?? ctx.config;
+			return current !== null && typeof current === "object" ? current : config;
+		} catch {
+			return config;
+		}
+	};
+	const get = () => Object.fromEntries(Object.entries(liveConfig()).map(([key, value]) => [key, typeof value?.get === "function" ? value.get() : value]));
+	return {
+		get,
+		update: (patch) => ctx.settings.update(id, patch),
+		watch(listener) {
+			return ctx.on("loader/volatile-update", () => listener(get()));
+		}
+	};
+}
+//#endregion
+//#region src/default-model.js
+/**
+* DSH owns the model a freshly created agent starts on. This module is the
+* subscription plugin's read/write surface over that service: the settings
+* surface edits the single live selection instead of keeping a second copy, so
+* what the user sees is exactly what the next conversation will use.
+*/
+const DEFAULT_MODEL_PROVIDER = "openai-codex";
+const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
+const EFFORT_ID = /^[a-z][a-z0-9_-]{0,31}$/u;
+/** A rejected default-model request carrying its stable public reason. */
+var DefaultModelError = class extends Error {
+	constructor(code, message) {
+		super(message);
+		this.name = "DefaultModelError";
+		this.code = code;
+	}
+};
+const validDefaultModelId = (value) => typeof value === "string" && MODEL_ID.test(value);
+/** Project a live selection onto the settings-safe shape; unknown values drop out. */
+function normalizeDefaultSelection(value) {
+	return {
+		provider: typeof value?.provider === "string" && value.provider.length > 0 && value.provider.length <= 128 ? value.provider : void 0,
+		model: validDefaultModelId(value?.model) ? value.model : void 0,
+		reasoningEffort: typeof value?.reasoningEffort === "string" && EFFORT_ID.test(value.reasoningEffort) ? value.reasoningEffort : void 0
+	};
+}
+/**
+* Sample the default-model service per call: the service can mount after this
+* plugin. A write verifies its own read-back, because a deployment without a
+* configuration editor ignores `saveSelection`; the user must see that instead
+* of a selection that will never apply.
+* @param resolveService - reads the optional DSH `agentDefaultModel` service.
+* @param listModels - optional account catalog used to reject unknown models.
+*/
+function createDefaultModelController({ resolveService, listModels } = {}) {
+	const service = () => {
+		try {
+			return resolveService?.();
+		} catch {
+			return;
+		}
+	};
+	const read = () => {
+		const current = service();
+		if (current === void 0 || typeof current.currentSelection !== "function") return void 0;
+		try {
+			return normalizeDefaultSelection(current.currentSelection());
+		} catch {
+			return;
+		}
+	};
+	const status = () => {
+		const selection = read();
+		return {
+			available: selection !== void 0,
+			managed: selection?.provider === "openai-codex" && selection.model !== void 0,
+			...selection
+		};
+	};
+	const select = async (request) => {
+		const model = request?.model;
+		if (!validDefaultModelId(model)) throw new DefaultModelError("invalid-model", "Invalid default model");
+		const catalog = typeof listModels === "function" ? listModels() : void 0;
+		if (Array.isArray(catalog) && catalog.length > 0 && !catalog.includes(model)) throw new DefaultModelError("invalid-model", "Invalid default model");
+		const current = service();
+		if (current === void 0 || typeof current.saveSelection !== "function") throw new DefaultModelError("unavailable", "This DSH deployment cannot save a default model");
+		const previous = read();
+		const reasoningEffort = previous?.provider === "openai-codex" && previous.model === model ? previous.reasoningEffort : void 0;
+		await current.saveSelection({
+			provider: DEFAULT_MODEL_PROVIDER,
+			model,
+			...reasoningEffort === void 0 ? {} : { reasoningEffort }
+		});
+		const applied = read();
+		if (applied?.provider !== "openai-codex" || applied.model !== model) throw new DefaultModelError("unavailable", "The default model could not be saved");
+		return status();
+	};
+	return Object.freeze({
+		status,
+		select
+	});
+}
+//#endregion
+//#region src/image-models.js
+const DEFAULT_IMAGE_MODEL = "gpt-image-2";
+const IMAGE_MODELS = Object.freeze({
+	"gpt-image-2": Object.freeze([
+		"auto",
+		"low",
+		"medium",
+		"high"
+	]),
+	"gpt-image-2.5-flare": Object.freeze([
+		"auto",
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max"
+	]),
+	"gpt-image-2.5-sunburst": Object.freeze([
+		"auto",
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max"
+	])
+});
+function resolveImageModel(model = DEFAULT_IMAGE_MODEL) {
+	if (typeof model !== "string" || !Object.hasOwn(IMAGE_MODELS, model)) throw new Error("Unknown image model");
+	return model;
+}
+function validateImageQuality(model, quality) {
+	if (!IMAGE_MODELS[resolveImageModel(model)].includes(quality)) throw new Error(`Unsupported quality for ${model}`);
+}
+//#endregion
+//#region src/image-features.js
+const IMAGE_FEATURE_DEFAULTS = Object.freeze({
+	imageGeneration: true,
+	imageShortcut: true,
+	imageEditing: true,
+	imageViewer: true,
+	imageAnnotations: true,
+	imageSketch: false,
+	imageSketchAgent: false
+});
+function readImageFeatures(value = {}) {
+	return Object.fromEntries(Object.entries(IMAGE_FEATURE_DEFAULTS).map(([key, fallback]) => [key, typeof value?.[key] === "boolean" ? value[key] : fallback]));
+}
+function readImageDefaults(value = {}) {
+	const imageModel = Object.hasOwn(IMAGE_MODELS, value?.imageModel) ? value.imageModel : DEFAULT_IMAGE_MODEL;
+	return {
+		imageModel,
+		imageQuality: IMAGE_MODELS[imageModel].includes(value?.imageQuality) ? value.imageQuality : "auto"
+	};
+}
+function imageFeaturePatch(value = {}) {
+	const patch = {};
+	if (Object.hasOwn(value, "imageModel")) patch.imageModel = resolveImageModel(value.imageModel);
+	if (Object.hasOwn(value, "imageQuality")) {
+		if (![
+			"auto",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max"
+		].includes(value.imageQuality)) throw new Error("Invalid image quality");
+		patch.imageQuality = value.imageQuality;
+	}
+	for (const key of Object.keys(IMAGE_FEATURE_DEFAULTS)) {
+		if (!Object.hasOwn(value, key)) continue;
+		if (typeof value[key] !== "boolean") throw new Error("Invalid image feature preference");
+		patch[key] = value[key];
+	}
+	return patch;
+}
+function assertImageOperation(features, editing) {
+	const current = readImageFeatures(features);
+	if (!(editing ? current.imageEditing : current.imageGeneration)) throw new Error(editing ? "Image editing is disabled in subscription settings" : "Image generation is disabled in subscription settings");
+}
+//#endregion
+//#region src/capability-settings.js
+const CUSTOM_CONTEXT_OVERRIDES_FIELD = "customContextModels";
+const SEARCH_MODE_FIELD = "searchMode";
+const SEARCH_DOMAINS_FIELD = "searchDomains";
+const QUOTA_ALERTS_FIELD = "quotaAlerts";
+const SEARCH_MODES = [
+	"live",
+	"cached",
+	"disabled"
+];
+const QUOTA_ALERT_MODES = [
+	"off",
+	"important",
+	"early",
+	"custom"
+];
+const QUOTA_THRESHOLD_FIELDS = ["quotaShortThreshold", "quotaLongThreshold"];
+const validQuotaThreshold = (value) => Number.isInteger(value) && value >= 1 && value <= 100;
+const MAX_CONTEXT_BUDGET = 16e6;
+const validModelKey = (key) => typeof key === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,95}$/u.test(key) && ![
+	"constructor",
+	"prototype",
+	"__proto__"
+].includes(key);
+function normalizeContextOverrides(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	return Object.fromEntries(Object.entries(value).filter(([key, size]) => validModelKey(key) && Number.isSafeInteger(size) && size > 0 && size <= 16e6).slice(0, 64));
+}
+function normalizeSearchDomains(value) {
+	if (!Array.isArray(value) || value.length > 20) throw new Error("Invalid search domains");
+	return [...new Set(value.map((item) => {
+		if (typeof item !== "string" || item.length > 253 || !/^[\p{L}\p{N}.-]+$/u.test(item)) throw new Error("Invalid search domain");
+		const hostname = new URL(`https://${item}`).hostname.toLowerCase();
+		if (!hostname.includes(".") || hostname.split(".").some((part) => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(part))) throw new Error("Invalid search domain");
+		return hostname;
+	}))];
+}
+function readCapabilitySettings(value = {}) {
+	return {
+		...Object.fromEntries(QUOTA_THRESHOLD_FIELDS.map((key) => [key, validQuotaThreshold(value[key]) ? value[key] : 20])),
+		...readImageFeatures(value),
+		...readImageDefaults(value),
+		[CUSTOM_CONTEXT_OVERRIDES_FIELD]: normalizeContextOverrides(value[CUSTOM_CONTEXT_OVERRIDES_FIELD]),
+		[SEARCH_MODE_FIELD]: SEARCH_MODES.includes(value["searchMode"]) ? value[SEARCH_MODE_FIELD] : "live",
+		[SEARCH_DOMAINS_FIELD]: normalizeSearchDomains(value["searchDomains"] ?? []),
+		[QUOTA_ALERTS_FIELD]: QUOTA_ALERT_MODES.includes(value["quotaAlerts"]) ? value[QUOTA_ALERTS_FIELD] : "important"
+	};
+}
+function capabilityPatch(payload) {
+	const patch = imageFeaturePatch(payload ?? {});
+	for (const field of QUOTA_THRESHOLD_FIELDS) {
+		if (!Object.hasOwn(payload ?? {}, field)) continue;
+		if (!validQuotaThreshold(payload[field])) throw new Error("Threshold must be an integer from 1 to 100");
+		patch[field] = payload[field];
+	}
+	for (const [key, choices] of [[SEARCH_MODE_FIELD, SEARCH_MODES], [QUOTA_ALERTS_FIELD, QUOTA_ALERT_MODES]]) {
+		if (!Object.hasOwn(payload ?? {}, key)) continue;
+		if (!choices.includes(payload[key])) throw new Error("Invalid capability preference");
+		patch[key] = payload[key];
+	}
+	if (Object.hasOwn(payload ?? {}, "searchDomains")) patch[SEARCH_DOMAINS_FIELD] = normalizeSearchDomains(payload[SEARCH_DOMAINS_FIELD]);
+	if (Object.hasOwn(payload ?? {}, "customContextModels")) {
+		const original = payload[CUSTOM_CONTEXT_OVERRIDES_FIELD];
+		const normalized = normalizeContextOverrides(original);
+		if (JSON.stringify(normalized) !== JSON.stringify(original)) throw new Error("Invalid model context preferences");
+		patch[CUSTOM_CONTEXT_OVERRIDES_FIELD] = normalized;
+	}
+	return patch;
+}
+//#endregion
+//#region src/settings-contract.js
+const SETTINGS_NAMESPACE = "codex-subscription";
+const DISABLED_MODELS_FIELD = "disabledModels";
+const AUTO_QUOTA_RETRY_FIELD = "autoQuotaRetry";
+const QUICK_QUOTA_MODE_FIELD = "quickQuotaMode";
+const LEGACY_QUICK_QUOTA_FIELD = "quickQuotaVisible";
+const QUICK_QUOTA_MODE_PERCENT = "percent";
+const QUICK_QUOTA_MODE_FORECAST = "forecast";
+const SEARCH_PROVIDER_FIELD = "searchProvider";
+const SEARCH_PROVIDER_AUTO = "auto";
+const SEARCH_PROVIDER_CODEX = "codex";
+const DEFAULT_SEARCH_PROVIDER = SEARCH_PROVIDER_AUTO;
+const SPEED_MODE_FIELD = "speedMode";
+const SPEED_MODE_STANDARD = "standard";
+const SPEED_MODE_FAST = "fast";
+const SPEED_MODE_ULTRAFAST = "ultrafast";
+const DEFAULT_SPEED_MODE = SPEED_MODE_STANDARD;
+const OUTPUT_VERBOSITY_FIELD = "outputVerbosity";
+const OUTPUT_VERBOSITY_DEFAULT = "default";
+const OUTPUT_VERBOSITY_MEDIUM = "medium";
+const OUTPUT_VERBOSITY_HIGH = "high";
+const DEFAULT_OUTPUT_VERBOSITY = OUTPUT_VERBOSITY_DEFAULT;
+const REASONING_SUMMARY_FIELD = "reasoningSummary";
+const REASONING_SUMMARIES = Object.freeze([
+	"auto",
+	"concise",
+	"detailed",
+	"none"
+]);
+const DEFAULT_REASONING_SUMMARY = "auto";
+const RETRY_POLICY_FIELD = "retryPolicy";
+const RETRY_POLICIES = Object.freeze([
+	"default",
+	"off",
+	"10",
+	"20",
+	"unlimited"
+]);
+const DEFAULT_RETRY_POLICY = "default";
+const INPUT_IMAGE_DETAIL_FIELD = "inputImageDetail";
+const INPUT_IMAGE_DETAILS = Object.freeze([
+	"low",
+	"high",
+	"original",
+	"auto"
+]);
+const DEFAULT_INPUT_IMAGE_DETAIL = "auto";
+const STREAM_IDLE_TIMEOUT_MINUTES_FIELD = "streamIdleTimeoutMinutes";
+const STREAM_IDLE_TIMEOUT_MINUTES = Object.freeze([
+	2,
+	5,
+	10,
+	20,
+	30
+]);
+const CONTEXT_MODE_FIELD = "contextMode";
+const CONTEXT_MODE_STANDARD = "standard";
+const CONTEXT_MODE_EXTENDED = "extended";
+const CONTEXT_MODE_CUSTOM = "custom";
+const DEFAULT_CONTEXT_MODE = CONTEXT_MODE_STANDARD;
+const CUSTOM_CONTEXT_WINDOW_FIELD = "customContextWindow";
+const DEFAULT_CUSTOM_CONTEXT_WINDOW = 272e3;
+const MIN_CUSTOM_CONTEXT_WINDOW = 128e3;
+const MAX_CUSTOM_CONTEXT_WINDOW = 1e6;
+const CUSTOM_CONTEXT_MODEL_FIELDS = Object.freeze({
+	"gpt-5.4": "customContextGpt54",
+	"gpt-5.4-mini": "customContextGpt54Mini",
+	"gpt-5.5": "customContextGpt55",
+	"gpt-5.6": "customContextGpt56",
+	"gpt-6-astra": "customContextGpt6Astra"
+});
+const CUSTOM_CONTEXT_MODEL_CAPS = Object.freeze({
+	"gpt-5.4": 1e6,
+	"gpt-5.4-mini": 4e5,
+	"gpt-5.5": 1e6,
+	"gpt-5.6": 1e6,
+	"gpt-6-astra": 872e3
+});
+const CUSTOM_CONTEXT_MODEL_DEFAULTS = Object.freeze({
+	"gpt-5.4": 272e3,
+	"gpt-5.4-mini": 272e3,
+	"gpt-5.5": 272e3,
+	"gpt-5.6": 272e3,
+	"gpt-6-astra": 272e3
+});
+const normalizeAutoQuotaRetry = (value) => typeof value === "boolean" ? value : false;
+const normalizeDisabledModels = (value) => Array.isArray(value) ? [...new Set(value.filter((id) => typeof id === "string" && /^[a-z][a-z0-9._-]{0,79}$/u.test(id)))].slice(0, 100) : [];
+const normalizeOutputVerbosity = (value) => [
+	"default",
+	"low",
+	"medium",
+	"high"
+].includes(value) ? value : DEFAULT_OUTPUT_VERBOSITY;
+const normalizeReasoningSummary = (value) => REASONING_SUMMARIES.includes(value) ? value : DEFAULT_REASONING_SUMMARY;
+const normalizeRetryPolicy = (value) => RETRY_POLICIES.includes(value) ? value : DEFAULT_RETRY_POLICY;
+const normalizeInputImageDetail = (value) => INPUT_IMAGE_DETAILS.includes(value) ? value : DEFAULT_INPUT_IMAGE_DETAIL;
+const normalizeStreamIdleTimeoutMinutes = (value) => STREAM_IDLE_TIMEOUT_MINUTES.includes(value) ? value : 10;
+const normalizeContextMode = (value) => [
+	"standard",
+	"extended",
+	"custom"
+].includes(value) ? value : DEFAULT_CONTEXT_MODE;
+const normalizeCustomContextWindow = (value, maximum = MAX_CUSTOM_CONTEXT_WINDOW) => {
+	if (!Number.isInteger(value)) return DEFAULT_CUSTOM_CONTEXT_WINDOW;
+	return Math.min(Math.max(value, MIN_CUSTOM_CONTEXT_WINDOW), maximum);
+};
+const customContextModelKey = (modelId) => modelId?.startsWith("gpt-5.6-") ? "gpt-5.6" : modelId;
+function modelContextMaximum(model) {
+	const explicit = Number.isSafeInteger(model?.maxContextWindow) && model.maxContextWindow > 0 ? model.maxContextWindow : void 0;
+	const fallback = CUSTOM_CONTEXT_MODEL_CAPS[customContextModelKey(model?.id)] ?? model?.contextWindow;
+	return Math.min(MAX_CONTEXT_BUDGET, explicit ?? fallback ?? 272e3);
+}
+function clampModelContext(value, maximum, fallback = DEFAULT_CUSTOM_CONTEXT_WINDOW) {
+	return Math.max(Math.min(MIN_CUSTOM_CONTEXT_WINDOW, maximum), Math.min(Number.isSafeInteger(value) ? value : fallback, maximum));
+}
+function contextModelGroups(models) {
+	const groups = /* @__PURE__ */ new Map();
+	for (const model of models ?? []) {
+		if (model?.id === "gpt-5.3-codex-spark") {
+			groups.set(model.id, {
+				key: model.id,
+				label: model.name ?? model.id,
+				maximum: 128e3,
+				fixed: true
+			});
+			continue;
+		}
+		const key = customContextModelKey(model?.id);
+		if (!validModelKey(key)) continue;
+		const maximum = modelContextMaximum(model);
+		if (key !== "gpt-5.6") {
+			groups.set(key, {
+				key,
+				label: model.name ?? model.id,
+				maximum,
+				...Object.hasOwn(CUSTOM_CONTEXT_MODEL_FIELDS, key) ? {} : { default: clampModelContext(model.contextWindow, maximum) }
+			});
+			continue;
+		}
+		const variant = String(model.name ?? model.id).replace(/^GPT-5\.6[ -]/iu, "");
+		const current = groups.get(key);
+		groups.set(key, {
+			key,
+			label: `GPT-5.6 ${current === void 0 ? variant : `${current.label.replace(/^GPT-5\.6 /u, "")} / ${variant}`}`,
+			maximum: Math.min(current?.maximum ?? maximum, maximum)
+		});
+	}
+	return [...groups.values()];
+}
+const normalizeQuickQuotaMode = (value, legacyVisible = false) => [
+	"off",
+	"percent",
+	"bar",
+	"forecast"
+].includes(value) ? value : legacyVisible === true ? QUICK_QUOTA_MODE_PERCENT : "off";
+const supportsCodexFastMode = (modelId) => typeof modelId === "string" && (/^gpt-5\.(?:5|6)(?:$|-)/u.test(modelId) || modelId === "gpt-5.4" || modelId === "gpt-6-astra");
+//#endregion
+//#region src/preference-fields.js
+const PREFERENCE_FIELDS = Object.freeze({
+	compactionMode: {
+		choices: ["dsh", "cloud"],
+		default: "dsh",
+		error: "Invalid compaction mode"
+	},
+	connectionMode: {
+		choices: ["sse", "websocket"],
+		default: "sse",
+		error: "Invalid connection mode"
+	},
+	reviewModel: {
+		choices: ["session", "official"],
+		default: "session",
+		error: "Invalid review model"
+	},
+	subagentBackend: {
+		choices: ["dsh", "codex"],
+		default: "dsh",
+		error: "Invalid subagent backend"
+	},
+	[QUICK_QUOTA_MODE_FIELD]: {
+		choices: [
+			"off",
+			QUICK_QUOTA_MODE_PERCENT,
+			"bar",
+			QUICK_QUOTA_MODE_FORECAST
+		],
+		error: "Invalid quick quota preference"
+	},
+	[SEARCH_PROVIDER_FIELD]: {
+		choices: [
+			SEARCH_PROVIDER_AUTO,
+			"dsh",
+			SEARCH_PROVIDER_CODEX
+		],
+		default: DEFAULT_SEARCH_PROVIDER,
+		error: "Invalid search provider preference"
+	},
+	[SPEED_MODE_FIELD]: {
+		choices: [
+			SPEED_MODE_STANDARD,
+			SPEED_MODE_FAST,
+			SPEED_MODE_ULTRAFAST
+		],
+		default: DEFAULT_SPEED_MODE,
+		error: "Invalid speed mode preference"
+	},
+	[OUTPUT_VERBOSITY_FIELD]: {
+		choices: [
+			OUTPUT_VERBOSITY_DEFAULT,
+			"low",
+			OUTPUT_VERBOSITY_MEDIUM,
+			OUTPUT_VERBOSITY_HIGH
+		],
+		default: DEFAULT_OUTPUT_VERBOSITY,
+		error: "Invalid output verbosity preference"
+	},
+	[REASONING_SUMMARY_FIELD]: {
+		choices: REASONING_SUMMARIES,
+		default: DEFAULT_REASONING_SUMMARY,
+		error: "Invalid reasoning summary preference"
+	},
+	[RETRY_POLICY_FIELD]: {
+		choices: RETRY_POLICIES,
+		default: DEFAULT_RETRY_POLICY,
+		error: "Invalid retry policy preference"
+	},
+	[INPUT_IMAGE_DETAIL_FIELD]: {
+		choices: INPUT_IMAGE_DETAILS,
+		default: DEFAULT_INPUT_IMAGE_DETAIL,
+		error: "Invalid input image detail preference"
+	},
+	[STREAM_IDLE_TIMEOUT_MINUTES_FIELD]: {
+		choices: STREAM_IDLE_TIMEOUT_MINUTES,
+		default: 10,
+		error: "Invalid stream idle timeout preference"
+	},
+	[CONTEXT_MODE_FIELD]: {
+		choices: [
+			CONTEXT_MODE_STANDARD,
+			CONTEXT_MODE_EXTENDED,
+			CONTEXT_MODE_CUSTOM
+		],
+		default: DEFAULT_CONTEXT_MODE,
+		error: "Invalid context mode preference"
+	}
+});
+//#endregion
+//#region src/diagnostic-events.js
+const areas$1 = /* @__PURE__ */ new Set([
+	"login",
+	"model",
+	"catalog",
+	"quota",
+	"quota-reset",
+	"search",
+	"image"
+]);
+const codes$1 = /* @__PURE__ */ new Set([
+	"timeout",
+	"dns",
+	"tls",
+	"connection",
+	"network",
+	"http-error"
+]);
+/** Process-local bounded evidence. No bodies, URLs, exception strings or identities. */
+function createDiagnosticEvents({ limit = 32, now = Date.now } = {}) {
+	const events = [];
+	const capacity = Math.max(1, Math.min(128, Number.isInteger(limit) ? limit : 32));
+	let dropped = 0, sequence = 0;
+	return {
+		record(area, value) {
+			if (!areas$1.has(area) || !["ok", "failed"].includes(value?.status)) return;
+			events.push({
+				sequence: ++sequence,
+				area,
+				status: value.status,
+				observedAt: now(),
+				...codes$1.has(value.code) ? { code: value.code } : {},
+				...Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {}
+			});
+			if (events.length > capacity) {
+				events.shift();
+				dropped++;
+			}
+		},
+		snapshot: () => ({
+			scope: "plugin-process",
+			capacity,
+			dropped,
+			events: events.map((value) => ({ ...value }))
+		})
+	};
+}
+//#endregion
+//#region src/oauth-network.js
+const execFileAsync = promisify(execFile);
+const CODEX_AUTH_HOST = "auth.openai.com";
+const CODEX_SUBSCRIPTION_HOST = "chatgpt.com";
+const CODEX_HOSTS = /* @__PURE__ */ new Set([CODEX_AUTH_HOST, CODEX_SUBSCRIPTION_HOST]);
+const networkScope = new AsyncLocalStorage();
+let activeScopes = 0;
+let baseFetch;
+let scopedFetch;
+let baseWebSocket;
+let scopedWebSocket;
+let activeWebSocketScopes = 0;
+function normalizeProxy(raw) {
+	if (typeof raw !== "string" || raw.trim() === "") return void 0;
+	const value = raw.trim().includes("://") ? raw.trim() : `http://${raw.trim()}`;
+	try {
+		const url = new URL(value);
+		if (!["http:", "https:"].includes(url.protocol) || url.hostname === "") return void 0;
+		return url.toString();
+	} catch {
+		return;
+	}
+}
+function bypassesProxy(hostname, port, rawNoProxy) {
+	if (typeof rawNoProxy !== "string" || rawNoProxy.trim() === "") return false;
+	return rawNoProxy.split(/[\s,]+/u).some((raw) => {
+		const entry = raw.trim().toLowerCase();
+		if (entry === "*") return true;
+		if (entry === "") return false;
+		const match = /^(.*?)(?::(\d+))?$/u.exec(entry);
+		const host = match?.[1]?.replace(/^\./u, "");
+		const entryPort = match?.[2];
+		if (!host || entryPort && entryPort !== port) return false;
+		return hostname === host || hostname.endsWith(`.${host}`);
+	});
+}
+function proxyFromEnvironment(env = process.env, target = new URL(`https://${CODEX_AUTH_HOST}/`)) {
+	if (bypassesProxy(target.hostname.toLowerCase(), target.port || "443", env.NO_PROXY ?? env.no_proxy)) return void 0;
+	return normalizeProxy(env.HTTPS_PROXY ?? env.https_proxy ?? env.ALL_PROXY ?? env.all_proxy);
+}
+function selectWindowsProxy(value) {
+	if (typeof value !== "string") return void 0;
+	const entries = value.split(";").map((item) => item.trim()).filter(Boolean);
+	const https = entries.find((item) => /^https=/iu.test(item));
+	const http = entries.find((item) => /^http=/iu.test(item));
+	const selected = (https ?? http ?? entries.find((item) => !item.includes("=")))?.replace(/^[^=]+=/u, "");
+	return normalizeProxy(selected);
+}
+async function windowsSystemProxy(options = {}) {
+	const run = options.execFile ?? execFileAsync;
+	const reg = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\reg.exe`;
+	const key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+	try {
+		const enabled = await run(reg, [
+			"query",
+			key,
+			"/v",
+			"ProxyEnable"
+		], {
+			windowsHide: true,
+			encoding: "utf8"
+		});
+		if (!/REG_DWORD\s+0x1\b/iu.test(enabled.stdout)) return void 0;
+		const configured = await run(reg, [
+			"query",
+			key,
+			"/v",
+			"ProxyServer"
+		], {
+			windowsHide: true,
+			encoding: "utf8"
+		});
+		return selectWindowsProxy(/^\s*ProxyServer\s+REG_\w+\s+(.+)$/imu.exec(configured.stdout)?.[1]);
+	} catch {
+		return;
+	}
+}
+async function macSystemProxy(options = {}) {
+	const run = options.execFile ?? execFileAsync;
+	try {
+		const result = await run("/usr/sbin/scutil", ["--proxy"], { encoding: "utf8" });
+		if (!/^\s*HTTPSEnable\s*:\s*1\s*$/imu.test(result.stdout)) return void 0;
+		const host = /^\s*HTTPSProxy\s*:\s*(\S+)\s*$/imu.exec(result.stdout)?.[1];
+		const port = /^\s*HTTPSPort\s*:\s*(\d+)\s*$/imu.exec(result.stdout)?.[1];
+		return normalizeProxy(host && port ? `${host}:${port}` : void 0);
+	} catch {
+		return;
+	}
+}
+async function resolveCodexOAuthProxy(options = {}) {
+	return (await resolveCodexProxy(options)).url;
+}
+async function resolveCodexProxy(options = {}) {
+	const target = options.target ?? new URL(`https://${CODEX_AUTH_HOST}/`);
+	const env = options.env ?? process.env;
+	if (bypassesProxy(target.hostname.toLowerCase(), target.port || "443", env.NO_PROXY ?? env.no_proxy)) return {
+		url: void 0,
+		source: "bypass"
+	};
+	const envProxy = proxyFromEnvironment(env, target);
+	if (envProxy) return {
+		url: envProxy,
+		source: "environment"
+	};
+	const platform = options.platform ?? process.platform;
+	const system = platform === "win32" ? await windowsSystemProxy(options) : platform === "darwin" ? await macSystemProxy(options) : void 0;
+	return system ? {
+		url: system,
+		source: "system"
+	} : {
+		url: void 0,
+		source: "direct"
+	};
+}
+function bodyBytes(body) {
+	if (body === void 0 || body === null) return void 0;
+	if (typeof body === "string") return Buffer.from(body);
+	if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+	if (body instanceof Uint8Array) return Buffer.from(body);
+	throw new TypeError("Unsupported Codex OAuth request body");
+}
+function transportError(error, signal) {
+	if (signal?.aborted || error?.name === "AbortError" || error?.code === "ABORT_ERR") return error;
+	if (!/^(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ERR_STREAM_PREMATURE_CLOSE)$/.test(error?.code ?? "")) return error;
+	return Object.assign(new Error(`Network transport failure (${error.code}): ${error.message}`, { cause: error }), { code: error.code });
+}
+function transportResponseBody(response, signal) {
+	const body = new PassThrough();
+	response.on("error", (error) => body.destroy(transportError(error, signal)));
+	body.on("close", () => response.destroy());
+	const stream = Readable.toWeb(body);
+	response.pipe(body);
+	return stream;
+}
+function fetchThroughProxy(input, init, proxyUrl) {
+	const target = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+	const body = bodyBytes(init?.body);
+	const headers = new Headers(init?.headers);
+	if (body && !headers.has("content-length")) headers.set("content-length", String(body.byteLength));
+	return new Promise((resolve, reject) => {
+		const request$1 = request(target, {
+			method: init?.method ?? "GET",
+			headers: Object.fromEntries(headers.entries()),
+			agent: new HttpsProxyAgent(proxyUrl),
+			signal: init?.signal
+		}, (response) => {
+			const responseHeaders = new Headers();
+			for (const [name, value] of Object.entries(response.headers)) if (Array.isArray(value)) value.forEach((item) => responseHeaders.append(name, item));
+			else if (value !== void 0) responseHeaders.set(name, value);
+			const status = response.statusCode ?? 500;
+			const empty = init?.method === "HEAD" || [
+				204,
+				205,
+				304
+			].includes(status);
+			if (empty) response.resume();
+			resolve(new Response(empty ? null : transportResponseBody(response, init?.signal), {
+				status,
+				statusText: response.statusMessage,
+				headers: responseHeaders
+			}));
+		});
+		request$1.on("error", (error) => reject(transportError(error, init?.signal)));
+		if (body) request$1.write(body);
+		request$1.end();
+	});
+}
+async function withCodexNetwork(run, options = {}) {
+	if (options.websocket && activeWebSocketScopes === 0) {
+		baseWebSocket = globalThis.WebSocket;
+		scopedWebSocket = new Proxy(baseWebSocket ?? WebSocket, { construct(target, args, newTarget) {
+			const scope = networkScope.getStore();
+			const url = new URL(String(args[0]));
+			if (!scope?.options.websocket || url.protocol !== "wss:" || url.hostname !== CODEX_SUBSCRIPTION_HOST) return Reflect.construct(target, args, newTarget);
+			const proxy = scope.options.websocketProxy;
+			return new WebSocket(args[0], {
+				...args[1],
+				...proxy ? { agent: new HttpsProxyAgent(proxy) } : {}
+			});
+		} });
+		globalThis.WebSocket = scopedWebSocket;
+	}
+	if (options.websocket) activeWebSocketScopes += 1;
+	if (activeScopes === 0) {
+		const fetchBeforeScope = globalThis.fetch;
+		baseFetch = fetchBeforeScope;
+		scopedFetch = async (input, init) => {
+			const scope = networkScope.getStore();
+			if (scope === void 0) return fetchBeforeScope(input, init);
+			const { options: scopedOptions, allowedHosts, resolved } = scope;
+			const proxyFetch = scopedOptions.fetchThroughProxy ?? fetchThroughProxy;
+			const target = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+			if (target.protocol !== "https:" || !allowedHosts.has(target.hostname)) return fetchBeforeScope(input, init);
+			let proxy = resolved.get(target.hostname);
+			if (proxy === void 0) {
+				proxy = resolveCodexProxy({
+					...scopedOptions,
+					target
+				});
+				resolved.set(target.hostname, proxy);
+			}
+			const route = await proxy;
+			scopedOptions.onRoute?.(route.source);
+			const response = await (route.url === void 0 ? fetchBeforeScope(input, init) : proxyFetch(input, init, route.url));
+			return scopedOptions.transformResponse?.(response, target) ?? response;
+		};
+		globalThis.fetch = scopedFetch;
+	}
+	activeScopes += 1;
+	const scope = {
+		options,
+		allowedHosts: options.hosts ?? CODEX_HOSTS,
+		resolved: /* @__PURE__ */ new Map()
+	};
+	try {
+		return await networkScope.run(scope, run);
+	} finally {
+		if (options.websocket && --activeWebSocketScopes === 0) {
+			if (globalThis.WebSocket === scopedWebSocket) globalThis.WebSocket = baseWebSocket;
+			baseWebSocket = void 0;
+			scopedWebSocket = void 0;
+		}
+		activeScopes -= 1;
+		if (activeScopes === 0) {
+			if (globalThis.fetch === scopedFetch) globalThis.fetch = baseFetch;
+			baseFetch = void 0;
+			scopedFetch = void 0;
+		}
+	}
+}
+function classifyTransportError(error) {
+	const name = error?.name;
+	const code = String(error?.code ?? error?.cause?.code ?? "");
+	if (name === "AbortError" || name === "TimeoutError" || /ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/u.test(code)) return "timeout";
+	if (/ENOTFOUND|EAI_AGAIN/u.test(code)) return "dns";
+	if (/CERT_|TLS|SSL/u.test(code)) return "tls";
+	if (/ECONN|EPIPE|UND_ERR_SOCKET/u.test(code)) return "connection";
+	return "network";
+}
+const elapsedBucket = (elapsed) => elapsed < 1e3 ? "under-1s" : elapsed < 5e3 ? "1-5s" : elapsed < 15e3 ? "5-15s" : "over-15s";
+function createCodexNetworkTransport(options = {}) {
+	const attempts = /* @__PURE__ */ new Map();
+	const now = options.now ?? Date.now;
+	const evidence = createDiagnosticEvents({ now });
+	const remember = (area, value) => {
+		attempts.set(area, value);
+		evidence.record(area, value);
+	};
+	const run = async (area, operation, connection = {}) => {
+		const startedAt = now();
+		let route = attempts.get(area)?.route ?? "direct";
+		let routed = false;
+		try {
+			const value = await withCodexNetwork(operation, {
+				...options,
+				...connection,
+				onRoute: (source) => {
+					route = source;
+					routed = true;
+				}
+			});
+			if (value instanceof Response && !value.ok) remember(area, {
+				status: "failed",
+				stage: "http",
+				code: "http-error",
+				httpStatus: value.status,
+				route,
+				elapsed: elapsedBucket(now() - startedAt)
+			});
+			else if (routed || value instanceof Response) remember(area, {
+				status: "ok",
+				route,
+				elapsed: elapsedBucket(now() - startedAt)
+			});
+			return value;
+		} catch (error) {
+			if (routed) remember(area, {
+				status: "failed",
+				stage: "transport",
+				code: classifyTransportError(error),
+				route,
+				elapsed: elapsedBucket(now() - startedAt)
+			});
+			throw error;
+		}
+	};
+	return Object.freeze({
+		run,
+		history: evidence.snapshot,
+		fetch: (area, input, init) => run(area, () => globalThis.fetch(input, init)),
+		snapshot: () => Object.fromEntries([...attempts].map(([area, value]) => [area, { ...value }]))
+	});
+}
+//#endregion
+//#region src/subscription-connection.js
+function createSubscriptionConnection({ resolveMode = () => "sse", resolveProxy = resolveCodexOAuthProxy } = {}) {
+	const namespace = randomUUID();
+	const sessions = /* @__PURE__ */ new Set();
+	return {
+		snapshot() {
+			const totals = Object.fromEntries([
+				"requests",
+				"connectionsCreated",
+				"connectionsReused",
+				"deltaRequests",
+				"websocketFailures",
+				"sseFallbacks"
+			].map((key) => [key, 0]));
+			for (const session of sessions) {
+				const stats = getOpenAICodexWebSocketDebugStats(session);
+				for (const key of Object.keys(totals)) if (Number.isSafeInteger(stats?.[key]) && stats[key] >= 0) totals[key] = Math.min(Number.MAX_SAFE_INTEGER, totals[key] + stats[key]);
+			}
+			return totals;
+		},
+		async prepare(options = {}) {
+			if (resolveMode() !== "websocket") return { options: {
+				...options,
+				transport: "sse"
+			} };
+			const proxy = await resolveProxy({ target: new URL("https://chatgpt.com/") });
+			const sessionId = options.sessionId && `dsh-${createHash("sha256").update(JSON.stringify([
+				namespace,
+				options.sessionId,
+				options.apiKey,
+				proxy
+			])).digest("hex").slice(0, 56)}`;
+			if (sessionId) sessions.add(sessionId);
+			return {
+				options: {
+					...options,
+					sessionId,
+					transport: "websocket-cached",
+					websocketConnectTimeoutMs: 1e4,
+					env: {}
+				},
+				network: {
+					websocket: true,
+					websocketProxy: proxy
+				}
+			};
+		},
+		dispose() {
+			for (const session of sessions) {
+				closeOpenAICodexWebSocketSessions(session);
+				resetOpenAICodexWebSocketDebugStats(session);
+			}
+			sessions.clear();
+		}
+	};
+}
+//#endregion
+//#region src/subscription-compaction.js
+/** Experimental SSE bridge; callers must explicitly opt in. */
+const clone$2 = (value) => JSON.parse(JSON.stringify(value));
+const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const key = "codexCompactionV1";
+const historyHash = (messages) => hash(messages.map(({ source, ...message }) => ({
+	...message,
+	source: source && {
+		kind: source.kind,
+		provider: source.provider,
+		model: source.model
+	}
+})));
+const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_AGE_MS = 10080 * 60 * 1e3;
+function createCompactionBridge({ enabled = () => false, threshold = () => 1e5, accountScope, diagnostic = () => {}, now = Date.now }) {
+	const scope = new AsyncLocalStorage();
+	const stats = {
+		requests: 0,
+		checkpointsSaved: 0,
+		checkpointsReused: 0
+	};
+	const wrapStream = (factory, options) => (async function* () {
+		if (!enabled() || options.provider !== "openai-codex") {
+			yield* factory(options);
+			return;
+		}
+		const identity = await accountScope(options);
+		if (!identity) throw new Error("Compaction requires a stable account identity");
+		const state = {
+			identity: hash([identity, options.model]),
+			original: options.messages,
+			blocks: [],
+			suffix: void 0,
+			completed: false
+		};
+		let messages = options.messages;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const candidate = messages[i].source?.replayState?.response?.[key];
+			if (!candidate) continue;
+			if (Number.isFinite(candidate.createdAt) && candidate.createdAt <= now() && now() - candidate.createdAt <= MAX_AGE_MS && candidate.scope === state.identity && candidate.prefix === historyHash(messages.slice(0, i)) && candidate.content === hash(messages[i].content) && Array.isArray(candidate.items) && candidate.items[0]?.type === "compaction" && typeof candidate.items[0].encrypted_content === "string" && candidate.digest === hash(candidate.items) && JSON.stringify(candidate.items).length <= MAX_BYTES) {
+				state.suffix = clone$2(candidate.items);
+				messages = [...messages.slice(0, i + 1).filter((m) => m.role === "system"), ...messages.slice(i + 1)];
+			}
+			break;
+		}
+		const iterator = scope.run(state, () => factory({
+			...options,
+			messages
+		})[Symbol.asyncIterator]());
+		try {
+			while (true) {
+				const result = await scope.run(state, () => iterator.next());
+				if (result.done) break;
+				let event = result.value;
+				if (event.type === "block-end") state.blocks[event.index] = clone$2(event.block);
+				if (event.type === "finish") diagnostic({
+					completed: state.completed,
+					captured: state.captured?.length ?? 0,
+					replay: !!event.replayState
+				});
+				if (event.type === "finish" && ["stop", "tool-calls"].includes(event.reason?.kind) && !options.signal?.aborted && state.completed && state.captured?.length && event.replayState) {
+					const items = state.captured;
+					const checkpoint = {
+						createdAt: now(),
+						scope: state.identity,
+						prefix: historyHash(state.original),
+						content: hash(state.blocks.filter(Boolean)),
+						items,
+						digest: hash(items)
+					};
+					event = {
+						...event,
+						replayState: {
+							...event.replayState,
+							response: {
+								...event.replayState.response,
+								[key]: checkpoint
+							}
+						}
+					};
+					stats.checkpointsSaved = Math.min(Number.MAX_SAFE_INTEGER, stats.checkpointsSaved + 1);
+				}
+				yield event;
+			}
+		} finally {
+			await scope.run(state, () => iterator.return?.());
+		}
+	})();
+	return {
+		snapshot: () => ({ ...stats }),
+		wrapAdapter(adapter) {
+			return new Proxy(adapter, { get(target, property) {
+				if (property === "stream") return (options) => wrapStream((o) => target.stream(o), options);
+				if (property === "prepareCall") return async (...args) => {
+					const call = await target.prepareCall(...args);
+					return {
+						...call,
+						stream: (options) => wrapStream((o) => call.stream(o), options)
+					};
+				};
+				const value = Reflect.get(target, property, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			} });
+		},
+		preparePayload(payload, contextWindow) {
+			const state = scope.getStore();
+			if (!state) return payload;
+			if (!state.counted) {
+				state.counted = true;
+				stats.requests = Math.min(Number.MAX_SAFE_INTEGER, stats.requests + 1);
+				if (state.suffix) stats.checkpointsReused = Math.min(Number.MAX_SAFE_INTEGER, stats.checkpointsReused + 1);
+			}
+			const configured = threshold();
+			if (!Number.isSafeInteger(configured) || configured < 1e3) throw new Error("Invalid compaction threshold");
+			const limit = Number.isFinite(contextWindow) && contextWindow >= 2e3 ? Math.min(configured, Math.floor(contextWindow / 2)) : configured;
+			if (!Number.isSafeInteger(limit) || limit < 1e3) throw new Error("Invalid compaction threshold");
+			return {
+				...payload,
+				input: [...state.suffix ?? [], ...payload.input],
+				context_management: [{
+					type: "compaction",
+					compact_threshold: limit
+				}]
+			};
+		},
+		requestOptions(options) {
+			return scope.getStore() ? {
+				...options,
+				transport: "sse"
+			} : options;
+		},
+		networkOptions(options) {
+			const state = scope.getStore();
+			if (!state) return options;
+			return {
+				...options,
+				websocket: false,
+				transformResponse: (response, target) => {
+					if (target.hostname !== "chatgpt.com" || target.pathname !== "/backend-api/codex/responses" || !response.ok || !response.body) return response;
+					state.completed = false;
+					state.captured = void 0;
+					let buffer = "", oversized = false;
+					const decoder = new TextDecoder();
+					const observe = (line) => {
+						if (!line.startsWith("data:")) return;
+						const data = line.slice(5).trim();
+						if (data === "[DONE]") return;
+						let event;
+						try {
+							event = JSON.parse(data);
+						} catch {
+							return;
+						}
+						if (event.type === "response.output_item.done") {
+							if (event.item?.type === "compaction") state.captured = [clone$2(event.item)];
+							else if (state.captured) state.captured.push(clone$2(event.item));
+							if (state.captured && JSON.stringify(state.captured).length > MAX_BYTES) {
+								state.captured = void 0;
+								oversized = true;
+							}
+						}
+						if (event.type === "response.completed" && event.response?.status === "completed") state.completed = !oversized;
+					};
+					const stream = response.body.pipeThrough(new TransformStream({
+						transform(bytes, controller) {
+							controller.enqueue(bytes);
+							if (oversized) return;
+							buffer += decoder.decode(bytes, { stream: true });
+							let index;
+							while ((index = buffer.indexOf("\n")) >= 0) {
+								observe(buffer.slice(0, index).trimEnd());
+								buffer = buffer.slice(index + 1);
+							}
+							if (buffer.length > MAX_BYTES) {
+								buffer = "";
+								oversized = true;
+								state.captured = void 0;
+							}
+						},
+						flush() {
+							buffer += decoder.decode();
+							if (!oversized && buffer) observe(buffer.trimEnd());
+						}
+					}));
+					return new Response(stream, {
+						status: response.status,
+						statusText: response.statusText,
+						headers: response.headers
+					});
+				}
+			};
+		}
+	};
+}
+//#endregion
+//#region src/rpc-contract.js
+const RPC_ENDPOINTS = Object.freeze([
+	"status",
+	"login/start",
+	"login/status",
+	"login/submit",
+	"login/cancel",
+	"logout",
+	"account/select",
+	"account/remove",
+	"usage",
+	"diagnostics",
+	"preferences/status",
+	"preferences/models",
+	"preferences/update",
+	"default-model/status",
+	"default-model/select",
+	"runtime/status",
+	"runtime/install",
+	"runtime/remove",
+	"runtime/cancel",
+	"storage/status",
+	"storage/clear-forecast",
+	"reset-credit/inspect",
+	"reset-credit/prepare",
+	"reset-credit/consume",
+	"image/original/chunk",
+	"sketch/connect",
+	"sketch/poll",
+	"sketch/claim",
+	"sketch/result",
+	"sketch/disconnect"
+]);
+//#endregion
+//#region src/subscription-transport.js
+/** Exact routes stay inside DSH's authenticated /api bridge and body limit. */
+function registerSubscriptionTransport(connection, handler) {
+	const disposers = [];
+	try {
+		for (const endpoint of RPC_ENDPOINTS) {
+			const method = `codex-subscription/${endpoint}`;
+			disposers.push(connection.fetch.register({
+				path: `/api/${method}`,
+				methods: ["POST"],
+				requestBody: "buffered",
+				async fetch(request) {
+					if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return new Response("content type must be application/json", { status: 415 });
+					let body;
+					try {
+						body = await request.json();
+					} catch {
+						return new Response("invalid JSON", { status: 400 });
+					}
+					const envelope = clientRequestSchema.safeParse(body);
+					if (!envelope.success || envelope.data.method !== method) return new Response("invalid RPC envelope", { status: 400 });
+					let result;
+					try {
+						request.signal.throwIfAborted();
+						result = await handler(endpoint, envelope.data.payload, request.signal);
+					} catch {
+						result = {
+							ok: false,
+							error: {
+								code: "internal",
+								message: "Subscription request failed",
+								details: { issues: [] }
+							}
+						};
+					}
+					return Response.json({
+						type: "server-response",
+						rpcId: envelope.data.rpcId,
+						result
+					});
+				}
+			}));
+		}
+	} catch (error) {
+		for (const dispose of disposers.reverse()) dispose();
+		throw error;
+	}
+	return () => {
+		for (const dispose of disposers.reverse()) dispose();
+	};
+}
+//#endregion
+//#region src/subagent-auth.js
+const AUTH_ERROR = "Codex subscription authorization failed; check the selected account";
+/** Keep refresh rotation in the plugin's existing serialized credential store. */
+async function createSubagentTokens({ resolveAuth, store, refresh, signal }) {
+	signal.throwIfAborted();
+	await resolveAuth();
+	const initial = await store.read("openai-codex", { signal });
+	if (initial?.type !== "oauth" || !initial.accountId || !initial.access) throw new Error(AUTH_ERROR);
+	const accountId = initial.accountId;
+	let access = initial.access;
+	return async (previousAccountId, forceRefresh = false) => {
+		signal.throwIfAborted();
+		if (previousAccountId !== void 0 && previousAccountId !== accountId) throw new Error(AUTH_ERROR);
+		let credential;
+		if (previousAccountId !== void 0 || forceRefresh) {
+			const rejectedAccess = access;
+			credential = await store.modify("openai-codex", async (current) => {
+				if (current?.accountId !== accountId) throw new Error(AUTH_ERROR);
+				if (current.access !== rejectedAccess) return current;
+				const next = await refresh(current);
+				if (next?.accountId !== accountId) throw new Error(AUTH_ERROR);
+				return next;
+			}, { signal });
+		} else credential = await store.read("openai-codex", { signal });
+		signal.throwIfAborted();
+		if (credential?.accountId !== accountId || !credential.access) throw new Error(AUTH_ERROR);
+		access = credential.access;
+		return {
+			accessToken: access,
+			chatgptAccountId: accountId
+		};
+	};
+}
+/**
+* Authenticate the official DSH provider's private app-server connection.
+* DSH still owns framing, process containment, turns, tool approvals and disposal.
+* Only the documented external-auth handshake and thread policy are adapted.
+* No token is passed in argv, environment, logs or a second auth.json.
+*/
+function authenticatedSubagentChild(child, { Transport, getTokens, thread, signal }) {
+	const stdin = new PassThrough();
+	const stdout = new PassThrough();
+	const host = new Transport(stdin, stdout);
+	const server = new Transport(child.stdout, child.stdin);
+	let initialized = false;
+	let authenticated;
+	let closed = false;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		host.close();
+		server.close();
+		stdin.destroy();
+		stdout.end();
+	};
+	const authorize = async (previousAccountId, refresh = false) => {
+		try {
+			return await getTokens(previousAccountId, refresh);
+		} catch {
+			throw new Error(AUTH_ERROR);
+		}
+	};
+	const login = () => authenticated ??= (async () => {
+		const tokens = await authorize();
+		signal.throwIfAborted();
+		try {
+			return await server.request("account/login/start", {
+				type: "chatgptAuthTokens",
+				...tokens
+			}, AbortSignal.any([signal, AbortSignal.timeout(1e4)]));
+		} catch {
+			throw new Error(AUTH_ERROR);
+		}
+	})();
+	host.onRequest(async (method, params) => {
+		if (method === "initialize") {
+			const result = await server.request(method, {
+				...params,
+				capabilities: {
+					...params.capabilities,
+					experimentalApi: true
+				}
+			}, signal);
+			initialized = true;
+			return result;
+		}
+		if (method === "thread/start") {
+			if (!initialized) throw new Error("Codex initialization incomplete");
+			await login();
+			return server.request(method, {
+				...params,
+				...thread
+			}, signal);
+		}
+		return server.request(method, params, signal);
+	});
+	host.onNotification((method, params) => server.notify(method, params));
+	server.onRequest((method, params) => method === "account/chatgptAuthTokens/refresh" ? authorize(params.previousAccountId ?? void 0, true) : host.request(method, params, signal));
+	server.onNotification((method, params) => host.notify(method, params));
+	host.start();
+	server.start();
+	child.done.then(close, close);
+	return new Proxy(child, { get(target, key) {
+		if (key === "stdin") return stdin;
+		if (key === "stdout") return stdout;
+		const value = Reflect.get(target, key, target);
+		return typeof value === "function" ? value.bind(target) : value;
+	} });
+}
+//#endregion
+//#region src/subagent-runtime.js
+const SUBAGENT_RUNTIME_PACKAGE = "@deepseek-ai/dsh-subagent-codex";
+const SUPPORTED_RUNTIME_VERSIONS = Object.freeze([
+	"0.1.5-rc.2",
+	"0.1.5-rc.3",
+	"0.1.7-rc.1",
+	"0.1.7-rc.2",
+	"0.2.0-rc.1",
+	"0.2.0-rc.2",
+	"0.2.1-alpha.1",
+	"0.2.1-alpha.2"
+]);
+const require = createRequire(import.meta.url);
+const execute = promisify(execFile);
+/** The DSH release this plugin is loaded into, read from the host's own LLM package. */
+function hostDshVersion(resolve = require.resolve, entry = process.argv[1]) {
+	const attempts = [() => resolve("@deepseek-ai/dsh-llm/package.json")];
+	if (typeof entry === "string" && entry) attempts.push(() => require.resolve("@deepseek-ai/dsh-llm/package.json", { paths: [dirname(entry)] }));
+	for (const attempt of attempts) try {
+		const { version } = JSON.parse(readFileSync(attempt(), "utf8"));
+		if (typeof version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) return version;
+	} catch {}
+}
+function matchingSubagentRuntimeVersion(resolve = require.resolve) {
+	const version = hostDshVersion(resolve, resolve === require.resolve ? process.argv[1] : "");
+	return SUPPORTED_RUNTIME_VERSIONS.includes(version) ? version : void 0;
+}
+function inspectSubagentRuntime(resolve = require.resolve) {
+	try {
+		const manifestPath = resolve(`${SUBAGENT_RUNTIME_PACKAGE}/package.json`);
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+		if (!SUPPORTED_RUNTIME_VERSIONS.includes(manifest.version) || manifest.version !== matchingSubagentRuntimeVersion(resolve)) return {
+			installed: false,
+			present: true
+		};
+		return { installed: true };
+	} catch {
+		return { installed: false };
+	}
+}
+async function loadSubagentRuntime({ resolve: resolve$1 = require.resolve, run = execute, importModule = (url) => import(url) } = {}) {
+	if (!inspectSubagentRuntime(resolve$1).installed) throw new Error("Codex subtask runtime is not prepared");
+	const entry = resolve$1(SUBAGENT_RUNTIME_PACKAGE);
+	const providerRequire = createRequire(entry);
+	const codexManifestPath = providerRequire.resolve("@openai/codex/package.json");
+	const codex = JSON.parse(readFileSync(codexManifestPath, "utf8"));
+	if (codex.version !== "0.153.4" || typeof codex.bin?.codex !== "string") throw new Error("Codex subtask runtime version is unsupported");
+	const wrapper = resolve(dirname(codexManifestPath), codex.bin.codex);
+	try {
+		const { stdout } = await run(process.execPath, [wrapper, "--version"], {
+			timeout: 1e4,
+			maxBuffer: 4096,
+			windowsHide: true
+		});
+		if (stdout.trim() !== "codex-cli 0.153.4") throw new Error("Unexpected CLI version");
+	} catch {
+		throw new Error("Codex subtask runtime is incomplete; prepare it for this platform");
+	}
+	const [official, { JsonRpcLineTransport: Transport }] = await Promise.all([importModule(pathToFileURL(entry).href), importModule(pathToFileURL(providerRequire.resolve("@deepseek-ai/dsh-sdk-protocol")).href)]);
+	return {
+		official,
+		Transport
+	};
+}
+//#endregion
+//#region src/subagent-backend.js
+const SUBAGENT_PROVIDER = "codex-subscription-subagent";
+const MODES = /* @__PURE__ */ new Set([
+	"read-only",
+	"workspace-write",
+	"danger-full-access"
+]);
+function subagentThreadPolicy(parent, policy, requested = {}) {
+	if (!MODES.has(policy?.mode)) throw new Error("DSH subagent sandbox policy is unavailable");
+	const selected = parent.session.requestHeader?.()?.config ?? parent.options ?? {};
+	for (const key of Object.keys(requested)) if (![
+		"provider",
+		"model",
+		"reasoningEffort"
+	].includes(key)) throw new Error("Unsupported Codex child option: " + key);
+	if (requested.provider !== void 0 && requested.provider !== "openai-codex") throw new Error("Codex subtasks require the openai-codex provider");
+	const model = requested.model ?? (selected.provider === "openai-codex" ? selected.model : void 0);
+	if (typeof model !== "string" || !model.trim()) throw new Error("Select an openai-codex model for this subtask; the parent model cannot be inherited");
+	const effort = requested.reasoningEffort ?? (requested.model === void 0 ? selected.reasoningEffort : void 0);
+	if (effort !== void 0 && ![
+		"none",
+		"minimal",
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max",
+		"ultra"
+	].includes(effort)) throw new Error("Unsupported Codex reasoning effort");
+	return {
+		model,
+		modelProvider: "openai",
+		approvalPolicy: "never",
+		sandbox: policy.mode,
+		config: {
+			...CHILD_FEATURES_OFF,
+			...effort === void 0 ? {} : { model_reasoning_effort: effort }
+		}
+	};
+}
+/**
+* A ChatGPT-authenticated Codex child would otherwise expose the account's
+* connected apps (calendar, site deploys, ...) and plugin installs, all
+* auto-approved. A DSH subtask gets the workspace tools only.
+*/
+const CHILD_FEATURES_OFF = Object.freeze({ features: Object.freeze(Object.fromEntries([
+	"apps",
+	"plugins",
+	"plugin_sharing",
+	"remote_plugin",
+	"tool_suggest",
+	"browser_use",
+	"browser_use_external",
+	"browser_use_full_cdp_access",
+	"computer_use",
+	"in_app_browser"
+].map((name) => [name, false]))) });
+/** Reuse the official DSH process/turn provider; keep only subscription auth here. */
+function createSubscriptionSubagent({ ctx, nativeHome, resolveAuth, store, refresh, loadRuntime, maintenance = () => false }) {
+	let runtime;
+	const load = () => runtime ??= loadRuntime().catch((error) => {
+		runtime = void 0;
+		throw error;
+	});
+	const active = /* @__PURE__ */ new Set();
+	let disposed = false;
+	return {
+		provider: {
+			name: SUBAGENT_PROVIDER,
+			capabilities: {
+				agentOptions: true,
+				outputSchema: false,
+				depthLimit: false,
+				toolFilter: false,
+				persona: false
+			},
+			inheritsParentContext: false,
+			async start(request) {
+				if (disposed) throw new Error("Codex subagent is unavailable");
+				if (maintenance()) throw new Error("Codex subtask component is being changed; restart DSH after completion");
+				const controller = new AbortController();
+				active.add(controller);
+				const signal = AbortSignal.any([request.signal, controller.signal]);
+				let run;
+				try {
+					const thread = subagentThreadPolicy(request.parent, ctx.sandboxPolicy.resolve({ session: request.parent.session }), request.agentOptions);
+					const getTokens = await createSubagentTokens({
+						resolveAuth,
+						store,
+						refresh,
+						signal
+					});
+					const { official, Transport } = await load();
+					const proxy = await resolveCodexOAuthProxy({ target: new URL("https://chatgpt.com/") });
+					signal.throwIfAborted();
+					await mkdir(nativeHome, { recursive: true });
+					const env = {
+						CODEX_HOME: nativeHome,
+						...proxy ? {
+							HTTPS_PROXY: proxy,
+							HTTP_PROXY: proxy,
+							ALL_PROXY: proxy
+						} : {}
+					};
+					let delegate;
+					official.apply({
+						subagents: { registerProvider(value) {
+							delegate = value;
+						} },
+						subprocess: { spawn: (spec) => authenticatedSubagentChild(ctx.subprocess.spawn({
+							...spec,
+							env: {
+								...spec.env,
+								...env
+							}
+						}), {
+							Transport,
+							getTokens,
+							thread,
+							signal
+						}) },
+						logger: { warn: () => ctx.logger?.warn?.("Codex subscription subtask failed") }
+					}, {
+						model: thread.model,
+						env,
+						permissionMode: "never",
+						disposeGraceMs: 1e3
+					});
+					run = await delegate.start({
+						...request,
+						agentOptions: void 0,
+						signal
+					});
+					const result = run.result.finally(() => active.delete(controller));
+					return {
+						...run,
+						result,
+						async dispose() {
+							controller.abort();
+							await run.dispose();
+							active.delete(controller);
+						}
+					};
+				} catch (error) {
+					controller.abort();
+					await run?.dispose();
+					active.delete(controller);
+					throw error;
+				}
+			}
+		},
+		activeCount: () => active.size,
+		prepare: () => {
+			if (maintenance()) return Promise.reject(/* @__PURE__ */ new Error("Restart DSH after changing the Codex subtask component"));
+			return load();
+		},
+		dispose() {
+			disposed = true;
+			for (const controller of active) controller.abort();
+		}
+	};
+}
+/**
+* DSH 0.2 mounts Agent preset rows once, at boot and before plugins load, so the
+* Loader never lists them and `internal/config` never reaches a later listener.
+* Read them from the preset registry; a host without it simply has none.
+*/
+function presetEntries(ctx) {
+	try {
+		const generations = ctx.get?.("agentPresets")?.generations;
+		if (!(generations instanceof Map)) return [];
+		return [...generations.values()].flatMap((generation) => [...generation.mount?.tree?.entries?.() ?? []]);
+	} catch {
+		return [];
+	}
+}
+/** Change only standard independent spawn tools; leave fork/custom tools untouched. */
+function createSubagentBackendSwitcher({ entries, prepare, persist }) {
+	const originals = /* @__PURE__ */ new Map();
+	let selected = "dsh";
+	let tail = Promise.resolve();
+	let disposed = false;
+	const standard = (entry, config) => entry?.options?.name === "@deepseek-ai/dsh-tool-subagent" && config?.provider === "spawn" && !config.agentOptions && !config.persona && !config.toolFilter;
+	const convert = (config) => ({
+		...config,
+		provider: SUBAGENT_PROVIDER,
+		modelSelectionSettings: true,
+		backgroundMode: "one-shot",
+		maxDepth: "provider-managed"
+	});
+	const ownedFields = [
+		"provider",
+		"modelSelectionSettings",
+		"backgroundMode",
+		"maxDepth"
+	];
+	const restore = (current, original) => {
+		const result = { ...current }, applied = convert(original);
+		for (const key of ownedFields) {
+			if (current[key] !== applied[key]) continue;
+			if (Object.hasOwn(original, key)) result[key] = original[key];
+			else delete result[key];
+		}
+		return result;
+	};
+	const configure = (fiber, config) => {
+		if (!standard(fiber.entry, config)) return config;
+		if (!originals.has(fiber)) originals.set(fiber, { ...config });
+		return selected === "codex" ? convert(config) : config;
+	};
+	const select = (mode) => {
+		if (!["dsh", "codex"].includes(mode)) return Promise.reject(/* @__PURE__ */ new Error("Invalid subagent backend"));
+		const next = tail.catch(() => {}).then(async () => {
+			if (disposed) throw new Error("Subagent backend is unavailable");
+			const all = [...entries()];
+			for (const entry of all) if (entry.fiber && standard(entry, entry.fiber.config) && !originals.has(entry.fiber)) originals.set(entry.fiber, { ...entry.fiber.config });
+			if (mode === "codex") {
+				if (!originals.size && !all.some((entry) => standard(entry, entry.options?.config))) throw new Error("No standard DSH independent subagent tool is available");
+				await prepare();
+			}
+			const changed = [];
+			const previous = selected;
+			selected = mode;
+			try {
+				for (const [fiber, original] of originals) {
+					if (fiber.entry && fiber.entry.fiber !== fiber) {
+						originals.delete(fiber);
+						continue;
+					}
+					const before = { ...fiber.config };
+					changed.push({
+						fiber,
+						before
+					});
+					if (mode === "codex" && before.provider !== "codex-subscription-subagent") originals.set(fiber, { ...before });
+					await fiber.update(mode === "codex" ? convert(before) : restore(before, original), true);
+				}
+				await persist?.(mode);
+			} catch (error) {
+				selected = previous;
+				for (const { fiber, before } of changed.reverse()) await fiber.update(before, true);
+				throw error;
+			}
+		});
+		tail = next;
+		return next;
+	};
+	return {
+		select,
+		configure,
+		async dispose() {
+			await tail.catch(() => {});
+			disposed = true;
+			selected = "dsh";
+			for (const [fiber, original] of originals) if (fiber.config?.provider === "codex-subscription-subagent") await fiber.update(restore(fiber.config, original), true);
+			originals.clear();
+		}
+	};
+}
+//#endregion
+//#region src/runtime-management.js
+function createRuntimeManagement({ manager, inspect, active, selectDsh, componentVersion = matchingSubagentRuntimeVersion }) {
+	let operation;
+	let state = {
+		phase: "idle",
+		restartRequired: false
+	};
+	const supported = (value) => [
+		"listBundles",
+		"installBundle",
+		"removeBundle",
+		"cancelInstall"
+	].every((key) => typeof value?.[key] === "function");
+	const status = async () => {
+		const host = manager();
+		let bundle;
+		let available = supported(host);
+		try {
+			if (available) bundle = (await host.listBundles()).find((value) => value.name === SUBAGENT_RUNTIME_PACKAGE);
+		} catch {
+			available = false;
+		}
+		const runtime = inspect();
+		const version = componentVersion();
+		return {
+			...state,
+			available,
+			installable: available && version !== void 0,
+			componentVersion: version,
+			installed: runtime.installed,
+			present: runtime.installed || runtime.present === true || bundle?.installed === true,
+			removable: available && bundle?.installed === true && !bundle.readOnlyReason,
+			active: active()
+		};
+	};
+	const start = async (action) => {
+		if (!["install", "remove"].includes(action)) throw Error("invalid-action");
+		if (operation) throw Error("busy");
+		if (state.restartRequired) throw Error("restart-required");
+		if (active() > 0) throw Error("active-tasks");
+		const host = manager();
+		if (!supported(host)) throw Error("unavailable");
+		const version = componentVersion();
+		if (action === "install" && version === void 0) throw Error("unavailable");
+		const requestId = randomUUID();
+		const current = {
+			action,
+			requestId,
+			host
+		};
+		operation = current;
+		state = {
+			phase: action === "install" ? "installing" : "removing",
+			restartRequired: false
+		};
+		current.done = (async () => {
+			try {
+				if (action === "remove") {
+					const bundle = (await host.listBundles()).find((value) => value.name === SUBAGENT_RUNTIME_PACKAGE);
+					if (!bundle?.installed || bundle.readOnlyReason) throw Error("not-removable");
+					await selectDsh();
+				}
+				const result = action === "install" ? await host.installBundle(`${SUBAGENT_RUNTIME_PACKAGE}@${version}`, {
+					enabled: false,
+					requestId
+				}) : await host.removeBundle(SUBAGENT_RUNTIME_PACKAGE);
+				if (result.application === "cancelled") state = {
+					phase: "cancelled",
+					restartRequired: false
+				};
+				else if (["applied", "restart-required"].includes(result.application)) state = {
+					phase: "done",
+					restartRequired: true
+				};
+				else state = {
+					phase: "failed",
+					restartRequired: false,
+					error: result.packageResult?.kind ?? result.error?.code ?? "operation-error"
+				};
+			} catch (error) {
+				state = {
+					phase: "failed",
+					restartRequired: false,
+					error: error.message === "not-removable" ? "not-removable" : "operation-error"
+				};
+			} finally {
+				operation = void 0;
+			}
+		})();
+		return status();
+	};
+	return {
+		status,
+		start,
+		blocked: () => operation !== void 0 || state.restartRequired,
+		progress(value) {
+			if (operation?.action === "install" && value.requestId === operation.requestId && value.phase === "applying") state.phase = "applying";
+		},
+		async cancel() {
+			const current = operation;
+			if (current?.action !== "install") return status();
+			if ((await current.host.cancelInstall(current.requestId)).status === "cancelled") await current.done;
+			return status();
+		}
+	};
+}
+//#endregion
+//#region src/sketch-agent-bridge.js
+function createSketchAgentBridge({ enabled, now = Date.now, timeoutMs = 2e4 }) {
+	const sessions = /* @__PURE__ */ new Map();
+	const fail = (entry, message) => {
+		for (const task of entry.tasks.values()) task.reject(Error(message));
+		entry.tasks.clear();
+	};
+	const find = (payload) => {
+		const entry = sessions.get(payload.sessionId);
+		if (!entry || entry.token !== payload.token || now() - entry.seen > 1e4) throw Error("Sketch connection expired");
+		entry.seen = now();
+		return entry;
+	};
+	return {
+		async rpc(endpoint, payload) {
+			try {
+				if (!enabled()) throw Error("Sketch is disabled");
+				if (!payload || typeof payload.sessionId !== "string" || !payload.sessionId.length || payload.sessionId.length > 200) throw Error("Invalid session");
+				if (endpoint === "sketch/connect") {
+					for (const [id, entry] of sessions) if (now() - entry.seen >= 1e4) {
+						fail(entry, "Sketch connection expired");
+						sessions.delete(id);
+					}
+					const previous = sessions.get(payload.sessionId);
+					if (previous && now() - previous.seen < 1e4) throw Error("Another board is connected to this session");
+					if (previous) fail(previous, "Sketch connection replaced");
+					const entry = {
+						token: randomUUID(),
+						seen: now(),
+						tasks: /* @__PURE__ */ new Map(),
+						cancelled: []
+					};
+					sessions.set(payload.sessionId, entry);
+					return {
+						ok: true,
+						value: { token: entry.token }
+					};
+				}
+				const entry = find(payload);
+				if (endpoint === "sketch/poll") return {
+					ok: true,
+					value: [...entry.cancelled.splice(0).map((id) => ({
+						id,
+						cancelled: true
+					})), ...[...entry.tasks].filter(([, t]) => !t.delivered).map(([id, t]) => {
+						t.delivered = true;
+						return {
+							id,
+							request: t.request,
+							expiresAt: t.expiresAt
+						};
+					})]
+				};
+				if (endpoint === "sketch/claim") {
+					const task = entry.tasks.get(payload.id);
+					return {
+						ok: true,
+						value: Boolean(task && task.delivered && task.expiresAt > now())
+					};
+				}
+				if (endpoint === "sketch/disconnect") {
+					fail(entry, "Sketch board closed");
+					sessions.delete(payload.sessionId);
+					return {
+						ok: true,
+						value: null
+					};
+				}
+				if (endpoint === "sketch/result") {
+					const task = entry.tasks.get(payload.id);
+					if (task) {
+						entry.tasks.delete(payload.id);
+						payload.error ? task.reject(Error(String(payload.error).slice(0, 500))) : task.resolve(payload.value);
+					}
+					return {
+						ok: true,
+						value: null
+					};
+				}
+				throw Error("Unknown sketch route");
+			} catch (error) {
+				return {
+					ok: false,
+					error: {
+						code: "invalid-input",
+						message: error.message,
+						details: { issues: [] }
+					}
+				};
+			}
+		},
+		request(sessionId, request, signal) {
+			if (!enabled()) return Promise.reject(Error("Sketch is disabled"));
+			const entry = sessions.get(sessionId);
+			if (!entry || now() - entry.seen > 1e4) return Promise.reject(Error("Switch to this session in DSH with sketch editing enabled"));
+			if (entry.tasks.size) return Promise.reject(Error("Another sketch operation is pending"));
+			if (JSON.stringify(request).length > 2e6) return Promise.reject(Error("Sketch batch is too large"));
+			return new Promise((resolve, reject) => {
+				const id = randomUUID();
+				const finish = (callback, value) => {
+					clearTimeout(timer);
+					signal?.removeEventListener("abort", abort);
+					entry.tasks.delete(id);
+					callback(value);
+				};
+				const cancel = (message) => {
+					if (entry.tasks.get(id)?.delivered) {
+						entry.cancelled.push(id);
+						if (entry.cancelled.length > 32) entry.cancelled.shift();
+					}
+					finish(reject, Error(message));
+				};
+				const abort = () => cancel("Sketch operation interrupted; inspect recentRequests before retrying");
+				const timer = setTimeout(() => cancel("Sketch response timed out; inspect recentRequests before retrying"), timeoutMs);
+				entry.tasks.set(id, {
+					request,
+					expiresAt: now() + timeoutMs,
+					delivered: false,
+					resolve: (value) => finish(resolve, value),
+					reject: (error) => finish(reject, error)
+				});
+				signal?.addEventListener("abort", abort, { once: true });
+				if (signal?.aborted) abort();
+			});
+		},
+		dispose() {
+			for (const entry of sessions.values()) fail(entry, "Sketch service stopped");
+			sessions.clear();
+		}
+	};
+}
+//#endregion
+//#region src/sketch-command-schema.js
+const number = { type: "number" };
+const string = { type: "string" };
+const object = (properties) => ({
+	type: "object",
+	additionalProperties: false,
+	properties
+});
+const points = {
+	type: "array",
+	items: object({
+		x: {
+			...number,
+			required: true
+		},
+		y: {
+			...number,
+			required: true
+		}
+	})
+};
+const point = object({
+	x: {
+		...number,
+		required: true
+	},
+	y: {
+		...number,
+		required: true
+	}
+});
+const style = {
+	color: string,
+	width: number,
+	opacity: number,
+	fill: { type: "boolean" },
+	text: string,
+	points
+};
+const sketchCommandArray = {
+	type: "array",
+	items: object({
+		op: {
+			type: "string",
+			required: true,
+			enum: [
+				"stroke",
+				"object",
+				"layer",
+				"resize",
+				"svg"
+			]
+		},
+		id: {
+			oneOf: [{ type: "string" }, { type: "integer" }],
+			description: "Object string ID. Layer add: optional NEW unique integer ID; other layer actions: existing layer ID."
+		},
+		after: {
+			type: "integer",
+			description: "Layer add only: existing layer to insert after; defaults to active."
+		},
+		start: point,
+		segments: {
+			type: "array",
+			items: object({
+				control1: {
+					...point,
+					required: true
+				},
+				control2: {
+					...point,
+					required: true
+				},
+				end: {
+					...point,
+					required: true
+				}
+			})
+		},
+		layer: { type: "integer" },
+		shape: {
+			type: "string",
+			enum: [
+				"pen",
+				"line",
+				"arrow",
+				"text",
+				"rectangle",
+				"circle",
+				"ellipse",
+				"polygon",
+				"bezier",
+				"eraser",
+				"triangle",
+				"diamond",
+				"star"
+			]
+		},
+		...style,
+		action: {
+			type: "string",
+			enum: [
+				"update",
+				"duplicate",
+				"delete",
+				"add",
+				"select",
+				"rename",
+				"visible",
+				"up",
+				"down",
+				"clear"
+			]
+		},
+		svg: {
+			type: "string",
+			description: "op svg only: a complete <svg viewBox=\"0 0 W H\"> document (W and H equal to the canvas width and height from inspect). Imported as native editable strokes; the fastest way to draw a whole scene. Optional layer sets the target layer."
+		},
+		value: string,
+		ratio: {
+			type: "string",
+			enum: [
+				"1:1",
+				"4:3",
+				"3:4",
+				"16:9",
+				"9:16"
+			]
+		},
+		patch: object(style),
+		transform: object({
+			dx: number,
+			dy: number,
+			scaleX: number,
+			scaleY: number
+		})
+	})
+};
+//#endregion
+//#region src/subscription-credentials.js
+async function readSubscriptionCredentials(getAuth, readCredential, signal) {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const auth = await getAuth({ signal });
+		signal?.throwIfAborted();
+		if (typeof auth?.auth?.apiKey !== "string" || !auth.auth.apiKey) break;
+		const credential = await readCredential({ signal });
+		signal?.throwIfAborted();
+		if (credential?.type !== "oauth") break;
+		if (credential.access === auth.auth.apiKey) return {
+			access: credential.access,
+			accountId: credential.accountId
+		};
+	}
+	return {
+		access: void 0,
+		accountId: void 0
+	};
+}
+const ORIGINAL_IMAGE_CHUNK_BYTES = 4 * 1024 * 1024;
+const ORIGINAL_IMAGE_ID_PATTERN = /^img_[0-9a-f]{32}$/u;
+const positiveInteger$1 = (value) => Number.isSafeInteger(value) && value > 0;
+function decodeOriginalImageRef(value) {
+	if (value === null || typeof value !== "object" || Array.isArray(value) || typeof value.assetId !== "string" || !ORIGINAL_IMAGE_ID_PATTERN.test(value.assetId) || value.mediaType !== "image/png" || !positiveInteger$1(value.bytes) || value.bytes > 48 * 1024 * 1024 || !positiveInteger$1(value.width) || !positiveInteger$1(value.height) || typeof value.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.name) || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(value.sha256)) return void 0;
+	return {
+		assetId: value.assetId,
+		mediaType: value.mediaType,
+		bytes: value.bytes,
+		width: value.width,
+		height: value.height,
+		name: value.name,
+		sha256: value.sha256
+	};
+}
+function decodeImagePresentation(value) {
+	if (value === null || typeof value !== "object" || Array.isArray(value) || value.kind !== "codex-subscription-image" || value.schemaVersion !== 1) return void 0;
+	const original = decodeOriginalImageRef(value.original);
+	return original === void 0 ? void 0 : { original };
+}
+function originalImageRefsEqual(left, right) {
+	const a = decodeOriginalImageRef(left);
+	const b = decodeOriginalImageRef(right);
+	return a !== void 0 && b !== void 0 && a.assetId === b.assetId && a.mediaType === b.mediaType && a.bytes === b.bytes && a.width === b.width && a.height === b.height && a.name === b.name && a.sha256 === b.sha256;
+}
+/** Resolve only an exact original reference copied into a DSH fork prefix. */
+function inheritedOriginalImageRef(session, assetId) {
+	const parentSession = session?.header?.parentSession;
+	const seedLength = Number.isSafeInteger(session?.inheritedEventCount) ? session.inheritedEventCount : session?.header?.seedLength;
+	if (typeof parentSession !== "string" || parentSession.length === 0 || !Number.isSafeInteger(seedLength) || seedLength < 0 || !ORIGINAL_IMAGE_ID_PATTERN.test(assetId)) return void 0;
+	let events = session?.events;
+	if (!Array.isArray(events) && typeof session?.snapshotEvents === "function") try {
+		events = session.snapshotEvents();
+	} catch {
+		return;
+	}
+	if (!Array.isArray(events)) return void 0;
+	for (const event of events) {
+		if (!Number.isSafeInteger(event?.seq) || event.seq < 0 || event.seq >= seedLength || event.type !== "tool/result") continue;
+		const original = decodeImagePresentation(event.data?.meta)?.original;
+		if (original?.assetId === assetId) return original;
+	}
+}
+//#endregion
+//#region src/version.js
+const PACKAGE_VERSION = "2.6.8";
+const USER_AGENT = `dsh-codex-subscription/${PACKAGE_VERSION}`;
+//#endregion
+//#region src/codex-images.js
+const CODEX_IMAGE_TOOL_NAME = "codex_image_generate";
+const CODEX_IMAGE_GENERATION_URL = "https://chatgpt.com/backend-api/codex/images/generations";
+const CODEX_IMAGE_EDIT_URL = "https://chatgpt.com/backend-api/codex/images/edits";
+const MAX_REFERENCE_IMAGES = 5;
+const RESPONSE_ENVELOPE_BYTES = 1024 * 1024;
+const IMAGE_BACKGROUNDS = /* @__PURE__ */ new Set([
+	"auto",
+	"transparent",
+	"opaque"
+]);
+const PNG_SIGNATURE = Buffer.from([
+	137,
+	80,
+	78,
+	71,
+	13,
+	10,
+	26,
+	10
+]);
+const FULL_ATTACHMENT_ID = /^sha256:[0-9a-f]{64}$/u;
+const BARE_ATTACHMENT_DIGEST = /^[0-9a-f]{64}$/iu;
+const PATH_LIKE_ATTACHMENT_ID = /[\\/]/u;
+const FILE_NAME_ATTACHMENT_ID = /\.[A-Za-z0-9]{1,16}$/u;
+const record$4 = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const nonEmpty$2 = (value) => typeof value === "string" && value.trim().length > 0 ? value.trim() : void 0;
+const NETWORK_REASONS = {
+	UND_ERR_HEADERS_TIMEOUT: "the image service sent no response within 5 minutes",
+	UND_ERR_BODY_TIMEOUT: "the image response stalled",
+	UND_ERR_CONNECT_TIMEOUT: "the connection to the image service timed out",
+	UND_ERR_SOCKET: "the connection closed unexpectedly",
+	ECONNRESET: "the connection was reset",
+	ETIMEDOUT: "the connection timed out",
+	ENOTFOUND: "DNS lookup failed",
+	ECONNREFUSED: "the connection was refused",
+	EAI_AGAIN: "DNS lookup failed"
+};
+function requestFailureReason(error) {
+	const code = [(error?.cause ?? error)?.code, error?.code].find((value) => typeof value === "string" && /^[A-Z][A-Z0-9_]{2,39}$/u.test(value));
+	if (code !== void 0) return `: ${NETWORK_REASONS[code] ?? "network error"} (${code})`;
+	if (error?.name === "TimeoutError") return ": the image request timed out";
+	return "";
+}
+function normalizeImageOptions(args) {
+	const quality = nonEmpty$2(args?.quality) ?? "auto";
+	const background = nonEmpty$2(args?.background) ?? "auto";
+	const size = nonEmpty$2(args?.size) ?? "auto";
+	validateImageQuality(resolveImageModel(args?.model), quality);
+	if (!IMAGE_BACKGROUNDS.has(background)) throw new Error("background must be auto, transparent, or opaque");
+	if (size !== "auto") {
+		const match = /^(\d+)x(\d+)$/u.exec(size);
+		const width = Number(match?.[1]);
+		const height = Number(match?.[2]);
+		const short = Math.min(width, height);
+		const long = Math.max(width, height);
+		const pixels = width * height;
+		if (match === null || width % 16 !== 0 || height % 16 !== 0 || long > 3840 || long > short * 3 || pixels < 655360 || pixels > 8294400) throw new Error("size must be auto or a valid GPT Image 2 widthxheight resolution");
+	}
+	return {
+		quality,
+		background,
+		size
+	};
+}
+function encodedLimit(decodedBytes) {
+	return Math.ceil(decodedBytes / 3) * 4;
+}
+function validBase64Body(value, end) {
+	for (let index = 0; index < end; index += 1) {
+		const code = value.charCodeAt(index);
+		if (!(code >= 65 && code <= 90 || code >= 97 && code <= 122 || code >= 48 && code <= 57 || code === 43 || code === 47)) return false;
+	}
+	return true;
+}
+async function readJsonWithin(response, maximumBytes) {
+	const contentLength = Number(response.headers.get("content-length"));
+	if (Number.isFinite(contentLength) && contentLength > maximumBytes) throw new Error("Codex image response exceeds the image size limit");
+	if (response.body === null) throw new Error("Codex returned an unreadable image response");
+	const reader = response.body.getReader();
+	const chunks = [];
+	let bytes = 0;
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		bytes += value.byteLength;
+		if (bytes > maximumBytes) {
+			await reader.cancel();
+			throw new Error("Codex image response exceeds the image size limit");
+		}
+		chunks.push(value);
+	}
+	const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), bytes).toString("utf8");
+	try {
+		return JSON.parse(body);
+	} catch {
+		throw new Error("Codex returned an unreadable image response");
+	}
+}
+/** Strictly decode one PNG returned by the subscription backend. */
+function decodeCodexPng(value, maximumBytes) {
+	const encoded = nonEmpty$2(value);
+	const padding = encoded?.endsWith("==") ? 2 : encoded?.endsWith("=") ? 1 : 0;
+	if (encoded === void 0 || encoded.length % 4 !== 0 || !validBase64Body(encoded, encoded.length - padding)) throw new Error("Codex returned an invalid base64 PNG");
+	const decodedBytes = encoded.length / 4 * 3 - padding;
+	if (decodedBytes > maximumBytes) throw new Error("Codex image exceeds the image size limit");
+	const data = Buffer.from(encoded, "base64");
+	if (data.length !== decodedBytes || data.length < PNG_SIGNATURE.length || !data.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) throw new Error("Codex returned an invalid PNG");
+	return new Uint8Array(data);
+}
+function imageReference(value) {
+	const originalDimensions = record$4(value.originalDimensions) ? {
+		width: value.originalDimensions.width,
+		height: value.originalDimensions.height
+	} : void 0;
+	return {
+		attachmentId: value.attachmentId,
+		mediaType: value.mediaType,
+		bytes: value.bytes,
+		width: value.width,
+		height: value.height,
+		...value.name === void 0 ? {} : { name: value.name },
+		...originalDimensions === void 0 ? {} : { originalDimensions }
+	};
+}
+function normalizeAttachmentId(value) {
+	if (typeof value !== "string") return void 0;
+	if (FULL_ATTACHMENT_ID.test(value)) return value;
+	const bare = BARE_ATTACHMENT_DIGEST.exec(value);
+	return bare === null ? void 0 : `sha256:${bare[0].toLowerCase()}`;
+}
+function invalidAttachmentId(value) {
+	const attachmentId = value?.attachmentId;
+	if (typeof attachmentId === "string" && (PATH_LIKE_ATTACHMENT_ID.test(attachmentId) || FILE_NAME_ATTACHMENT_ID.test(attachmentId))) throw new Error("referenceImages attachmentId is a file path or filename; call read_image on that file and retry with its complete sha256:<64 lowercase hex> attachment reference. Do not omit referenceImages or fall back to new image generation.");
+	throw new Error("referenceImages attachmentId must be sha256:<64 lowercase hex> copied from an image block or read_image result. Do not omit referenceImages or fall back to new image generation.");
+}
+function referenceOf(value, attachments) {
+	const attachmentId = normalizeAttachmentId(value?.attachmentId);
+	if (attachmentId === void 0) invalidAttachmentId(value);
+	if (!record$4(value) || !attachments.imageLimits.mediaTypes.includes(value.mediaType) || !Number.isSafeInteger(value.bytes) || value.bytes <= 0 || !Number.isSafeInteger(value.width) || value.width <= 0 || !Number.isSafeInteger(value.height) || value.height <= 0 || value.name !== void 0 && (typeof value.name !== "string" || value.name.length > 256) || value.originalDimensions !== void 0 && (!record$4(value.originalDimensions) || !Number.isSafeInteger(value.originalDimensions.width) || value.originalDimensions.width <= 0 || !Number.isSafeInteger(value.originalDimensions.height) || value.originalDimensions.height <= 0)) throw new Error("referenceImages contains an invalid image reference");
+	return imageReference({
+		...value,
+		attachmentId
+	});
+}
+function sessionImageReferences(messages) {
+	const references = /* @__PURE__ */ new Map();
+	const visit = (content) => {
+		if (!Array.isArray(content)) return;
+		for (const block of content) if (block?.type === "image" && record$4(block.attachment)) {
+			const id = normalizeAttachmentId(block.attachment.attachmentId);
+			if (id !== void 0) references.set(id, block.attachment);
+		} else if (block?.type === "tool-result") visit(block.content);
+	};
+	for (const message of messages ?? []) visit(message?.content);
+	return references;
+}
+async function readSessionImage(attachmentId, attachments, signal, messages) {
+	const id = normalizeAttachmentId(attachmentId);
+	if (id === void 0) invalidAttachmentId({ attachmentId });
+	const selected = sessionImageReferences(messages).get(id);
+	if (selected === void 0) throw new Error("The selected image attachment cannot be found in the current session. Copy attachmentId from the image block of the user message; never pass a path or filename.");
+	const stored = await attachments.readImage(referenceOf(selected, attachments), signal);
+	return {
+		data: stored.data,
+		mediaType: stored.ref.mediaType,
+		name: stored.ref.name
+	};
+}
+async function editImages(values, attachments, signal, messages) {
+	if (!Array.isArray(values) || values.length === 0 || values.length > MAX_REFERENCE_IMAGES) throw new Error(`referenceImages must contain between 1 and ${MAX_REFERENCE_IMAGES} images; omit it to generate a new image`);
+	const available = messages === void 0 ? void 0 : sessionImageReferences(messages);
+	const references = values.map((value) => {
+		const id = normalizeAttachmentId(value?.attachmentId);
+		if (id === void 0) invalidAttachmentId(value);
+		if (available === void 0) return referenceOf(value, attachments);
+		const selected = available.get(id);
+		if (selected === void 0) throw new Error("The selected image attachment cannot be found in the current session. Call read_image on the intended image and retry with its returned reference. Do not omit referenceImages or substitute another image.");
+		return referenceOf(selected, attachments);
+	});
+	if (new Set(references.map((value) => value.attachmentId)).size !== references.length) throw new Error("referenceImages must not contain duplicates");
+	const images = [];
+	let totalBytes = 0;
+	for (const reference of references) {
+		const stored = await attachments.readImage(reference, signal);
+		totalBytes += stored.data.byteLength;
+		if (totalBytes > attachments.imageLimits.maxMessageImageBytes) throw new Error("referenceImages exceed the DSH message image limit");
+		images.push({ image_url: `data:${stored.ref.mediaType};base64,${Buffer.from(stored.data).toString("base64")}` });
+	}
+	return images;
+}
+function imageContent(value) {
+	const label = typeof value.size === "string" && value.size.length > 0 ? `Generated a ${value.size} image.` : "Generated an image.";
+	return [{
+		type: "text",
+		text: value.localPath === void 0 ? label : `${label}\nOriginal PNG saved on the DSH host at: ${JSON.stringify(value.localPath)}. Read this file or copy it to the workspace with a .png extension; this host path is not a browser URL. The image is already shown to the user, so do not embed it again; copy it rather than move it, and leave the original in place unless the user asks you to delete it.`
+	}, {
+		type: "image",
+		attachment: imageReference(value.image)
+	}];
+}
+function imageOutputSchema() {
+	return {
+		type: "object",
+		additionalProperties: false,
+		properties: {
+			image: {
+				type: "object",
+				required: true,
+				additionalProperties: false,
+				properties: {
+					attachmentId: {
+						type: "string",
+						required: true
+					},
+					mediaType: {
+						type: "string",
+						enum: ["image/png"],
+						required: true
+					},
+					bytes: {
+						type: "integer",
+						required: true
+					},
+					width: {
+						type: "integer",
+						required: true
+					},
+					height: {
+						type: "integer",
+						required: true
+					},
+					name: { type: "string" },
+					originalDimensions: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							width: {
+								type: "integer",
+								required: true
+							},
+							height: {
+								type: "integer",
+								required: true
+							}
+						}
+					}
+				}
+			},
+			original: {
+				type: "object",
+				required: true,
+				additionalProperties: false,
+				properties: {
+					assetId: {
+						type: "string",
+						required: true
+					},
+					mediaType: {
+						type: "string",
+						enum: ["image/png"],
+						required: true
+					},
+					bytes: {
+						type: "integer",
+						required: true
+					},
+					width: {
+						type: "integer",
+						required: true
+					},
+					height: {
+						type: "integer",
+						required: true
+					},
+					name: {
+						type: "string",
+						required: true
+					},
+					sha256: {
+						type: "string",
+						required: true
+					}
+				}
+			},
+			background: { type: "string" },
+			requestedModel: { type: "string" },
+			reportedModel: { type: "string" },
+			requestedSize: { type: "string" },
+			localPath: {
+				type: "string",
+				required: true,
+				description: "Absolute path to the original PNG on the DSH host."
+			},
+			quality: { type: "string" },
+			size: { type: "string" }
+		}
+	};
+}
+const SUPPORT_ID = /^[A-Za-z0-9._-]{1,80}$/u;
+/** The request id Codex returns for an image call, kept on failures so a report can be traced. */
+function supportId(response) {
+	const id = response.headers?.get?.("x-codex-imagegen-request-id");
+	return typeof id === "string" && SUPPORT_ID.test(id) ? ` (request ${id})` : "";
+}
+/** What a 429 from the image endpoint says: when the limit resets, when the response tells us. */
+async function limitMessage(response, now = Date.now()) {
+	const fallback = "Codex image generation quota is unavailable";
+	let error;
+	try {
+		error = JSON.parse(await readTextWithin(response, 16 * 1024))?.error;
+	} catch {
+		return fallback;
+	}
+	if (!record$4(error)) return fallback;
+	const at = Number.isSafeInteger(error.resets_at) && error.resets_at > 0 ? error.resets_at * 1e3 : Number.isSafeInteger(error.resets_in_seconds) && error.resets_in_seconds > 0 ? now + error.resets_in_seconds * 1e3 : void 0;
+	if (at === void 0) return fallback;
+	const minutes = Math.max(1, Math.ceil((at - now) / 6e4));
+	return `Codex image generation limit reached; it resets in about ${minutes >= 120 ? `${Math.round(minutes / 60)} hours` : `${minutes} minutes`}`;
+}
+async function readTextWithin(response, maximumBytes) {
+	if (response.body === null || response.body === void 0) return "";
+	const reader = response.body.getReader();
+	const chunks = [];
+	let bytes = 0;
+	while (bytes < maximumBytes) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		bytes += value.byteLength;
+		chunks.push(value);
+	}
+	await reader.cancel().catch(() => {});
+	return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8").slice(0, maximumBytes);
+}
+function responseMetadata(value) {
+	const data = Array.isArray(value?.data) ? value.data[0] : void 0;
+	const encoded = record$4(data) ? data.b64_json : void 0;
+	if (typeof encoded !== "string") throw new Error("Codex returned no image data");
+	return {
+		encoded,
+		background: nonEmpty$2(value.background),
+		quality: nonEmpty$2(value.quality),
+		size: nonEmpty$2(value.size),
+		reportedModel: nonEmpty$2(value.model)
+	};
+}
+/** Create the DSH-native image-generation tool backed only by the ChatGPT subscription. */
+function createCodexImageTool(options) {
+	const fetchImage = options.fetch ?? fetch;
+	const attachments = options.attachments;
+	return defineTool({
+		name: CODEX_IMAGE_TOOL_NAME,
+		description: "Generate or edit images only when the user asks for image output, not when merely discussing images. Uses the signed-in Codex subscription. For a new image, omit referenceImages. For edits, copy attachmentId only from the selected session image block; the host supplies its metadata. Never call read_image for an attachmentId or attachment filename. Use read_image only for an actual local file whose reference is not already in the conversation. Never substitute paths, unrelated images, or text-only generation for an edit. For numbered annotations, include the clean source and location-reference image, preserve the requested changes and coordinates in the prompt, and remove guidance markers from the result. If the intended references cannot be identified, ask rather than guessing.",
+		parameters: {
+			model: {
+				type: "string",
+				enum: Object.keys(IMAGE_MODELS),
+				description: "Optional image engine, independent of the conversation model. When omitted, uses the user image setting (initially gpt-image-2). The 2.5 identifiers are experimental subscription candidates; override only when explicitly requested. Never silently retry with another model."
+			},
+			prompt: {
+				type: "string",
+				required: true,
+				description: "A complete, production-ready description of the image to generate."
+			},
+			size: {
+				type: "string",
+				description: "Optional GPT Image 2 output size. Use auto unless the user requests an exact valid widthxheight resolution."
+			},
+			quality: {
+				type: "string",
+				enum: [
+					"auto",
+					"low",
+					"medium",
+					"high",
+					"xhigh",
+					"max"
+				],
+				description: "Optional rendering quality. Use auto unless the user requests draft speed or final quality."
+			},
+			background: {
+				type: "string",
+				enum: [
+					"auto",
+					"transparent",
+					"opaque"
+				],
+				description: "Optional background mode. Request transparent only when the user needs transparency."
+			},
+			referenceImages: {
+				type: "array",
+				description: "Optional references to 1-5 selected images. For session images provide only attachmentId; the host resolves trusted metadata. Omit only for a new image; never drop an invalid reference to bypass editing.",
+				items: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						attachmentId: {
+							type: "string",
+							required: true,
+							description: "Copy the complete attachmentId from the image block or read_image result: sha256:<64 lowercase hex>. Never pass a workspace path, absolute path, or filename. A bare 64-character hex digest is accepted and normalized to sha256:<64 lowercase hex>."
+						},
+						mediaType: {
+							type: "string",
+							...typeof options.getSessionMessages !== "function" ? { required: true } : {}
+						},
+						bytes: {
+							type: "integer",
+							...typeof options.getSessionMessages !== "function" ? { required: true } : {}
+						},
+						width: {
+							type: "integer",
+							...typeof options.getSessionMessages !== "function" ? { required: true } : {}
+						},
+						height: {
+							type: "integer",
+							...typeof options.getSessionMessages !== "function" ? { required: true } : {}
+						},
+						name: { type: "string" },
+						originalDimensions: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								width: {
+									type: "integer",
+									...typeof options.getSessionMessages !== "function" ? { required: true } : {}
+								},
+								height: {
+									type: "integer",
+									...typeof options.getSessionMessages !== "function" ? { required: true } : {}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		output: {
+			schema: imageOutputSchema(),
+			render: (_args, value) => imageContent(value),
+			presentationMeta: (_args, value) => ({
+				kind: "codex-subscription-image",
+				schemaVersion: 1,
+				original: value.original,
+				...value.requestedModel === void 0 ? {} : { requestedModel: value.requestedModel },
+				...value.reportedModel === void 0 ? {} : { reportedModel: value.reportedModel },
+				...value.requestedSize === void 0 ? {} : { requestedSize: value.requestedSize }
+			})
+		},
+		timeoutMs: 300 * 1e3,
+		isConcurrencySafe: () => false,
+		async execute(args, exec) {
+			if (Array.isArray(args.referenceImages) && args.referenceImages.length === 0) {
+				const { referenceImages: _empty, ...rest } = args;
+				args = rest;
+			}
+			assertImageOperation(options.getFeatures?.(), args.referenceImages !== void 0);
+			const defaults = readImageDefaults(options.getFeatures?.());
+			args = {
+				...args,
+				model: args.model ?? defaults.imageModel,
+				quality: args.quality ?? defaults.imageQuality
+			};
+			const prompt = nonEmpty$2(args.prompt);
+			if (prompt === void 0) throw new Error("prompt must be a non-empty string");
+			const imageOptions = normalizeImageOptions(args);
+			const { access, accountId } = await readSubscriptionCredentials(options.getAuth, options.readCredential, exec.signal);
+			if (typeof access !== "string" || access.length === 0 || typeof accountId !== "string" || accountId.length === 0) throw new Error("ChatGPT subscription is not signed in");
+			if (!attachments.imageLimits.mediaTypes.includes("image/png")) throw new Error("This DSH installation does not accept PNG image attachments");
+			const maximumBytes = Math.min(attachments.imageLimits.maxImageBytes, attachments.imageLimits.maxMessageImageBytes);
+			const editing = args.referenceImages !== void 0;
+			const sessionMessages = editing && typeof options.getSessionMessages === "function" ? await options.getSessionMessages(exec.agent?.id) : void 0;
+			const images = editing ? await editImages(args.referenceImages, attachments, exec.signal, sessionMessages ?? (options.getSessionMessages ? [] : void 0)) : void 0;
+			let response;
+			assertImageOperation(options.getFeatures?.(), editing);
+			try {
+				response = await fetchImage(editing ? CODEX_IMAGE_EDIT_URL : CODEX_IMAGE_GENERATION_URL, {
+					method: "POST",
+					redirect: "error",
+					headers: {
+						authorization: `Bearer ${access}`,
+						"chatgpt-account-id": accountId,
+						accept: "application/json",
+						"content-type": "application/json",
+						originator: "pi",
+						"x-codex-image-turn-id": String(exec.callId),
+						"user-agent": USER_AGENT
+					},
+					body: JSON.stringify({
+						...images === void 0 ? {} : { images },
+						prompt,
+						background: imageOptions.background,
+						model: resolveImageModel(args.model),
+						quality: imageOptions.quality,
+						size: imageOptions.size
+					}),
+					signal: exec.signal
+				});
+			} catch (error) {
+				if (exec.signal.aborted) throw exec.signal.reason;
+				throw new Error(`Codex image ${editing ? "edit" : "generation"} request failed${requestFailureReason(error)}`, { cause: error });
+			}
+			if (!response.ok) {
+				if (response.status === 401 || response.status === 403) throw new Error("ChatGPT sign-in needs to be renewed");
+				const requestId = supportId(response);
+				if (response.status === 429) throw new Error(`${await limitMessage(response)}${requestId}`);
+				throw new Error(`Codex image ${editing ? "edit" : "generation"} failed (HTTP ${response.status})${requestId}`);
+			}
+			const metadata = responseMetadata(await readJsonWithin(response, encodedLimit(maximumBytes) + RESPONSE_ENVELOPE_BYTES));
+			const data = decodeCodexPng(metadata.encoded, maximumBytes);
+			const sessionId = exec.agent?.id;
+			if (sessionId === void 0) throw new Error("Codex image generation requires a session-owned tool call");
+			const original = await options.originalImages.save(String(sessionId), data);
+			let ref;
+			try {
+				ref = await attachments.saveImage({
+					data,
+					mediaType: "image/png",
+					name: "codex-generated.png"
+				});
+			} catch (error) {
+				await options.originalImages.remove(original);
+				throw error;
+			}
+			const result = {
+				requestedModel: resolveImageModel(args.model),
+				requestedSize: imageOptions.size,
+				...metadata.reportedModel === void 0 ? {} : { reportedModel: metadata.reportedModel },
+				image: imageReference(ref),
+				original,
+				localPath: options.originalImages.originalPath(original.assetId),
+				...metadata.background === void 0 ? {} : { background: metadata.background },
+				...metadata.quality === void 0 ? {} : { quality: metadata.quality },
+				size: `${original.width}x${original.height}`
+			};
+			if (exec.parent !== void 0) exec.deferContext(createUserMessage({
+				content: imageContent(result),
+				source: { kind: "codex-subscription-image" }
+			}));
+			return result;
+		}
+	});
+}
+//#endregion
+//#region src/sketch-agent-tool.js
+const MAX_REFERENCE_BYTES = 14e5;
+function createSketchAgentTool(bridge, attachments, getSessionMessages = () => []) {
+	return defineTool({
+		name: "codex_sketch",
+		description: "Edit the sketch board in this session using native editable strokes and layers. Use for @sketch requests and explicit follow-up edits to that drawing. The toolbar pen button is for manual drawing; do not require the user to open it. Start with inspect for the runId, documentId, revision and command reference. Draw with the svg op whenever possible: one SVG document per stage (paths, shapes, groups, transforms; see the reference from inspect) is far faster and richer than hand-placed strokes, and still becomes native editable strokes. Draw the shapes, hair, clothing and lettering outlines of every layer with svg; use stroke commands only for small corrections and native text. Apply atomic batches and preview between stages. When the user attached a reference image, call reference with its attachmentId once after inspect to put it on the board as a hidden picture layer. When a reference picture is on the board, keep its layer hidden while drawing (compare shows it anyway), measure its key positions with preview grid, draw big shapes first, and after each stage check preview compare and fix the largest offset before adding detail. For repeated details such as hair strands or lace, generate the SVG with a script instead of placing each one by hand. and call finish to save the finished draft and release the editing lock. save is only a checkpoint. Closing the board does not stop drawing. If the user stops drawing, do not retry. Never generates AI images, sends messages or attaches images automatically. Inspect automatically opens the board in the currently viewed session. Do not ask the user to open it first. If the session is not visible in DSH, ask them to switch to it. On timeout inspect before retrying; reuse the exact requestId only for the same request.",
+		parameters: {
+			action: {
+				type: "string",
+				required: true,
+				enum: [
+					"inspect",
+					"apply",
+					"reference",
+					"preview",
+					"save",
+					"finish"
+				]
+			},
+			runId: {
+				type: "string",
+				description: "From inspect; required for all other actions. Never reuse a stopped run."
+			},
+			documentId: {
+				type: "string",
+				description: "From inspect; required except for inspect."
+			},
+			revision: {
+				type: "integer",
+				description: "From latest response; required for apply/reference/save/finish."
+			},
+			requestId: {
+				type: "string",
+				description: "Unique id for apply/reference/save/finish; exact retries are deduplicated. After timeout inspect recentRequests before repeating a write."
+			},
+			commands: {
+				oneOf: [sketchCommandArray, { type: "string" }],
+				description: "Prefer a native command array. Legacy JSON string also accepted. Required for apply. Use named objects and update existing IDs; prefer Bezier start + segments (control1/control2/end) for curves, not hundreds of pen points."
+			},
+			name: {
+				type: "string",
+				description: "Draft name for save/finish."
+			},
+			attachmentId: {
+				type: "string",
+				description: "reference only: the attachmentId of an image the user attached to this session (copy it from the image block, never a path or filename). It is added to the board as a hidden picture layer, ready for preview compare."
+			},
+			compare: {
+				type: "boolean",
+				description: "preview only: blend the drawing 50/50 with the reference picture layer on the board, so offsets show as ghosting. Needs a picture layer; if there is none, ask the user to add the reference with the pictures button."
+			},
+			grid: {
+				type: "boolean",
+				description: "preview only: overlay a labelled grid every 100 canvas pixels, to read positions and sizes instead of guessing them."
+			},
+			offset: {
+				type: "integer",
+				description: "inspect only: object list offset, default 0. Follow nextOffset for further pages."
+			},
+			objectId: {
+				type: "string",
+				description: "inspect only: return full editable geometry for this object, in layer (defaults to active layer)."
+			},
+			layer: {
+				type: "integer",
+				description: "inspect only: layer containing objectId."
+			}
+		},
+		timeoutMs: 25e3,
+		isConcurrencySafe: () => false,
+		async execute(args, exec) {
+			const sessionId = exec.agent?.id;
+			if (typeof sessionId !== "string") throw Error("A session-owned sketch call is required");
+			const request = { ...args };
+			delete request.attachmentId;
+			if (args.action === "apply") try {
+				request.commands = typeof args.commands === "string" ? JSON.parse(args.commands) : args.commands;
+				if (!Array.isArray(request.commands)) throw Error();
+			} catch {
+				throw Error("commands must be a native array or JSON array string");
+			}
+			if (args.action === "reference") {
+				const image = await readSessionImage(args.attachmentId, attachments, exec.signal, await getSessionMessages(sessionId));
+				if (image.data.byteLength > MAX_REFERENCE_BYTES) throw Error("The reference image is too large to send to the board; ask the user to add it with the pictures button on the board");
+				request.image = `data:${image.mediaType};base64,${Buffer.from(image.data).toString("base64")}`;
+				request.name = image.name ?? "reference";
+			}
+			const value = await bridge.request(sessionId, request, exec.signal);
+			if (value.png) {
+				if (!/^data:image\/png;base64,/.test(value.png) || value.png.length > 8 * 1024 * 1024) throw Error("Invalid sketch preview");
+				const image = await attachments.saveImage({
+					data: new Uint8Array(Buffer.from(value.png.split(",")[1], "base64")),
+					mediaType: "image/png",
+					name: "sketch-preview.png"
+				});
+				const { png, ...snapshot } = value;
+				return {
+					...snapshot,
+					image
+				};
+			}
+			return value;
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: (_args, value) => [{
+				type: "text",
+				text: JSON.stringify({
+					...value,
+					image: void 0
+				})
+			}, ...value.image ? [{
+				type: "image",
+				attachment: value.image
+			}] : []]
+		}
+	});
+}
+//#endregion
+//#region src/retry-policy.js
+/** @param {string} choice a RETRY_POLICIES value @param {Function | undefined} resolve DSH's resolveRetryPolicy */
+function retryPolicyFor(choice, resolve) {
+	if (choice === "default" || typeof resolve !== "function") return void 0;
+	try {
+		if (choice === "unlimited") return resolve({ mode: "always" }, "codex-subscription retryPolicy");
+		return resolve({
+			mode: "normal",
+			maxRetries: choice === "off" ? 0 : Number(choice)
+		}, "codex-subscription retryPolicy");
+	} catch {
+		return;
+	}
+}
+//#endregion
+//#region src/account-vault.js
+const VERSION = 1;
+const DEFAULT_LABEL = "Account 1";
+const clone$1 = (value) => value === void 0 ? void 0 : structuredClone(value);
+const EMAIL_MAX_LENGTH = 254;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+/** Keep only a bounded, display-safe email address from a trusted OAuth result. */
+function normalizeAccountEmail(value) {
+	if (typeof value !== "string") return void 0;
+	const email = value.trim();
+	return email.length > 0 && email.length <= EMAIL_MAX_LENGTH && EMAIL_PATTERN.test(email) ? email : void 0;
+}
+function decodeJwtPayload(access) {
+	if (typeof access !== "string") return void 0;
+	const encoded = access.split(".")[1];
+	if (typeof encoded !== "string" || encoded.length === 0) return void 0;
+	try {
+		return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+	} catch {
+		return;
+	}
+}
+function emailFromAccessToken(access) {
+	const payload = decodeJwtPayload(access);
+	return normalizeAccountEmail(payload?.["https://api.openai.com/profile"]?.email ?? payload?.email);
+}
+/** Normalize the one non-secret account attribute that may cross the UI boundary. */
+function sanitizeOAuthCredential(value) {
+	const credential = assertOAuthCredential$1(value);
+	const email = emailFromAccessToken(credential.access) ?? normalizeAccountEmail(credential.email);
+	if (email === void 0) {
+		delete credential.email;
+		return credential;
+	}
+	return {
+		...credential,
+		email
+	};
+}
+function assertOAuthCredential$1(value) {
+	if (value === null || typeof value !== "object" || value.type !== "oauth" || typeof value.access !== "string" || value.access.length === 0 || typeof value.refresh !== "string" || value.refresh.length === 0 || typeof value.expires !== "number" || !Number.isFinite(value.expires)) throw new Error("Codex account vault received a malformed OAuth credential");
+	return clone$1(value);
+}
+function parseOAuthCredential$1(value) {
+	try {
+		return assertOAuthCredential$1(JSON.parse(value));
+	} catch (error) {
+		if (error?.message === "Codex account vault received a malformed OAuth credential") throw error;
+		throw new Error("Codex account vault contains malformed OAuth JSON", { cause: error });
+	}
+}
+function normalizeLabel(value) {
+	if (typeof value !== "string") throw new Error("Codex account label must be text");
+	const label = value.trim().replace(/\s+/gu, " ");
+	if (label.length === 0 || label.length > 48) throw new Error("Codex account label must contain 1 to 48 characters");
+	return label;
+}
+function assertVaultRecord(record) {
+	if (record?.kind !== "grant" || record.payload?.version !== VERSION || typeof record.payload.activeId !== "string" || !Array.isArray(record.payload.accounts) || record.payload.accounts.length === 0) throw new Error("Codex account vault contains a malformed grant record");
+	const ids = /* @__PURE__ */ new Set();
+	const accounts = record.payload.accounts.map((account) => {
+		if (account === null || typeof account !== "object" || typeof account.id !== "string" || account.id.length === 0 || ids.has(account.id)) throw new Error("Codex account vault contains a malformed account id");
+		ids.add(account.id);
+		return {
+			id: account.id,
+			label: normalizeLabel(account.label),
+			credential: sanitizeOAuthCredential(account.credential)
+		};
+	});
+	if (!ids.has(record.payload.activeId)) throw new Error("Codex account vault active account is missing");
+	const legacyAccountId = record.payload.legacyAccountId;
+	if (legacyAccountId !== void 0 && !ids.has(legacyAccountId)) throw new Error("Codex account vault legacy account is missing");
+	return {
+		version: VERSION,
+		activeId: record.payload.activeId,
+		...legacyAccountId === void 0 ? {} : { legacyAccountId },
+		accounts
+	};
+}
+const grant = (payload) => ({
+	kind: "grant",
+	payload
+});
+var PendingOAuthCredentialStore = class {
+	#credential;
+	async read(providerId) {
+		if (providerId !== "openai-codex") throw new Error("Pending Codex login received an unknown provider");
+		return clone$1(this.#credential);
+	}
+	async list() {
+		return this.#credential === void 0 ? [] : [{
+			providerId: "openai-codex",
+			type: "oauth"
+		}];
+	}
+	async modify(providerId, update) {
+		if (providerId !== "openai-codex") throw new Error("Pending Codex login received an unknown provider");
+		const next = await update(clone$1(this.#credential));
+		if (next !== void 0) this.#credential = sanitizeOAuthCredential(next);
+		return clone$1(this.#credential);
+	}
+	async delete(providerId) {
+		if (providerId !== "openai-codex") throw new Error("Pending Codex login received an unknown provider");
+		this.#credential = void 0;
+	}
+	credential() {
+		return clone$1(this.#credential);
+	}
+};
+/**
+* Multi-account owner state stored in DSH's atomic plugin credential record.
+* The old single-account reference remains as a rollback source and is kept in
+* sync whenever that imported account rotates its refresh token.
+*/
+var DshOAuthAccountVault = class {
+	#tail = Promise.resolve();
+	constructor(credentials, options) {
+		if (credentials === void 0 || credentials === null || typeof credentials.readRecord !== "function" || typeof credentials.modifyRecord !== "function") throw new Error("Codex multi-account requires DSH credential records");
+		this.credentials = credentials;
+		this.key = options.key;
+		this.legacyRef = options.legacyRef;
+		this.legacyRefs = Object.freeze([...options.legacyRefs ?? []]);
+		this.createId = options.createId ?? randomUUID;
+		this.onLegacySyncFailure = options.onLegacySyncFailure ?? (() => {});
+	}
+	#enqueue(operation) {
+		const current = this.#tail.catch(() => void 0).then(operation);
+		this.#tail = current.catch(() => void 0);
+		return current;
+	}
+	async #legacyCredential() {
+		for (const ref of [this.legacyRef, ...this.legacyRefs]) {
+			const hit = await this.credentials.resolve(ref);
+			if (hit?.value === void 0 || hit.value === "") continue;
+			return {
+				ref,
+				credential: parseOAuthCredential$1(hit.value)
+			};
+		}
+	}
+	async #ensurePayload() {
+		const existing = await this.credentials.readRecord(this.key);
+		if (existing !== void 0) return assertVaultRecord(existing);
+		const legacy = await this.#legacyCredential();
+		if (legacy === void 0) return void 0;
+		const id = this.createId();
+		return assertVaultRecord(await this.credentials.modifyRecord(this.key, (current) => {
+			if (current !== void 0) return Promise.resolve(current);
+			return Promise.resolve(grant({
+				version: VERSION,
+				activeId: id,
+				legacyAccountId: id,
+				accounts: [{
+					id,
+					label: DEFAULT_LABEL,
+					credential: legacy.credential
+				}]
+			}));
+		}));
+	}
+	async #modifyPayload(update) {
+		await this.#ensurePayload();
+		let previousLegacy;
+		const payload = assertVaultRecord(await this.credentials.modifyRecord(this.key, async (current) => {
+			if (current === void 0) throw new Error("Codex account vault is not signed in");
+			const payload = assertVaultRecord(current);
+			previousLegacy = payload.accounts.find((account) => account.id === payload.legacyAccountId)?.credential;
+			const next = await update(clone$1(payload));
+			return grant(next);
+		}));
+		const legacy = payload.accounts.find((account) => account.id === payload.legacyAccountId)?.credential;
+		try {
+			if (legacy === void 0) {
+				if (previousLegacy !== void 0) await this.credentials.unset(this.legacyRef);
+			} else if (JSON.stringify(legacy) !== JSON.stringify(previousLegacy)) await this.credentials.set(this.legacyRef, JSON.stringify(legacy));
+		} catch {
+			this.onLegacySyncFailure();
+		}
+		return payload;
+	}
+	list() {
+		return this.#enqueue(async () => {
+			const payload = await this.#ensurePayload();
+			if (payload === void 0) return [];
+			return payload.accounts.map((account) => ({
+				id: account.id,
+				label: account.label,
+				active: account.id === payload.activeId,
+				expiresAt: account.credential.expires,
+				...account.credential.email === void 0 ? {} : { email: account.credential.email }
+			}));
+		});
+	}
+	readActive() {
+		return this.#enqueue(async () => {
+			const payload = await this.#ensurePayload();
+			return clone$1(payload?.accounts.find((account) => account.id === payload.activeId)?.credential);
+		});
+	}
+	activeId() {
+		return this.#enqueue(async () => (await this.#ensurePayload())?.activeId);
+	}
+	add(label, credential) {
+		return this.#enqueue(async () => {
+			const normalizedLabel = normalizeLabel(label);
+			const validated = sanitizeOAuthCredential(credential);
+			await this.#ensurePayload();
+			const id = this.createId();
+			const account = (await this.#modifyPayload((current) => ({
+				...current,
+				activeId: id,
+				accounts: [...current.accounts, {
+					id,
+					label: normalizedLabel,
+					credential: validated
+				}]
+			}))).accounts.find((candidate) => candidate.id === id);
+			return {
+				id,
+				label: account.label,
+				active: true,
+				expiresAt: account.credential.expires,
+				...account.credential.email === void 0 ? {} : { email: account.credential.email }
+			};
+		});
+	}
+	select(id) {
+		return this.#enqueue(async () => {
+			await this.#modifyPayload((current) => {
+				if (!current.accounts.some((account) => account.id === id)) throw new Error("Unknown Codex account");
+				return {
+					...current,
+					activeId: id
+				};
+			});
+		});
+	}
+	modifyActive(update) {
+		return this.#enqueue(async () => {
+			if (await this.#ensurePayload() === void 0) {
+				const initial = await update(void 0);
+				if (initial === void 0) return void 0;
+				const credential = sanitizeOAuthCredential(initial);
+				await this.credentials.set(this.legacyRef, JSON.stringify(credential));
+				await this.#ensurePayload();
+				return clone$1(credential);
+			}
+			let result;
+			await this.#modifyPayload(async (current) => {
+				const index = current.accounts.findIndex((account) => account.id === current.activeId);
+				const previous = clone$1(current.accounts[index].credential);
+				const next = await update(previous);
+				if (next === void 0) {
+					result = previous;
+					return current;
+				}
+				const credential = sanitizeOAuthCredential(next);
+				if (credential.email === void 0 && previous.email !== void 0) credential.email = previous.email;
+				const accounts = [...current.accounts];
+				accounts[index] = {
+					...accounts[index],
+					credential
+				};
+				result = clone$1(credential);
+				return {
+					...current,
+					accounts
+				};
+			});
+			return result;
+		});
+	}
+	deleteAll() {
+		return this.#enqueue(async () => {
+			await this.credentials.deleteRecord(this.key);
+			await this.credentials.unset(this.legacyRef);
+			for (const ref of this.legacyRefs) await this.credentials.unset(ref);
+		});
+	}
+	remove(id) {
+		return this.#enqueue(async () => {
+			await this.#modifyPayload((current) => {
+				if (!current.accounts.some((account) => account.id === id)) throw new Error("Unknown Codex account");
+				if (current.accounts.length === 1) throw new Error("Cannot remove the last account; sign out instead");
+				const accounts = current.accounts.filter((account) => account.id !== id);
+				const { legacyAccountId, ...rest } = current;
+				return {
+					...rest,
+					activeId: current.activeId === id ? accounts[0].id : current.activeId,
+					...legacyAccountId === void 0 || legacyAccountId === id ? {} : { legacyAccountId },
+					accounts
+				};
+			});
+		});
+	}
+};
+//#endregion
+//#region src/credential-store.js
+const PROVIDER$1 = "openai-codex";
+const abortIfNeeded = (options) => options?.signal?.throwIfAborted();
+const clone = (value) => value === void 0 ? void 0 : structuredClone(value);
+function assertProvider(providerId) {
+	if (providerId !== PROVIDER$1) throw new Error(`Codex credential store does not own provider ${JSON.stringify(providerId)}`);
+}
+function assertOAuthCredential(value) {
+	if (value === void 0) return void 0;
+	if (value === null || typeof value !== "object" || value.type !== "oauth" || typeof value.access !== "string" || value.access.length === 0 || typeof value.refresh !== "string" || value.refresh.length === 0 || typeof value.expires !== "number" || !Number.isFinite(value.expires)) throw new Error("Codex credential store received a malformed OAuth credential");
+	return clone(value);
+}
+function parseOAuthCredential(value) {
+	try {
+		return assertOAuthCredential(JSON.parse(value));
+	} catch (error) {
+		if (error?.message === "Codex credential store received a malformed OAuth credential") throw error;
+		throw new Error("Codex credential store contains malformed OAuth JSON", { cause: error });
+	}
+}
+/**
+* Adapt DSH's managed string credential service to pi-ai's typed OAuth store.
+* Refresh/login/logout operations are serialized so an older refresh response
+* cannot overwrite a newer rotated token.
+*/
+var DshOAuthCredentialStore = class {
+	#chains = /* @__PURE__ */ new Map();
+	constructor(credentials, ref, legacyRefs = [], options = {}) {
+		if (credentials === void 0 || credentials === null) throw new Error("Codex OAuth requires the DSH credentials service");
+		const expirySkewMs = options.expirySkewMs ?? 0;
+		if (!Number.isFinite(expirySkewMs) || expirySkewMs < 0) throw new Error("Codex OAuth expiry skew must be a non-negative finite number");
+		this.credentials = credentials;
+		this.ref = ref;
+		this.legacyRefs = Object.freeze([...legacyRefs]);
+		this.expirySkewMs = expirySkewMs;
+		this.vault = options.vault;
+	}
+	#enqueue(providerId, operation, options) {
+		assertProvider(providerId);
+		const current = (this.#chains.get(providerId) ?? Promise.resolve()).catch(() => void 0).then(async () => {
+			abortIfNeeded(options);
+			return operation();
+		});
+		const tail = current.catch(() => void 0);
+		this.#chains.set(providerId, tail);
+		tail.finally(() => {
+			if (this.#chains.get(providerId) === tail) this.#chains.delete(providerId);
+		});
+		return current;
+	}
+	async #read(providerId, options) {
+		assertProvider(providerId);
+		abortIfNeeded(options);
+		if (this.vault !== void 0) {
+			const current = await this.vault.readActive();
+			if (current === void 0) return void 0;
+			return oauthCredentialForResolution(current, this.expirySkewMs);
+		}
+		let hit = await this.credentials.resolve(this.ref);
+		if (hit?.value === void 0 || hit.value === "") for (const legacyRef of this.legacyRefs) {
+			const legacy = await this.credentials.resolve(legacyRef);
+			if (legacy?.value === void 0 || legacy.value === "") continue;
+			const migrated = parseOAuthCredential(legacy.value);
+			await this.credentials.set(this.ref, JSON.stringify(migrated));
+			await this.credentials.unset(legacyRef);
+			hit = { value: JSON.stringify(migrated) };
+			break;
+		}
+		abortIfNeeded(options);
+		if (hit?.value === void 0 || hit.value === "") return void 0;
+		const credential = parseOAuthCredential(hit.value);
+		return oauthCredentialForResolution(credential, this.expirySkewMs);
+	}
+	read(providerId, options) {
+		return this.#enqueue(providerId, () => this.#read(providerId, options), options);
+	}
+	async list(options) {
+		abortIfNeeded(options);
+		return await this.read(PROVIDER$1, options) === void 0 ? [] : [{
+			providerId: PROVIDER$1,
+			type: "oauth"
+		}];
+	}
+	modify(providerId, update, options) {
+		return this.#enqueue(providerId, async () => {
+			if (this.vault !== void 0) {
+				const next = await this.vault.modifyActive(async (current) => {
+					const visible = oauthCredentialForResolution(current, this.expirySkewMs);
+					const updated = await update(clone(visible));
+					return updated === void 0 ? void 0 : assertOAuthCredential(updated);
+				});
+				abortIfNeeded(options);
+				return oauthCredentialForResolution(clone(next), this.expirySkewMs);
+			}
+			const current = await this.#read(providerId, options);
+			const next = await update(clone(current));
+			abortIfNeeded(options);
+			if (next === void 0) return current;
+			const validated = assertOAuthCredential(next);
+			await this.credentials.set(this.ref, JSON.stringify(validated));
+			for (const legacyRef of this.legacyRefs) await this.credentials.unset(legacyRef);
+			abortIfNeeded(options);
+			return oauthCredentialForResolution(clone(validated), this.expirySkewMs);
+		}, options);
+	}
+	delete(providerId, options) {
+		return this.#enqueue(providerId, async () => {
+			if (this.vault !== void 0) {
+				await this.vault.deleteAll();
+				abortIfNeeded(options);
+				return;
+			}
+			await this.credentials.unset(this.ref);
+			for (const legacyRef of this.legacyRefs) await this.credentials.unset(legacyRef);
+			abortIfNeeded(options);
+		}, options);
+	}
+};
+/** Return only account state that is safe to expose to the browser client. */
+function createCodexAuthService(models, store, options = {}) {
+	const runLogin = options.runLogin ?? ((run) => run());
+	const accountVault = options.accountVault;
+	const createLoginModels = options.createLoginModels;
+	const createPendingStore = options.createPendingStore ?? (() => new PendingOAuthCredentialStore());
+	return Object.freeze({
+		async status(options) {
+			const current = await store.read(PROVIDER$1, options);
+			const accounts = await accountVault?.list();
+			if (current === void 0) return {
+				authenticated: false,
+				provider: PROVIDER$1,
+				...accounts === void 0 ? {} : { accounts }
+			};
+			return {
+				authenticated: true,
+				provider: PROVIDER$1,
+				type: "oauth",
+				expiresAt: current.expires,
+				...accounts === void 0 ? {} : { accounts }
+			};
+		},
+		login(interaction, input = {}) {
+			if (input.label !== void 0) {
+				if (accountVault === void 0 || createLoginModels === void 0) throw new Error("Codex multi-account is unavailable");
+				return runLogin(async () => {
+					const pending = createPendingStore();
+					await createLoginModels(pending).login(PROVIDER$1, "oauth", interaction);
+					const credential = pending.credential();
+					if (credential === void 0) throw new Error("Codex login did not return credentials");
+					await accountVault.add(input.label, credential);
+				});
+			}
+			return runLogin(() => models.login(PROVIDER$1, "oauth", interaction));
+		},
+		async select(id) {
+			if (accountVault === void 0) throw new Error("Codex multi-account is unavailable");
+			await accountVault.select(id);
+			return this.status();
+		},
+		async remove(id) {
+			if (accountVault === void 0) throw new Error("Codex multi-account is unavailable");
+			await accountVault.remove(id);
+			return this.status();
+		},
+		logout(options) {
+			return models.logout(PROVIDER$1, options);
+		}
+	});
+}
+//#endregion
+//#region src/external-url.js
+const OPENAI_AUTH_ORIGIN = "https://auth.openai.com";
+/** Validate the only external origin this plugin may launch. */
+function assertCodexAuthUrl(value) {
+	let url;
+	try {
+		url = new URL(value);
+	} catch {
+		throw new Error("Codex auth URL is invalid");
+	}
+	if (url.protocol !== "https:") throw new Error("Codex auth URL must use HTTPS");
+	if (url.origin !== OPENAI_AUTH_ORIGIN || url.username !== "" || url.password !== "") throw new Error("Codex auth URL must use the OpenAI auth origin");
+	return url.href;
+}
+/** Return a shell-free native opener command for the current desktop. */
+function commandForCodexAuthUrl(value, platform = process.platform) {
+	const url = assertCodexAuthUrl(value);
+	if (platform === "win32") return {
+		file: "rundll32.exe",
+		args: ["url.dll,FileProtocolHandler", url],
+		shell: false
+	};
+	if (platform === "darwin") return {
+		file: "open",
+		args: [url],
+		shell: false
+	};
+	if (platform === "linux") return {
+		file: "xdg-open",
+		args: [url],
+		shell: false
+	};
+	throw new Error(`Codex auth URL opener is unsupported on ${platform}`);
+}
+function openCodexAuthUrl(value, options = {}) {
+	const command = commandForCodexAuthUrl(value, options.platform);
+	const spawnProcess = options.spawn ?? spawn;
+	return new Promise((resolve, reject) => {
+		const child = spawnProcess(command.file, command.args, {
+			detached: true,
+			stdio: "ignore",
+			windowsHide: true,
+			shell: command.shell
+		});
+		child.once("error", reject);
+		child.once("spawn", () => {
+			child.unref();
+			resolve();
+		});
+	});
+}
+//#endregion
+//#region src/login-coordinator.js
+const LOGIN_METHODS = /* @__PURE__ */ new Set(["browser", "device_code"]);
+const TERMINAL_PHASES = /* @__PURE__ */ new Set([
+	"authenticated",
+	"failed",
+	"cancelled"
+]);
+const publicClone = (value) => structuredClone(value);
+const asObject = (value) => value !== null && typeof value === "object" ? value : {};
+const ok = (value) => ({
+	ok: true,
+	value
+});
+const badRequest = (message) => ({
+	ok: false,
+	error: {
+		code: "bad-request",
+		message,
+		details: { issues: [] }
+	}
+});
+const accountStatusError = (message) => ({
+	ok: false,
+	error: {
+		code: "internal",
+		message,
+		details: { issues: [] }
+	}
+});
+const classifyAccountStatusError = (error) => {
+	const message = error instanceof Error ? error.message : "";
+	if (/malformed (?:OAuth|grant|account vault)|received a malformed OAuth|contains malformed OAuth/iu.test(message)) return ["credential-malformed", "Codex account credentials are malformed"];
+	if (/credential|account vault|readRecord|credential store|credentials service/iu.test(message)) return ["credential-unavailable", "Codex account credentials are unavailable"];
+	const code = typeof error?.code === "string" ? error.code.toUpperCase() : "";
+	if (error?.name === "TimeoutError" || [
+		"TIMEOUT",
+		"ETIMEDOUT",
+		"UND_ERR_CONNECT_TIMEOUT"
+	].includes(code)) return ["transport", "Codex account status service is unavailable"];
+	if ([
+		"ECONNRESET",
+		"ECONNREFUSED",
+		"ENOTFOUND",
+		"EAI_AGAIN",
+		"NETWORK",
+		"NETWORK_ERROR",
+		"TRANSPORT"
+	].includes(code) || error?.name === "NetworkError") return ["transport", "Codex account status service is unavailable"];
+	return ["unknown", "Could not read Codex account status"];
+};
+const deferred = () => {
+	let resolve;
+	let reject;
+	return {
+		promise: new Promise((onResolve, onReject) => {
+			resolve = onResolve;
+			reject = onReject;
+		}),
+		resolve,
+		reject
+	};
+};
+const publicPrompt = (prompt) => ({
+	type: prompt.type,
+	message: String(prompt.message ?? ""),
+	...typeof prompt.placeholder === "string" ? { placeholder: prompt.placeholder } : {}
+});
+const PUBLIC_FAILURES = /* @__PURE__ */ new Set([
+	"account-claim",
+	"network",
+	"token-exchange",
+	"callback"
+]);
+const publicFailure = (kind) => PUBLIC_FAILURES.has(kind) ? kind : void 0;
+function classifyLoginFailure(error) {
+	const message = error instanceof Error ? error.message : "";
+	if (/token exchange failed/iu.test(message)) return "token-exchange";
+	if (/fetch failed|\b(?:ECONN|ENOTFOUND|ETIMEDOUT|CERT_|socket|network)\b/iu.test(message)) return "network";
+	if (/extract accountId|account[_ -]?id/iu.test(message)) return "account-claim";
+	if (/credential|credentials-local|OAuth JSON/iu.test(message)) return "credential-store";
+	if (/Missing authorization code|State mismatch|callback/iu.test(message)) return "callback";
+	return "provider";
+}
+/** Own one host-side login without exposing tokens to the browser client. */
+var CodexLoginCoordinator = class {
+	#sessions = /* @__PURE__ */ new Map();
+	#activeId;
+	constructor(auth, options = {}) {
+		this.auth = auth;
+		this.createId = options.createId ?? (() => crypto.randomUUID());
+	}
+	async accountStatus(options) {
+		return publicClone(await this.auth.status(options));
+	}
+	supportState() {
+		const active = this.#activeId === void 0 ? void 0 : this.#sessions.get(this.#activeId);
+		if (active === void 0) return { phase: "idle" };
+		return {
+			method: active.view.method,
+			phase: active.view.phase,
+			...active.view.phase === "failed" ? { failure: classifyLoginFailure(active.hostError) } : {}
+		};
+	}
+	async start({ method, label }) {
+		if (!LOGIN_METHODS.has(method)) throw new Error(`unsupported Codex login method: ${String(method)}`);
+		if (label !== void 0 && (typeof label !== "string" || label.trim().length === 0 || label.trim().length > 48)) throw new Error("unsupported Codex account label");
+		const active = this.#activeId === void 0 ? void 0 : this.#sessions.get(this.#activeId);
+		if (active !== void 0 && !TERMINAL_PHASES.has(active.view.phase)) {
+			active.view = {
+				id: active.view.id,
+				provider: "openai-codex",
+				method: active.view.method,
+				phase: "cancelled",
+				authenticated: false
+			};
+			active.controller.abort(/* @__PURE__ */ new Error("Codex login replaced by a new attempt"));
+		}
+		if (active !== void 0) this.#sessions.delete(active.view.id);
+		const id = this.createId();
+		const ready = deferred();
+		const controller = new AbortController();
+		const session = {
+			controller,
+			prompt: void 0,
+			ready,
+			view: {
+				id,
+				provider: "openai-codex",
+				method,
+				phase: "starting",
+				authenticated: false
+			}
+		};
+		this.#sessions.set(id, session);
+		this.#activeId = id;
+		const publishReady = () => ready.resolve(publicClone(session.view));
+		const interaction = {
+			signal: controller.signal,
+			prompt: async (prompt) => {
+				controller.signal.throwIfAborted();
+				if (prompt.type === "select") return method;
+				if (![
+					"manual_code",
+					"text",
+					"secret"
+				].includes(prompt.type)) throw new Error(`unsupported Codex auth prompt: ${String(prompt.type)}`);
+				const answer = deferred();
+				session.prompt = answer;
+				session.view = {
+					...session.view,
+					phase: "waiting_input",
+					prompt: publicPrompt(prompt)
+				};
+				const abortPrompt = () => answer.reject(controller.signal.reason ?? /* @__PURE__ */ new Error("login cancelled"));
+				controller.signal.addEventListener("abort", abortPrompt, { once: true });
+				prompt.signal?.addEventListener("abort", abortPrompt, { once: true });
+				publishReady();
+				try {
+					return await answer.promise;
+				} finally {
+					controller.signal.removeEventListener("abort", abortPrompt);
+					prompt.signal?.removeEventListener("abort", abortPrompt);
+					if (session.prompt === answer) session.prompt = void 0;
+				}
+			},
+			notify: (event) => {
+				if (controller.signal.aborted) return;
+				if (event.type === "auth_url") session.view = {
+					...session.view,
+					phase: "waiting_browser",
+					authUrl: assertCodexAuthUrl(event.url),
+					...typeof event.instructions === "string" ? { instructions: event.instructions } : {}
+				};
+				else if (event.type === "device_code") session.view = {
+					...session.view,
+					phase: "waiting_device",
+					deviceCode: {
+						userCode: event.userCode,
+						verificationUri: assertCodexAuthUrl(event.verificationUri),
+						...typeof event.intervalSeconds === "number" ? { intervalSeconds: event.intervalSeconds } : {},
+						...typeof event.expiresInSeconds === "number" ? { expiresInSeconds: event.expiresInSeconds } : {}
+					}
+				};
+				else session.view = {
+					...session.view,
+					message: String(event.message ?? "")
+				};
+				publishReady();
+			}
+		};
+		session.run = Promise.resolve().then(() => this.auth.login(interaction, label === void 0 ? {} : { label: label.trim() })).then(async () => {
+			if (controller.signal.aborted) return;
+			const status = await this.auth.status();
+			session.view = {
+				id,
+				provider: "openai-codex",
+				method,
+				phase: "authenticated",
+				authenticated: status.authenticated === true,
+				...typeof status.expiresAt === "number" ? { expiresAt: status.expiresAt } : {}
+			};
+		}).catch(async (error) => {
+			if (controller.signal.aborted) {
+				session.view = {
+					id,
+					provider: "openai-codex",
+					method,
+					phase: "cancelled",
+					authenticated: false
+				};
+				return;
+			}
+			try {
+				if (label !== void 0) throw error;
+				const status = await this.auth.status();
+				if (status.authenticated === true) {
+					session.view = {
+						id,
+						provider: "openai-codex",
+						method,
+						phase: "authenticated",
+						authenticated: true,
+						...typeof status.expiresAt === "number" ? { expiresAt: status.expiresAt } : {}
+					};
+					return;
+				}
+			} catch {}
+			session.view = {
+				id,
+				provider: "openai-codex",
+				method,
+				phase: "failed",
+				authenticated: false,
+				error: "Codex login failed",
+				failure: publicFailure(classifyLoginFailure(error))
+			};
+			session.hostError = error;
+		}).finally(publishReady);
+		return ready.promise;
+	}
+	read(id) {
+		const session = this.#sessions.get(id);
+		if (session === void 0) throw new Error("unknown Codex login");
+		return publicClone(session.view);
+	}
+	async submit({ id, value }) {
+		const session = this.#sessions.get(id);
+		if (session === void 0) throw new Error("unknown Codex login");
+		if (session.prompt === void 0 || session.view.phase !== "waiting_input") throw new Error("Codex login is not waiting for input");
+		if (typeof value !== "string" || value.trim() === "") throw new Error("Codex login input is empty");
+		const answer = session.prompt;
+		session.prompt = void 0;
+		session.view = {
+			...session.view,
+			phase: session.view.authUrl === void 0 ? "starting" : "waiting_browser",
+			prompt: void 0
+		};
+		answer.resolve(value);
+		return this.read(id);
+	}
+	async cancel(id) {
+		const session = this.#sessions.get(id);
+		if (session === void 0) throw new Error("unknown Codex login");
+		if (!TERMINAL_PHASES.has(session.view.phase)) {
+			session.view = {
+				id,
+				provider: "openai-codex",
+				method: session.view.method,
+				phase: "cancelled",
+				authenticated: false
+			};
+			session.controller.abort(/* @__PURE__ */ new Error("Codex login cancelled"));
+		}
+		return this.read(id);
+	}
+	async logout(options) {
+		if (this.#activeId !== void 0) {
+			const active = this.#sessions.get(this.#activeId);
+			if (active !== void 0 && !TERMINAL_PHASES.has(active.view.phase)) await this.cancel(active.view.id);
+		}
+		await this.auth.logout(options);
+		return this.accountStatus(options);
+	}
+	async selectAccount(id) {
+		return publicClone(await this.auth.select(id));
+	}
+	async removeAccount(id) {
+		return publicClone(await this.auth.remove(id));
+	}
+};
+/** Map the loopback-only DSH Connection channel onto the coordinator. */
+function createCodexRpcHandler(coordinator, options = {}) {
+	const openExternal = options.openExternal;
+	return async (endpoint, payload, signal) => {
+		try {
+			signal.throwIfAborted();
+			const input = asObject(payload);
+			if (endpoint === "status") try {
+				return ok(await coordinator.accountStatus({ signal }));
+			} catch (error) {
+				if (signal.aborted) throw error;
+				const [, message] = classifyAccountStatusError(error);
+				return accountStatusError(message);
+			}
+			if (endpoint === "login/start") {
+				const started = await coordinator.start({
+					method: input.method,
+					label: input.label
+				});
+				if (input.openExternal !== true) return ok(started);
+				const url = started.authUrl ?? started.deviceCode?.verificationUri;
+				if (typeof url !== "string" || openExternal === void 0) return ok({
+					...started,
+					externalOpened: false
+				});
+				try {
+					await openExternal(url);
+					return ok({
+						...started,
+						externalOpened: true
+					});
+				} catch {
+					return ok({
+						...started,
+						externalOpened: false
+					});
+				}
+			}
+			if (endpoint === "login/status") return ok(coordinator.read(input.id));
+			if (endpoint === "login/submit") return ok(await coordinator.submit({
+				id: input.id,
+				value: input.value
+			}));
+			if (endpoint === "login/cancel") return ok(await coordinator.cancel(input.id));
+			if (endpoint === "logout") return ok(await coordinator.logout({ signal }));
+			if (endpoint === "account/select") return ok(await coordinator.selectAccount(input.id));
+			if (endpoint === "account/remove") return ok(await coordinator.removeAccount(input.id));
+			return badRequest(`unknown Codex auth endpoint: ${endpoint}`);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			const message = error instanceof Error && /^(unknown|unsupported|a Codex|Codex login)/.test(error.message) ? error.message : "Codex request failed";
+			return badRequest(message);
+		}
+	};
+}
+//#endregion
+//#region src/transport-failure.js
+const TRANSIENT_WEBSOCKET_CLOSE = /^WebSocket closed (?:1006|1011|1012|1013)(?:\s|$)/;
+const GATEWAY_REPLAY_BUFFER_EXCEEDED = /^\s*exceeded request buffer limit while retrying upstream\s*$/;
+function normalizeTransportEvent(event, signal) {
+	if (signal?.aborted || event?.type !== "error" || event.reason !== "error") return event;
+	const message = event.error?.errorMessage;
+	if (typeof message !== "string") return event;
+	if (!TRANSIENT_WEBSOCKET_CLOSE.test(message) && !GATEWAY_REPLAY_BUFFER_EXCEEDED.test(message)) return event;
+	return {
+		...event,
+		error: {
+			...event.error,
+			errorMessage: `Network transport failure: ${message}`
+		}
+	};
+}
+//#endregion
+//#region src/pi-ai-runtime.js
+const FAST_SERVICE_TIER = "priority";
+const ULTRAFAST_SERVICE_TIER = "ultrafast";
+/** Apply the chosen detail to user and tool-result images after the provider assembles the request. */
+const withoutUserAgent = (headers) => headers && typeof headers === "object" ? Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== "user-agent")) : headers;
+function withReasoningSummary(payload, summary) {
+	if (summary === "auto" || payload?.reasoning === void 0 || payload.reasoning === null) return payload;
+	const { summary: _previous, ...rest } = payload.reasoning;
+	return {
+		...payload,
+		reasoning: summary === "none" ? rest : {
+			...rest,
+			summary
+		}
+	};
+}
+function withInputImageDetail(payload, detail) {
+	if (!Array.isArray(payload.input)) return payload;
+	let changed = false;
+	const input = payload.input.map((item) => {
+		const field = Array.isArray(item?.content) ? "content" : ["function_call_output", "custom_tool_call_output"].includes(item?.type) && Array.isArray(item.output) ? "output" : void 0;
+		if (field === void 0) return item;
+		let itemChanged = false;
+		const parts = item[field].map((part) => {
+			if (part?.type !== "input_image" || part.detail === detail) return part;
+			itemChanged = true;
+			return {
+				...part,
+				detail
+			};
+		});
+		if (!itemChanged) return item;
+		changed = true;
+		return {
+			...item,
+			[field]: parts
+		};
+	});
+	return changed ? {
+		...payload,
+		input
+	} : payload;
+}
+const DSH_REVIEW_POLICY_PREFIX = "REVIEW_POLICY\nYou are the final authorization reviewer";
+const REVIEW_MODEL_SESSION = "session";
+const REVIEW_RETRIES = 2;
+const TRANSIENT_REVIEW_FAILURE = /stream ended (?:before|without)|\b(?:network|connection|socket)\b|\bECONN[A-Z]+\b|other side closed|premature close|\bterminated\b|WebSocket closed (?:1006|1011|1012|1013)/iu;
+function systemText(context) {
+	if (typeof context?.systemPrompt === "string") return context.systemPrompt;
+	const first = Array.isArray(context?.messages) ? context.messages[0] : void 0;
+	if (first?.role !== "system") return "";
+	return typeof first.content === "string" ? first.content : Array.isArray(first.content) ? first.content.map((part) => part?.text ?? "").join("") : "";
+}
+/** Whether this request is DSH Auto review judging one pending tool call. */
+function isDshAutoReview(context) {
+	return systemText(context).startsWith(DSH_REVIEW_POLICY_PREFIX);
+}
+/**
+* Preserve pi-ai's native Codex OAuth provider while allowing DSH's generic
+* PiAiAdapter to pass the access token resolved by the host credential store.
+*
+* PiAiAdapter owns a request-local Models collection backed by the same DSH
+* credential store as this provider. A pure OAuth provider ignores its
+* `apiKey` request override and otherwise fails before dispatch with "Provider
+* is not configured". This non-interactive bridge teaches that collection how
+* to consume only the already-refreshed token for this request; login, refresh,
+* persistence, headers, transport, and model behavior remain owned by the
+* original provider.
+*/
+function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT, resolveInputImageDetail = () => void 0, resolveReasoningSummary = () => void 0, resolveContextMode = () => void 0, resolveCustomContextWindow = () => void 0, resolveReviewModel = () => REVIEW_MODEL_SESSION, catalog, connection, compaction, bindRequestAuth, runNetwork = (_area, operation) => operation() } = {}) {
+	const provider = createOpenAICodexProvider();
+	const requestToken = Object.freeze({
+		name: "DSH-managed Codex OAuth request token",
+		async resolve({ credential, signal }) {
+			const token = credential?.type === "api_key" ? credential.key : void 0;
+			if (typeof token !== "string" || token.length === 0) return void 0;
+			return {
+				auth: { apiKey: token },
+				source: "DSH-managed OAuth request"
+			};
+		}
+	});
+	const modelMetadata = (model) => catalog?.metadata(model?.id);
+	const supportsVerbosity = (model) => modelMetadata(model)?.supportVerbosity ?? model?.id !== "gpt-5.3-codex-spark";
+	const withPreferences = (model, options = {}) => {
+		const metadata = modelMetadata(model);
+		const requestedVerbosity = resolveOutputVerbosity();
+		const textVerbosity = supportsVerbosity(model) ? requestedVerbosity === "default" ? metadata?.defaultVerbosity ?? "medium" : requestedVerbosity : void 0;
+		const speedMode = resolveSpeedMode();
+		const serviceTier = speedMode === "ultrafast" && metadata?.supportsUltrafast === true ? ULTRAFAST_SERVICE_TIER : speedMode === "fast" && (metadata?.supportsFast ?? supportsCodexFastMode(model?.id)) ? FAST_SERVICE_TIER : void 0;
+		const inputImageDetail = normalizeInputImageDetail(resolveInputImageDetail());
+		const reasoningSummary = normalizeReasoningSummary(resolveReasoningSummary());
+		const { temperature: _temperature, onPayload, ...rest } = options;
+		return {
+			...rest,
+			...rest.headers === void 0 ? {} : { headers: withoutUserAgent(rest.headers) },
+			...textVerbosity === void 0 ? {} : { textVerbosity },
+			...serviceTier === void 0 ? {} : { serviceTier },
+			async onPayload(payload, requestModel) {
+				const preferred = {
+					...payload,
+					...textVerbosity === void 0 ? {} : { text: {
+						...payload.text ?? {},
+						verbosity: textVerbosity
+					} },
+					...serviceTier === void 0 ? {} : { service_tier: serviceTier }
+				};
+				const managed = compaction?.preparePayload(preferred, model?.contextWindow) ?? preferred;
+				const next = await onPayload?.(managed, requestModel);
+				const detailed = inputImageDetail === "auto" ? next ?? managed : withInputImageDetail(next ?? managed, inputImageDetail);
+				const { temperature: _dropped, ...accepted } = withReasoningSummary(detailed, reasoningSummary);
+				return {
+					...accepted,
+					...textVerbosity === void 0 ? {} : { text: {
+						...detailed.text ?? {},
+						verbosity: textVerbosity
+					} },
+					...serviceTier === void 0 ? {} : { service_tier: serviceTier }
+				};
+			}
+		};
+	};
+	const getModels = () => (catalog?.getModels() ?? provider.getModels()).map((model) => {
+		const maximum = modelContextMaximum(model);
+		const mode = resolveContextMode();
+		if (model.id === "gpt-5.3-codex-spark" || !["extended", "custom"].includes(mode)) return model;
+		if (mode === "extended") {
+			const contextWindow = maximum;
+			return {
+				...model,
+				contextWindow
+			};
+		}
+		const requested = clampModelContext(resolveCustomContextWindow(customContextModelKey(model.id)), maximum, model.contextWindow);
+		return {
+			...model,
+			contextWindow: requested
+		};
+	});
+	const review = {
+		requests: 0,
+		routed: 0,
+		sessionModel: 0,
+		retries: 0
+	};
+	const reviewRoute = (model, context) => {
+		if (resolveReviewModel() !== "official" || !isDshAutoReview(context)) return void 0;
+		review.requests += 1;
+		const route = catalog?.reviewModel?.(model?.id);
+		if (route === void 0) review.sessionModel += 1;
+		else review.routed += 1;
+		return route;
+	};
+	const withReview = (route, options = {}) => {
+		const { temperature: _temperature, onPayload, ...rest } = options;
+		return {
+			...rest,
+			...rest.headers === void 0 ? {} : { headers: withoutUserAgent(rest.headers) },
+			async onPayload(payload, requestModel) {
+				const { temperature: _dropped, service_tier: _tier, text: _text, ...accepted } = await onPayload?.(payload, requestModel) ?? payload;
+				return {
+					...accepted,
+					model: route.id,
+					...route.effort === void 0 ? {} : { reasoning: {
+						...accepted.reasoning ?? {},
+						effort: route.effort
+					} }
+				};
+			}
+		};
+	};
+	const reviewIterable = (create) => {
+		let replay;
+		const run = async function* () {
+			for (let attempt = 0;; attempt += 1) {
+				const events = [];
+				let failure;
+				let thrown;
+				try {
+					for await (const event of create()) {
+						events.push(event);
+						if (event?.type === "error") failure = event.error?.errorMessage;
+					}
+				} catch (error) {
+					thrown = error;
+					failure = error?.message;
+				}
+				if (failure !== void 0 && attempt < REVIEW_RETRIES && TRANSIENT_REVIEW_FAILURE.test(failure)) {
+					review.retries += 1;
+					continue;
+				}
+				if (thrown !== void 0 && events.length === 0) throw thrown;
+				yield* events;
+				if (thrown !== void 0) throw thrown;
+				return;
+			}
+		};
+		return { [Symbol.asyncIterator]: () => replay ??= run() };
+	};
+	const networkIterable = (factory, options, direct = false, authorize) => {
+		let iterator;
+		let prepared;
+		const step = async (method, value) => {
+			const request = await (prepared ??= (async () => {
+				const request = await ((direct ? void 0 : connection?.prepare(options)) ?? Promise.resolve({ options }));
+				if (!authorize) return request;
+				const resolved = await authorize(request.options);
+				return { ...request, options: { ...request.options, apiKey: resolved.auth.apiKey } };
+			})());
+			const result = await runNetwork("model", () => {
+				iterator ??= factory(direct ? request.options : compaction?.requestOptions(request.options) ?? request.options)[Symbol.asyncIterator]();
+				return iterator[method]?.(value) ?? (method === "throw" ? Promise.reject(value) : Promise.resolve({
+					done: true,
+					value
+				}));
+			}, direct ? request.network : compaction?.networkOptions(request.network) ?? request.network);
+			return result.done ? result : {
+				...result,
+				value: normalizeTransportEvent(result.value, request.options?.signal)
+			};
+		};
+		return {
+			[Symbol.asyncIterator]() {
+				return this;
+			},
+			next: (value) => step("next", value),
+			return: (value) => iterator ? step("return", value) : Promise.resolve({
+				done: true,
+				value
+			}),
+			throw: (error) => iterator ? step("throw", error) : Promise.reject(error)
+		};
+	};
+	const routed = (method, model, context, options) => {
+		const route = reviewRoute(model, context);
+		let requestAuth;
+		const authorize = bindRequestAuth ? async (prepared) => {
+			requestAuth ??= bindRequestAuth(prepared.apiKey, prepared.signal);
+			return requestAuth.resolve({ signal: prepared.signal });
+		} : void 0;
+		const create = () => route === void 0 ? networkIterable((prepared) => provider[method](model, context, prepared), withPreferences(model, options), false, authorize) : networkIterable((prepared) => provider[method](model, context, prepared), withReview(route, options), true, authorize);
+		return isDshAutoReview(context) ? reviewIterable(create) : create();
+	};
+	return Object.freeze({
+		...provider,
+		auth: Object.freeze({
+			...provider.auth,
+			apiKey: requestToken
+		}),
+		getModels,
+		stream: (model, context, options) => routed("stream", model, context, options),
+		streamSimple: (model, context, options) => routed("streamSimple", model, context, options),
+		reviewCounters: () => ({ ...review })
+	});
+}
+Object.freeze([
+	"0.82.1",
+	"0.85.1",
+	"0.87.1",
+	"1.1.0",
+	"1.2.0"
+]);
+//#endregion
+//#region src/model-catalog.js
+const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(PACKAGE_VERSION)}`;
+const LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max"
+];
+const DEFAULT_REFRESH_TIMEOUT_MS = 1e4;
+const record$3 = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const nonEmpty$1 = (value) => typeof value === "string" && value.trim().length > 0 ? value.trim() : void 0;
+const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0 ? value : void 0;
+function upgradeModelId(value) {
+	return (typeof value.upgrade === "string" ? nonEmpty$1(value.upgrade) : record$3(value.upgrade) ? nonEmpty$1(value.upgrade.model) : void 0) ?? (record$3(value.upgrade_info) ? nonEmpty$1(value.upgrade_info.model) : void 0) ?? (record$3(value.upgradeInfo) ? nonEmpty$1(value.upgradeInfo.model) : void 0);
+}
+function retirementMillis(value) {
+	for (const source of [
+		value,
+		value.upgrade,
+		value.upgrade_info,
+		value.upgradeInfo
+	]) {
+		if (!record$3(source)) continue;
+		for (const raw of [source.retirement_at, source.retirementAt]) {
+			const seconds = positiveInteger(raw);
+			if (seconds !== void 0 && Number.isSafeInteger(seconds * 1e3)) return seconds * 1e3;
+			if (typeof raw === "string" && /^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})$/u.test(raw)) {
+				const parsed = Date.parse(raw);
+				if (Number.isFinite(parsed) && parsed > 0) return parsed;
+			}
+		}
+	}
+}
+function retirementNotice(value, now = Date.now(), targetDisplayName) {
+	if (!record$3(value) || !Number.isFinite(now)) return void 0;
+	const at = retirementMillis(value);
+	if (at === void 0 || at <= now) return void 0;
+	const date = new Date(at);
+	if (!Number.isFinite(date.getTime())) return void 0;
+	const dateText = `${String(date.getUTCFullYear()).padStart(4, "0")}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+	const upgradeTo = upgradeModelId(value);
+	const upgradeName = upgradeTo === void 0 ? void 0 : nonEmpty$1(targetDisplayName) ?? upgradeTo;
+	return {
+		text: `Retires on ${dateText} (UTC).${upgradeName === void 0 ? "" : ` Switch to ${upgradeName} to keep working.`}`,
+		at,
+		upgradeTo,
+		dateText
+	};
+}
+function reasoningMap(levels) {
+	const supported = new Set((Array.isArray(levels) ? levels : []).map((level) => nonEmpty$1(record$3(level) ? level.effort : void 0)).filter(Boolean));
+	const map = Object.fromEntries(LEVELS.map((level) => [level, null]));
+	if (supported.has("none")) map.off = "none";
+	for (const level of LEVELS.slice(1)) if (supported.has(level)) map[level] = level;
+	return map;
+}
+const capabilityNames = (values) => [...new Set(values.filter((value) => typeof value === "string" && /^[a-z][a-z0-9_-]{0,31}$/u.test(value)))].sort().slice(0, 16);
+const speedTierIds = (value) => [...Array.isArray(value.additional_speed_tiers) ? value.additional_speed_tiers : [], ...Array.isArray(value.service_tiers) ? value.service_tiers.map((tier) => tier?.id) : []];
+function unsupportedCapabilities(value) {
+	const reasoning = capabilityNames((value.supported_reasoning_levels ?? []).map((item) => item?.effort)).filter((level) => !["none", ...LEVELS.slice(1)].includes(level));
+	const inputs = capabilityNames(Array.isArray(value.input_modalities) ? value.input_modalities : []).filter((input) => !["text", "image"].includes(input));
+	const speeds = capabilityNames([...Array.isArray(value.additional_speed_tiers) ? value.additional_speed_tiers : [], ...Array.isArray(value.service_tiers) ? value.service_tiers.map((tier) => tier?.id) : []]).filter((tier) => ![
+		"auto",
+		"default",
+		"standard",
+		"fast",
+		"priority",
+		"ultrafast"
+	].includes(tier));
+	return {
+		...reasoning.length ? { reasoning } : {},
+		...inputs.length ? { inputs } : {},
+		...speeds.length ? { speeds } : {}
+	};
+}
+function visibleModel(value, displayNames, now) {
+	if (!record$3(value)) return void 0;
+	const id = nonEmpty$1(value.slug);
+	const reserve = id === "gpt-reserve" && ["list", "hide"].includes(value.visibility);
+	if (id === void 0 || value.visibility !== "list" && !reserve) return void 0;
+	const supported = Array.isArray(value.supported_reasoning_levels) ? value.supported_reasoning_levels : [];
+	const input = Array.isArray(value.input_modalities) ? value.input_modalities.filter((item) => ["text", "image"].includes(item)) : ["text", "image"];
+	const unsupported = unsupportedCapabilities({
+		...value,
+		supported_reasoning_levels: supported
+	});
+	const upgradeTo = upgradeModelId(value);
+	const retirement = retirementNotice(value, now, displayNames.get(upgradeTo));
+	const notice = retirement?.text;
+	const description = nonEmpty$1(value.description);
+	return {
+		...Object.keys(unsupported).length ? { unsupported } : {},
+		id,
+		name: `${reserve ? "GPT-Reserve (Experimental)" : nonEmpty$1(value.display_name) ?? id}${retirement === void 0 ? "" : ` (retires ${retirement.dateText})`}`,
+		description: notice === void 0 ? description : description === void 0 ? notice : `${description}\n${notice}`,
+		...retirement === void 0 ? {} : { retirement: {
+			at: retirement.at,
+			upgradeTo: retirement.upgradeTo
+		} },
+		priority: Number.isFinite(value.priority) ? value.priority : 0,
+		input: input.length > 0 ? input : ["text"],
+		contextWindow: positiveInteger(value.context_window) ?? positiveInteger(value.max_context_window),
+		...positiveInteger(value.max_context_window) === void 0 ? {} : { maxContextWindow: value.max_context_window },
+		reasoning: supported.length > 0,
+		thinkingLevelMap: reasoningMap(supported),
+		supportVerbosity: value.support_verbosity === true,
+		defaultVerbosity: [
+			"low",
+			"medium",
+			"high"
+		].includes(value.default_verbosity) ? value.default_verbosity : void 0,
+		supportsFast: speedTierIds(value).some((tier) => tier === "fast" || tier === "priority"),
+		supportsUltrafast: speedTierIds(value).includes("ultrafast")
+	};
+}
+/**
+* Mirror Codex's reviewer selection: a parent model's override, else the
+* default reviewer, used only when the account catalog lists that slug (any
+* visibility), with low reasoning when the reviewer supports it.
+*/
+function officialReviewModel(value, parentId) {
+	if (!record$3(value) || !Array.isArray(value.models)) return void 0;
+	const parent = value.models.find((model) => record$3(model) && model.slug === parentId);
+	const id = nonEmpty$1(parent?.auto_review_model_override) ?? "codex-auto-review";
+	const preset = value.models.find((model) => record$3(model) && model.slug === id);
+	if (preset === void 0) return void 0;
+	const effort = (Array.isArray(preset.supported_reasoning_levels) ? preset.supported_reasoning_levels : []).some((level) => (record$3(level) ? level.effort : level) === "low") ? "low" : nonEmpty$1(preset.default_reasoning_level);
+	return {
+		id,
+		...effort === void 0 ? {} : { effort }
+	};
+}
+function parseOfficialModelCatalog(value, now = Date.now()) {
+	if (!record$3(value) || !Array.isArray(value.models)) throw new Error("Codex returned a malformed model catalog");
+	const displayNames = /* @__PURE__ */ new Map();
+	for (const model of value.models) {
+		if (!record$3(model)) continue;
+		const id = nonEmpty$1(model.slug);
+		const name = nonEmpty$1(model.display_name);
+		if (id !== void 0 && name !== void 0 && !displayNames.has(id)) displayNames.set(id, name);
+	}
+	const seen = /* @__PURE__ */ new Set();
+	return value.models.map((model) => visibleModel(model, displayNames, now)).filter((model) => model !== void 0 && !seen.has(model.id) && seen.add(model.id)).sort((left, right) => Number(left.id === "gpt-reserve") - Number(right.id === "gpt-reserve") || right.priority - left.priority);
+}
+function mergeModel(baseModels, remote) {
+	const base = baseModels.find((model) => model.id === remote.id) ?? baseModels.find((model) => model.id !== "gpt-5.3-codex-spark") ?? baseModels[0];
+	if (base === void 0) return void 0;
+	return {
+		...base,
+		id: remote.id,
+		name: remote.name,
+		...remote.retirement === void 0 || remote.description === void 0 ? {} : { description: remote.description },
+		input: remote.input,
+		reasoning: remote.reasoning,
+		thinkingLevelMap: remote.thinkingLevelMap,
+		...remote.contextWindow === void 0 ? {} : { contextWindow: remote.contextWindow },
+		...remote.maxContextWindow === void 0 ? {} : { maxContextWindow: remote.maxContextWindow },
+		...base.id === remote.id ? {} : { cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0
+		} }
+	};
+}
+function createOfficialModelCatalog(options = {}) {
+	const fetchCatalog = options.fetch ?? fetch;
+	const getNow = options.now ?? Date.now;
+	const scheduleTimeout = options.setTimeout ?? setTimeout;
+	const cancelTimeout = options.clearTimeout ?? clearTimeout;
+	const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_REFRESH_TIMEOUT_MS;
+	let models;
+	let metadata = /* @__PURE__ */ new Map();
+	let etag;
+	let rawCatalog;
+	let revision = 0;
+	let refreshing;
+	let generation = 0;
+	let refreshStatus = "idle";
+	const refresh = ({ signal } = {}) => {
+		if (signal?.aborted) return Promise.reject(signal.reason ?? /* @__PURE__ */ new Error("Codex model catalog refresh aborted"));
+		if (refreshing?.generation === generation) return refreshing.promise;
+		const currentGeneration = generation;
+		refreshStatus = "refreshing";
+		let outcome = "idle";
+		const controller = new AbortController();
+		const abort = () => {
+			if (!controller.signal.aborted) controller.abort(signal?.reason ?? /* @__PURE__ */ new Error("Codex model catalog refresh aborted"));
+		};
+		signal?.addEventListener("abort", abort, { once: true });
+		const requestSignal = controller.signal;
+		let timer;
+		const timeoutError = /* @__PURE__ */ new Error("Codex model catalog refresh timed out");
+		const work = (async () => {
+			const { access, accountId } = await readSubscriptionCredentials(options.getAuth, options.readCredential, requestSignal);
+			if (currentGeneration !== generation || requestSignal.aborted) return false;
+			if (typeof access !== "string" || access.length === 0 || typeof accountId !== "string" || accountId.length === 0) return false;
+			const headers = {
+				authorization: `Bearer ${access}`,
+				"chatgpt-account-id": accountId,
+				accept: "application/json",
+				originator: "pi",
+				"user-agent": USER_AGENT,
+				...etag === void 0 ? {} : { "if-none-match": etag }
+			};
+			const response = await fetchCatalog(CODEX_MODELS_URL, {
+				method: "GET",
+				redirect: "error",
+				headers,
+				signal: requestSignal
+			});
+			if (currentGeneration !== generation || requestSignal.aborted) return false;
+			if (response.status === 304) {
+				outcome = "ok";
+				if (rawCatalog === void 0) return false;
+				const remote = parseOfficialModelCatalog(rawCatalog, getNow());
+				const next = remote.map((model) => mergeModel(options.baseModels(), model)).filter(Boolean);
+				if (next.length === 0 || JSON.stringify(next) === JSON.stringify(models)) return false;
+				models = next;
+				metadata = new Map(remote.map((model) => [model.id, model]));
+				revision += 1;
+				options.onUpdated?.();
+				return true;
+			}
+			if (!response.ok) throw new Error(`Codex model catalog failed (HTTP ${response.status})`);
+			const raw = await response.json();
+			const remote = parseOfficialModelCatalog(raw, getNow());
+			if (currentGeneration !== generation || requestSignal.aborted) return false;
+			if (remote.length === 0) throw new Error("Codex returned an empty model catalog");
+			const baseModels = options.baseModels();
+			const next = remote.map((model) => mergeModel(baseModels, model)).filter(Boolean);
+			if (next.length === 0) throw new Error("Codex model catalog has no compatible models");
+			if (currentGeneration !== generation || requestSignal.aborted) return false;
+			models = next;
+			rawCatalog = raw;
+			metadata = new Map(remote.map((model) => [model.id, model]));
+			etag = nonEmpty$1(response.headers.get("etag")) ?? etag;
+			revision += 1;
+			outcome = "ok";
+			options.onUpdated?.();
+			return true;
+		})();
+		let rejectAborted;
+		const abortPromise = new Promise((_, reject) => {
+			rejectAborted = () => reject(requestSignal.reason ?? /* @__PURE__ */ new Error("Codex model catalog refresh aborted"));
+			if (requestSignal.aborted) rejectAborted();
+			else requestSignal.addEventListener("abort", rejectAborted, { once: true });
+		});
+		timer = scheduleTimeout(() => controller.abort(timeoutError), timeoutMs);
+		timer.unref?.();
+		const promise = Promise.race([work, abortPromise]).catch((error) => {
+			outcome = "failed";
+			throw error;
+		}).finally(() => {
+			cancelTimeout(timer);
+			signal?.removeEventListener("abort", abort);
+			requestSignal.removeEventListener("abort", rejectAborted);
+			if (refreshing?.promise === promise) {
+				refreshing = void 0;
+				refreshStatus = outcome;
+			}
+		});
+		refreshing = {
+			generation: currentGeneration,
+			promise,
+			cancel: () => controller.abort()
+		};
+		return promise;
+	};
+	return Object.freeze({
+		refresh,
+		getModels: () => models ?? [],
+		metadata: (modelId) => metadata.get(modelId),
+		reviewModel: (parentId) => officialReviewModel(rawCatalog, parentId),
+		revision: () => revision,
+		capabilityGaps: () => [...metadata.values()].filter((model) => model.unsupported && /^[a-z][a-z0-9._-]{0,79}$/u.test(model.id)).slice(0, 20).map((model) => ({
+			model: model.id,
+			...structuredClone(model.unsupported)
+		})),
+		status: () => ({
+			source: models === void 0 ? "unavailable" : "online",
+			refresh: refreshStatus
+		}),
+		clear() {
+			generation += 1;
+			const flight = refreshing;
+			refreshing = void 0;
+			flight?.cancel();
+			models = void 0;
+			rawCatalog = void 0;
+			metadata = /* @__PURE__ */ new Map();
+			etag = void 0;
+			refreshStatus = "idle";
+			revision += 1;
+			options.onUpdated?.();
+		}
+	});
+}
+//#endregion
+//#region src/codex-search.js
+const CODEX_SEARCH_PROVIDER_ID = "codex-subscription";
+const CODEX_AUTO_SEARCH_PROVIDER_ID = "codex-subscription-auto";
+const CODEX_SEARCH_URL = "https://chatgpt.com/backend-api/codex/alpha/search";
+const DEFAULT_MODEL = "gpt-5.6-luna";
+const MAX_OUTPUT_TOKENS = 4096;
+const MAX_SOURCE_DATE = 64;
+const record$2 = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const nonEmpty = (value) => typeof value === "string" && value.length > 0 ? value : void 0;
+const displayText = (value) => {
+	const text = nonEmpty(value)?.replace(/\s+/gu, " ").trim();
+	if (text === void 0 || text.length === 0) return void 0;
+	return text;
+};
+const boundedDisplayText = (value, maximum) => {
+	const text = displayText(value);
+	if (text === void 0 || text.length <= maximum) return text;
+	return `${text.slice(0, maximum - 1)}…`;
+};
+function sourceOf(value) {
+	if (!record$2(value)) return void 0;
+	const url = nonEmpty(value.url);
+	if (url === void 0) return void 0;
+	let parsed;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return;
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return void 0;
+	const title = displayText(value.title) ?? parsed.hostname;
+	const snippet = displayText(value.snippet);
+	const publishedAt = boundedDisplayText(value.published_at, MAX_SOURCE_DATE) ?? boundedDisplayText(value.publishedAt, MAX_SOURCE_DATE);
+	return {
+		url,
+		title,
+		...snippet === void 0 ? {} : { snippet },
+		...publishedAt === void 0 ? {} : { publishedAt }
+	};
+}
+function parseSearchResponse(value) {
+	if (!record$2(value) || !Array.isArray(value.results)) throw new Error("Codex returned a malformed search response");
+	const seen = /* @__PURE__ */ new Set();
+	const sources = [];
+	for (const result of value.results ?? []) {
+		const source = sourceOf(result);
+		if (source === void 0 || seen.has(source.url)) continue;
+		seen.add(source.url);
+		sources.push(source);
+	}
+	return {
+		sources,
+		truncated: false
+	};
+}
+/** Create the DSH web provider backed only by the ChatGPT subscription search endpoint. */
+function createCodexSearchProvider(options) {
+	const fetchSearch = options.fetch ?? fetch;
+	return Object.freeze({
+		id: CODEX_SEARCH_PROVIDER_ID,
+		available: () => true,
+		async search(request, signal) {
+			signal?.throwIfAborted();
+			const preferences = readCapabilitySettings(options.resolvePreferences?.());
+			if (preferences.searchMode === "disabled") throw new WebError("Codex search is disabled in subscription settings", "WEB_PROVIDER_UNAVAILABLE");
+			const { access, accountId } = await readSubscriptionCredentials(options.getAuth, options.readCredential, signal);
+			if (typeof access !== "string" || access.length === 0 || typeof accountId !== "string" || accountId.length === 0) throw new WebError("ChatGPT subscription is not signed in", "WEB_PROVIDER_CREDENTIAL_MISSING");
+			const model = nonEmpty(options.resolveModel?.()) ?? DEFAULT_MODEL;
+			const id = nonEmpty(options.resolveSessionId?.()) ?? randomUUID();
+			let response;
+			try {
+				response = await fetchSearch(CODEX_SEARCH_URL, {
+					method: "POST",
+					redirect: "error",
+					headers: {
+						authorization: `Bearer ${access}`,
+						"chatgpt-account-id": accountId,
+						accept: "application/json",
+						"content-type": "application/json",
+						originator: "pi",
+						"user-agent": USER_AGENT
+					},
+					body: JSON.stringify({
+						id,
+						model,
+						input: request.query,
+						commands: {
+							search_query: [{ q: request.query }],
+							response_length: "short"
+						},
+						settings: {
+							allowed_callers: ["direct"],
+							external_web_access: preferences.searchMode === "live"
+						},
+						max_output_tokens: MAX_OUTPUT_TOKENS
+					}),
+					signal
+				});
+			} catch (error) {
+				if (signal?.aborted || error?.name === "AbortError") throw new WebError("Codex search aborted", "WEB_ABORTED", { cause: error });
+				throw new WebError("Codex search request failed", "WEB_PROVIDER_ERROR", { cause: error });
+			}
+			if (!response.ok) throw response.status === 401 || response.status === 403 ? new WebError("ChatGPT sign-in needs to be renewed", "WEB_PROVIDER_CREDENTIAL_MISSING") : new WebError(`Codex search request failed (HTTP ${response.status})`, "WEB_PROVIDER_ERROR");
+			let value;
+			try {
+				value = await response.json();
+			} catch (error) {
+				throw new WebError("Codex returned an unreadable search response", "WEB_PROVIDER_ERROR", { cause: error });
+			}
+			try {
+				const result = parseSearchResponse(value);
+				if (preferences.searchDomains.length > 0) result.sources = result.sources.filter((source) => {
+					const hostname = new URL(source.url).hostname.toLowerCase();
+					return preferences.searchDomains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+				});
+				return result;
+			} catch (error) {
+				throw new WebError("Codex returned a malformed search response", "WEB_PROVIDER_ERROR", { cause: error });
+			}
+		}
+	});
+}
+/** Route each request by its initiating model without changing the user's explicit overrides. */
+function createCodexAutoSearchProvider(options) {
+	return Object.freeze({
+		id: CODEX_AUTO_SEARCH_PROVIDER_ID,
+		available: () => true,
+		async search(request, signal) {
+			if (options.resolveModelProvider?.() === "openai-codex") return options.codex.search(request, signal);
+			const provider = options.resolveDshProvider?.();
+			if (provider === void 0 || provider.id === "codex-subscription-auto" || provider.id === "codex-subscription" || provider.available() !== true) throw new WebError("DSH default search is unavailable", "WEB_PROVIDER_UNAVAILABLE");
+			return provider.search(request, signal);
+		}
+	});
+}
+//#endregion
+//#region src/image-tool-registration.js
+/** Removing the tool also removes its schema from subsequent model requests. */
+function watchImageTool(settings, register) {
+	let disposeTool;
+	const sync = (value) => {
+		const { imageGeneration, imageEditing } = readImageFeatures(value);
+		if ((imageGeneration || imageEditing) && !disposeTool) disposeTool = register();
+		else if (!imageGeneration && !imageEditing && disposeTool) {
+			disposeTool();
+			disposeTool = void 0;
+		}
+	};
+	sync(settings.get());
+	const unwatch = settings.watch(sync);
+	return () => {
+		unwatch();
+		disposeTool?.();
+		disposeTool = void 0;
+	};
+}
+//#endregion
+//#region src/image-original-store.js
+const ORIGINAL_IMAGE_DIRECTORY = "dsh-codex-subscription/images/v1";
+const METADATA_VERSION = 1;
+const digest = (data) => createHash("sha256").update(data).digest("hex");
+const validSessionId = (value) => typeof value === "string" && value.length > 0 && value.length <= 512;
+function pngDimensions(data) {
+	if (!(data instanceof Uint8Array) || data.byteLength < 24 || Buffer.from(data.subarray(0, 8)).toString("hex") !== "89504e470d0a1a0a" || Buffer.from(data.subarray(12, 16)).toString("ascii") !== "IHDR") throw new TypeError("invalid PNG dimensions");
+	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+	const width = view.getUint32(16, false);
+	const height = view.getUint32(20, false);
+	if (width === 0 || height === 0) throw new TypeError("invalid PNG dimensions");
+	return {
+		width,
+		height
+	};
+}
+async function writeExclusive(filename, data) {
+	await mkdir(dirname(filename), {
+		recursive: true,
+		mode: 448
+	});
+	const handle = await open(filename, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384);
+	try {
+		await handle.writeFile(data);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+async function assertPrivateFile(filename) {
+	const stat = await lstat(filename);
+	if (!stat.isFile()) throw new Error("not a regular file");
+	if (process.platform !== "win32" && (stat.mode & 63) !== 0) throw new Error("file is not owner-only");
+}
+function parseMetadata(text) {
+	let value;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return;
+	}
+	if (value?.version !== METADATA_VERSION || !validSessionId(value.sessionId)) return void 0;
+	const image = decodeOriginalImageRef(value.image);
+	return image === void 0 ? void 0 : {
+		sessionId: value.sessionId,
+		image
+	};
+}
+var OriginalImageStore = class {
+	constructor(dshHome) {
+		this.root = resolve(join(resolveDshHome(dshHome), ORIGINAL_IMAGE_DIRECTORY));
+	}
+	directory(assetId) {
+		if (!ORIGINAL_IMAGE_ID_PATTERN.test(assetId)) throw new TypeError("invalid original image asset id");
+		return join(this.root, assetId.slice(4, 6), assetId);
+	}
+	originalPath(assetId) {
+		return join(this.directory(assetId), "original");
+	}
+	async save(sessionId, data, name = "codex-generated-original.png") {
+		if (!validSessionId(sessionId) || !(data instanceof Uint8Array) || data.byteLength === 0 || data.byteLength > 48 * 1024 * 1024) throw new TypeError("invalid original image input");
+		const { width, height } = pngDimensions(data);
+		const assetId = `img_${randomBytes(16).toString("hex")}`;
+		const directory = this.directory(assetId);
+		const ref = {
+			assetId,
+			mediaType: "image/png",
+			bytes: data.byteLength,
+			width,
+			height,
+			name,
+			sha256: digest(data)
+		};
+		try {
+			await mkdir(dirname(directory), {
+				recursive: true,
+				mode: 448
+			});
+			await mkdir(directory, {
+				recursive: false,
+				mode: 448
+			});
+			await writeExclusive(join(directory, "original"), data);
+			const temporary = join(directory, `metadata.${randomBytes(8).toString("hex")}.tmp`);
+			await writeExclusive(temporary, Buffer.from(`${JSON.stringify({
+				version: METADATA_VERSION,
+				sessionId,
+				image: ref
+			}, null, 2)}\n`));
+			await rename(temporary, join(directory, "metadata.json"));
+			return ref;
+		} catch (error) {
+			await rm(directory, {
+				recursive: true,
+				force: true
+			}).catch(() => void 0);
+			throw error;
+		}
+	}
+	async remove(ref) {
+		if (ref !== void 0 && ORIGINAL_IMAGE_ID_PATTERN.test(ref.assetId)) await rm(this.directory(ref.assetId), {
+			recursive: true,
+			force: true
+		}).catch(() => void 0);
+	}
+	async read(sessionId, assetId, inherited) {
+		if (!validSessionId(sessionId) || !ORIGINAL_IMAGE_ID_PATTERN.test(assetId)) return void 0;
+		try {
+			const directory = this.directory(assetId);
+			const metadataFile = join(directory, "metadata.json");
+			const originalFile = join(directory, "original");
+			await Promise.all([assertPrivateFile(metadataFile), assertPrivateFile(originalFile)]);
+			const metadata = parseMetadata(await readFile(metadataFile, "utf8"));
+			if (metadata === void 0 || metadata.image.assetId !== assetId || metadata.sessionId !== sessionId && !originalImageRefsEqual(metadata.image, inherited)) return void 0;
+			const buffer = await readFile(originalFile);
+			const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+			const dimensions = pngDimensions(data);
+			if (data.byteLength !== metadata.image.bytes || digest(data) !== metadata.image.sha256 || dimensions.width !== metadata.image.width || dimensions.height !== metadata.image.height) return void 0;
+			return {
+				ref: metadata.image,
+				data
+			};
+		} catch {
+			return;
+		}
+	}
+	async chunk(sessionId, assetId, offset, inherited) {
+		if (!Number.isSafeInteger(offset) || offset < 0) return void 0;
+		const stored = await this.read(sessionId, assetId, inherited);
+		if (stored === void 0 || offset >= stored.data.byteLength || offset % 4194304 !== 0) return void 0;
+		const end = Math.min(stored.data.byteLength, offset + ORIGINAL_IMAGE_CHUNK_BYTES);
+		const chunk = Buffer.from(stored.data.buffer, stored.data.byteOffset + offset, end - offset);
+		return {
+			ref: stored.ref,
+			offset,
+			encoded: chunk.toString("base64"),
+			done: end === stored.data.byteLength
+		};
+	}
+};
+//#endregion
+//#region src/diagnostic-checks.js
+const states = /* @__PURE__ */ new Set([
+	"pass",
+	"fail",
+	"warn",
+	"unknown",
+	"not-applicable"
+]);
+/** Adapters return bounded reason codes, never exceptions or raw service data. */
+async function collectChecks(definitions, { timeoutMs = 1500, now = Date.now, source = "server", scope = "plugin-process" } = {}) {
+	return Promise.all(definitions.map(async ({ id, capability, run }) => {
+		const startedAt = now();
+		let timer;
+		const controller = new AbortController();
+		const base = {
+			id,
+			capability,
+			source,
+			scope
+		};
+		try {
+			if (!run) return {
+				...base,
+				status: "unknown",
+				reason: "not-instrumented",
+				observedAt: now()
+			};
+			const result = await Promise.race([Promise.resolve().then(() => run(controller.signal)), new Promise((resolve) => {
+				timer = setTimeout(() => {
+					controller.abort();
+					resolve({
+						status: "unknown",
+						reason: "inspection-timeout"
+					});
+				}, timeoutMs);
+			})]);
+			const valid = states.has(result?.status) && /^[a-z][a-z0-9-]{0,63}$/u.test(result?.reason ?? "");
+			return {
+				...base,
+				status: valid ? result.status : "unknown",
+				reason: valid ? result.reason : "invalid-inspection-result",
+				observedAt: now(),
+				elapsedMs: Math.max(0, now() - startedAt)
+			};
+		} catch {
+			return {
+				...base,
+				status: "unknown",
+				reason: "inspection-failed",
+				observedAt: now(),
+				elapsedMs: Math.max(0, now() - startedAt)
+			};
+		} finally {
+			clearTimeout(timer);
+		}
+	}));
+}
+const diagnosticCapabilities = Object.freeze([
+	"account",
+	"accounts",
+	"settings",
+	"models",
+	"quota",
+	"search",
+	"images",
+	"sketch",
+	"subagents",
+	"compaction",
+	"transport",
+	"storage",
+	"host-ui"
+]);
+const areas = {
+	catalog: "models",
+	quota: "quota",
+	search: "search",
+	image: "images",
+	model: "transport",
+	login: "account",
+	"quota-reset": "quota"
+};
+function diagnosticEvidence({ operations, history }, now) {
+	return [...(operations?.events ?? []).map((e) => ({
+		capability: e.capability,
+		action: e.action,
+		source: e.source,
+		status: e.status,
+		observedAt: e.observedAt
+	})), ...(history?.events ?? []).map((e) => ({
+		capability: areas[e.area],
+		action: e.area,
+		source: "network",
+		status: e.status === "ok" ? "completed" : "failed",
+		observedAt: e.observedAt
+	}))].filter((e) => Number.isSafeInteger(e.observedAt) && now >= e.observedAt && now - e.observedAt <= 9e5).sort((a, b) => a.observedAt - b.observedAt);
+}
+function unresolvedFailures(events) {
+	const failed = /* @__PURE__ */ new Map();
+	for (const event of events) {
+		const key = `${event.source}:${event.action}`;
+		if (event.status === "failed") failed.set(key, event);
+		else if (event.status === "completed") failed.delete(key);
+	}
+	return [...failed.values()];
+}
+//#endregion
+//#region src/diagnostic-capabilities.js
+function capabilityCoverage({ account, preference, runtime, catalog, tools, storage, checks, operations, history, now = Date.now() }) {
+	const disabled = {
+		images: preference.imageGeneration === false && preference.imageEditing === false,
+		sketch: preference.imageSketch === false || preference.imageEditing === false,
+		search: preference.searchMode === "disabled",
+		compaction: preference.compactionMode === "dsh",
+		subagents: preference.subagentBackend === "dsh"
+	};
+	const observed = diagnosticEvidence({
+		operations,
+		history
+	}, now);
+	return diagnosticCapabilities.map((id) => {
+		let readiness = "unknown", reason = "no-readiness-check", blockedBy;
+		if (disabled[id]) {
+			readiness = "not-applicable";
+			reason = "disabled-or-host-owned";
+		} else if ([
+			"models",
+			"quota",
+			"search",
+			"images",
+			"compaction"
+		].includes(id) && account.status === "signed-out") {
+			readiness = "warn";
+			reason = "sign-in-required";
+			blockedBy = "account";
+		} else if (id === "account") {
+			readiness = account.status === "signed-in" ? "pass" : "unknown";
+			reason = account.status === "signed-in" ? "local-sign-in-present" : "sign-in-unverified";
+		} else if (id === "settings" && typeof preference.writable === "boolean") {
+			readiness = preference.writable ? "pass" : "warn";
+			reason = preference.writable ? "settings-writable" : "settings-readonly";
+		} else if (id === "subagents" && runtime) {
+			readiness = runtime.installed && !runtime.restartRequired ? "pass" : "warn";
+			reason = runtime.restartRequired ? "restart-required" : runtime.installed ? "runtime-present" : "runtime-missing";
+		} else if (id === "models" && catalog) {
+			readiness = catalog.source === "online" ? "pass" : "warn";
+			reason = catalog.source === "online" ? "catalog-online" : "catalog-unavailable";
+		} else if (id === "storage" && storage?.readable) {
+			readiness = "pass";
+			reason = "storage-readable";
+		} else if (tools && (id === "images" || id === "sketch" && preference.imageSketchAgent === true)) {
+			readiness = tools[id] ? "pass" : "warn";
+			reason = tools[id] ? "tool-registered" : "tool-missing";
+		}
+		const evidence = observed.filter((event) => event.capability === id || id === "transport" && event.source === "network");
+		const failures = unresolvedFailures(evidence);
+		const recent = evidence.at(-1);
+		const relatedChecks = checks.filter((check) => check.capability === id || ["images", "sketch"].includes(id) && check.id === "tools");
+		const collectionIssue = relatedChecks.find((check) => ["inspection-failed", "inspection-timeout"].includes(check.reason));
+		if (collectionIssue && readiness === "unknown") reason = collectionIssue.reason;
+		return {
+			id,
+			readiness,
+			reason,
+			...blockedBy ? { blockedBy } : {},
+			checks: relatedChecks.map((check) => check.id),
+			execution: recent ? "observed" : "not-verified",
+			...failures.length ? { unresolved: failures } : {},
+			...recent ? { latest: {
+				action: recent.action,
+				source: recent.source,
+				status: recent.status,
+				observedAt: recent.observedAt
+			} } : {}
+		};
+	});
+}
+//#endregion
+//#region src/diagnostic-operations.js
+const actions = Object.freeze({
+	"login/start": "account",
+	"login/submit": "account",
+	"login/cancel": "account",
+	logout: "account",
+	"account/select": "accounts",
+	"account/remove": "accounts",
+	"preferences/update": "settings",
+	"account/cleanup": "accounts",
+	usage: "quota",
+	"preferences/models": "models",
+	"storage/status": "storage",
+	"storage/clear-forecast": "storage",
+	"runtime/install": "subagents",
+	"runtime/remove": "subagents",
+	"runtime/cancel": "subagents",
+	codex_image_generate: "images",
+	codex_sketch: "sketch"
+});
+function safeOperations(raw) {
+	if (!Array.isArray(raw?.events)) return void 0;
+	return {
+		scope: "plugin-process",
+		capacity: 32,
+		dropped: (Number.isSafeInteger(raw.dropped) && raw.dropped >= 0 ? raw.dropped : 0) + Math.max(0, raw.events.length - 32),
+		events: raw.events.slice(-32).flatMap((value) => {
+			if (!Object.hasOwn(actions, value?.action ?? "") || ![
+				"completed",
+				"failed",
+				"cancelled"
+			].includes(value.status) || !["rpc", "tool"].includes(value.source) || !Number.isSafeInteger(value.observedAt) || value.observedAt < 0) return [];
+			return [{
+				capability: actions[value.action],
+				action: value.action,
+				status: value.status,
+				source: value.source,
+				observedAt: value.observedAt
+			}];
+		})
+	};
+}
+function createDiagnosticOperations({ now = Date.now } = {}) {
+	const events = [];
+	let sequence = 0, dropped = 0;
+	const record = (action, status, source = "rpc") => {
+		if (!Object.hasOwn(actions, action) || ![
+			"completed",
+			"failed",
+			"cancelled"
+		].includes(status) || !["rpc", "tool"].includes(source)) return;
+		events.push({
+			sequence: ++sequence,
+			capability: actions[action],
+			action,
+			source,
+			status,
+			observedAt: now()
+		});
+		if (events.length > 32) {
+			events.shift();
+			dropped++;
+		}
+	};
+	return {
+		record,
+		wrap: (handler) => async (endpoint, payload, signal) => {
+			try {
+				const result = await handler(endpoint, payload, signal);
+				record(endpoint, result?.ok === true ? "completed" : "failed");
+				return result;
+			} catch (error) {
+				record(endpoint, signal?.aborted ? "cancelled" : "failed");
+				throw error;
+			}
+		},
+		tool: (exec, result) => {
+			if (!["codex_image_generate", "codex_sketch"].includes(exec?.name)) return;
+			record(exec.name, exec.signal?.aborted ? "cancelled" : result?.isError === true ? "failed" : result?.isError === false ? "completed" : "failed", "tool");
+		},
+		snapshot: () => ({
+			scope: "plugin-process",
+			capacity: 32,
+			dropped,
+			events: events.map((value) => ({ ...value }))
+		})
+	};
+}
+//#endregion
+//#region src/diagnostics.js
+const requestAreas = /* @__PURE__ */ new Set([
+	"login",
+	"model",
+	"catalog",
+	"quota",
+	"quota-reset",
+	"search",
+	"image"
+]);
+const statuses = /* @__PURE__ */ new Set(["ok", "failed"]);
+const stages = /* @__PURE__ */ new Set(["transport", "http"]);
+const codes = /* @__PURE__ */ new Set([
+	"timeout",
+	"dns",
+	"tls",
+	"connection",
+	"network",
+	"http-error"
+]);
+const routes = /* @__PURE__ */ new Set([
+	"direct",
+	"environment",
+	"system",
+	"bypass"
+]);
+const elapsedBuckets = /* @__PURE__ */ new Set([
+	"under-1s",
+	"1-5s",
+	"5-15s",
+	"over-15s"
+]);
+function safeHistory(raw) {
+	if (!raw || !Array.isArray(raw.events)) return void 0;
+	const events = raw.events.slice(-32).flatMap((value) => {
+		if (!value || !requestAreas.has(value.area) || !statuses.has(value.status) || !Number.isSafeInteger(value.sequence) || value.sequence < 1 || !Number.isSafeInteger(value.observedAt) || value.observedAt < 0) return [];
+		return [{
+			area: value.area,
+			status: value.status,
+			sequence: value.sequence,
+			observedAt: value.observedAt,
+			...codes.has(value.code) ? { code: value.code } : {},
+			...Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {}
+		}];
+	});
+	return {
+		scope: "plugin-process",
+		capacity: 32,
+		dropped: (Number.isSafeInteger(raw.dropped) && raw.dropped >= 0 ? raw.dropped : 0) + Math.max(0, raw.events.length - 32),
+		events
+	};
+}
+function safeRequests(network) {
+	const raw = network?.snapshot?.() ?? {};
+	const result = {};
+	for (const [area, value] of Object.entries(raw)) {
+		if (!requestAreas.has(area) || value === null || typeof value !== "object") continue;
+		if (!statuses.has(value.status) || !routes.has(value.route) || !elapsedBuckets.has(value.elapsed)) continue;
+		result[area] = {
+			status: value.status,
+			...stages.has(value.stage) ? { stage: value.stage } : {},
+			...codes.has(value.code) ? { code: value.code } : {},
+			...Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {},
+			route: value.route,
+			elapsed: value.elapsed
+		};
+	}
+	return result;
+}
+/** Build a support report that deliberately excludes OAuth and account metadata. */
+async function createSubscriptionDiagnostics({ auth, preferences, login = { phase: "idle" }, network, modelCatalog, connection, compaction, review, inspectionOptions, operations, runtimeManagement, storage, tools }) {
+	const collected = {};
+	const checks = await collectChecks([
+		[
+			"account",
+			"account",
+			() => auth.status()
+		],
+		[
+			"preferences",
+			"settings",
+			() => preferences.status()
+		],
+		[
+			"catalog",
+			"models",
+			() => modelCatalog?.status?.()
+		],
+		[
+			"gaps",
+			"models",
+			() => modelCatalog?.capabilityGaps?.()
+		],
+		[
+			"requests",
+			"transport",
+			() => network?.snapshot ? safeRequests(network) : void 0
+		],
+		[
+			"history",
+			"transport",
+			() => safeHistory(network?.history?.())
+		],
+		[
+			"websocket",
+			"transport",
+			() => connection ? safeCounters(connection, [
+				"requests",
+				"connectionsCreated",
+				"connectionsReused",
+				"deltaRequests",
+				"websocketFailures",
+				"sseFallbacks"
+			]) : void 0
+		],
+		[
+			"compaction",
+			"compaction",
+			() => compaction ? safeCounters(compaction, [
+				"requests",
+				"checkpointsSaved",
+				"checkpointsReused"
+			]) : void 0
+		],
+		[
+			"review",
+			"transport",
+			() => typeof review?.reviewCounters === "function" ? safeCounters({ snapshot: () => review.reviewCounters() }, [
+				"requests",
+				"routed",
+				"sessionModel",
+				"retries"
+			]) : void 0
+		],
+		[
+			"operations",
+			"transport",
+			() => safeOperations(operations?.snapshot?.())
+		],
+		[
+			"runtime",
+			"subagents",
+			async () => {
+				const value = await runtimeManagement?.status?.();
+				return value ? Object.fromEntries([
+					"available",
+					"installed",
+					"restartRequired"
+				].filter((key) => typeof value[key] === "boolean").map((key) => [key, value[key]])) : void 0;
+			}
+		],
+		[
+			"storage",
+			"storage",
+			async () => typeof storage === "function" ? (await storage(), { readable: true }) : void 0
+		],
+		[
+			"tools",
+			"host-ui",
+			() => typeof tools?.get === "function" ? {
+				images: !!tools.get("codex_image_generate"),
+				sketch: !!tools.get("codex_sketch")
+			} : void 0
+		]
+	].map(([id, capability, read]) => ({
+		id,
+		capability,
+		run: read ? async (signal) => {
+			const value = await read();
+			if (value === void 0) return {
+				status: "unknown",
+				reason: "not-instrumented"
+			};
+			if (!signal.aborted) collected[id] = value;
+			return {
+				status: "pass",
+				reason: "inspection-completed"
+			};
+		} : void 0
+	})), inspectionOptions);
+	let account = { status: "unknown" };
+	const issues = [];
+	if (collected.account) account = { status: collected.account.authenticated === true ? "signed-in" : "signed-out" };
+	else issues.push({ code: "account-status-unavailable" });
+	const preference = collected.preferences ?? {};
+	const catalog = collected.catalog;
+	const gaps = (Array.isArray(collected.gaps) ? collected.gaps : []).slice(0, 20).flatMap((value) => {
+		if (!value || typeof value.model !== "string" || !/^[a-z][a-z0-9._-]{0,79}$/u.test(value.model)) return [];
+		const fields = Object.fromEntries([
+			"reasoning",
+			"inputs",
+			"speeds"
+		].flatMap((key) => {
+			const names = [...new Set((Array.isArray(value[key]) ? value[key] : []).filter((name) => typeof name === "string" && /^[a-z][a-z0-9_-]{0,31}$/u.test(name)))].slice(0, 16);
+			return names.length ? [[key, names]] : [];
+		}));
+		return Object.keys(fields).length ? [{
+			model: value.model,
+			...fields
+		}] : [];
+	});
+	if (gaps.length) issues.push({ code: "catalog-capabilities-not-adapted" });
+	return {
+		schemaVersion: 3,
+		generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+		inspection: {
+			schemaVersion: 1,
+			meaning: "collection-success-is-not-feature-success",
+			checks,
+			capabilities: capabilityCoverage({
+				account,
+				preference,
+				runtime: collected.runtime,
+				catalog,
+				tools: collected.tools,
+				storage: collected.storage,
+				checks,
+				operations: collected.operations,
+				history: collected.history
+			})
+		},
+		package: "dsh-codex-subscription",
+		version: PACKAGE_VERSION,
+		runtime: {
+			node: process.version,
+			platform: process.platform,
+			arch: process.arch,
+			...hostDshVersion() ? { dsh: hostDshVersion() } : {}
+		},
+		account,
+		login,
+		requests: collected.requests ?? {},
+		...collected.history ? { requestHistory: collected.history } : {},
+		...collected.operations ? { operations: collected.operations } : {},
+		...collected.websocket ? { websocket: collected.websocket } : {},
+		...collected.compaction ? { compaction: collected.compaction } : {},
+		...collected.review ? { review: collected.review } : {},
+		...catalog && ["unavailable", "online"].includes(catalog.source) && [
+			"idle",
+			"refreshing",
+			"ok",
+			"failed"
+		].includes(catalog.refresh) ? { catalog: {
+			source: catalog.source,
+			refresh: catalog.refresh,
+			...gaps.length ? { unsupported: gaps } : {}
+		} } : {},
+		configuration: {
+			...typeof preference.autoQuotaRetry === "boolean" ? { autoQuotaRetry: preference.autoQuotaRetry } : {},
+			contextMode: preference.contextMode,
+			quickQuotaMode: preference.quickQuotaMode,
+			...typeof preference.outputVerbosity === "string" ? { outputVerbosity: preference.outputVerbosity } : {},
+			searchProvider: preference.searchProvider,
+			speedMode: preference.speedMode,
+			...typeof preference.writable === "boolean" ? { writable: preference.writable } : {}
+		},
+		issues
+	};
+}
+function safeCounters(source, keys) {
+	const values = source.snapshot();
+	return Object.fromEntries(keys.filter((key) => Number.isSafeInteger(values?.[key]) && values[key] >= 0).map((key) => [key, values[key]]));
+}
+//#endregion
+//#region src/credit-expiry.js
+const PRO_200_COMPENSATION = Object.freeze({
+	credits: 62500,
+	expiresAt: Date.UTC(2026, 11, 31, 12)
+});
+/** Expiry of the balance: the API's own value when it has one, otherwise the known grant. */
+function creditExpiry({ planType, balance, apiExpiresAt }, now = Date.now()) {
+	if (Number.isFinite(apiExpiresAt) && apiExpiresAt > now) return {
+		expiresAt: apiExpiresAt,
+		source: "api"
+	};
+	const amount = Number(balance);
+	if (planType === "pro" && Number.isFinite(amount) && amount >= PRO_200_COMPENSATION.credits && now < PRO_200_COMPENSATION.expiresAt) return {
+		expiresAt: PRO_200_COMPENSATION.expiresAt,
+		source: "estimate"
+	};
+}
+//#endregion
+//#region src/quota-cadence.js
+/** Milliseconds until the next quota read, from the highest used percentage of the windows that matter. */
+function quotaRefreshMs(percent) {
+	if (!Number.isFinite(percent)) return 6e4;
+	if (percent >= 99) return 5e3;
+	if (percent >= 90) return 15e3;
+	if (percent >= 75) return 3e4;
+	return 6e4;
+}
+/** Highest used percentage among windows (objects with usedPercent), or undefined when there are none. */
+function highestUsed(windows) {
+	const values = (Array.isArray(windows) ? windows : []).map((window) => window?.usedPercent).filter(Number.isFinite);
+	return values.length === 0 ? void 0 : Math.max(...values);
+}
+//#endregion
+//#region src/usage.js
+const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const DEFAULT_TIMEOUT_MS$1 = 15e3;
+const DEFAULT_FAILURE_TTL_MS = 5e3;
+const DEFAULT_MAX_RETRY_AFTER_MS = 5 * 6e4;
+const record$1 = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+function windowOf(value, nowSeconds) {
+	if (value === void 0 || value === null) return void 0;
+	if (!record$1(value)) throw new Error("Codex returned a malformed rate-limit window");
+	const used = value.used_percent;
+	const seconds = value.limit_window_seconds;
+	if (!Number.isFinite(used) || used < 0 || used > 100) throw new Error("Codex returned an invalid used percentage");
+	if (!Number.isInteger(seconds) || seconds <= 0) throw new Error("Codex returned an invalid window duration");
+	const resetsAt = epochSeconds(value.reset_at, "rate-limit reset time") ?? (Number.isInteger(value.reset_after_seconds) && value.reset_after_seconds > 0 && Number.isFinite(nowSeconds) ? nowSeconds + value.reset_after_seconds : void 0);
+	return {
+		usedPercent: used,
+		remainingPercent: 100 - used,
+		windowSeconds: seconds,
+		...resetsAt === void 0 ? {} : { resetsAt }
+	};
+}
+function limitOf(id, name, value, nowSeconds) {
+	if (value === void 0 || value === null) return void 0;
+	if (!record$1(value)) throw new Error("Codex returned malformed rate-limit details");
+	const windows = [windowOf(value.primary_window, nowSeconds), windowOf(value.secondary_window, nowSeconds)].filter(Boolean);
+	return windows.length === 0 ? void 0 : {
+		id,
+		...name ? { name } : {},
+		windows
+	};
+}
+function decimal(value, label) {
+	if (typeof value !== "string" || value.length === 0 || value.length > 64 || !/^-?\d+(?:\.\d+)?$/u.test(value)) throw new Error(`Codex returned an invalid ${label}`);
+	return value;
+}
+function epochSeconds(value, label) {
+	if (value === void 0 || value === null || value === 0) return void 0;
+	if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Codex returned an invalid ${label}`);
+	return value;
+}
+function messageRange(value) {
+	return Array.isArray(value) && value.length === 2 && value.every((item) => Number.isSafeInteger(item) && item >= 0) ? [value[0], value[1]] : void 0;
+}
+function expiryOf(value) {
+	const raw = value?.expires_at;
+	if (Number.isSafeInteger(raw) && raw > 0) return raw * 1e3;
+	if (typeof raw === "string" && raw.length <= 64) {
+		const parsed = Date.parse(raw);
+		if (Number.isFinite(parsed) && parsed > 0) return parsed;
+	}
+}
+function creditsOf(value, planType) {
+	if (value === void 0 || value === null) return void 0;
+	if (!record$1(value) || typeof value.has_credits !== "boolean" || typeof value.unlimited !== "boolean") throw new Error("Codex returned malformed credit details");
+	if (!value.has_credits) return void 0;
+	const balance = value.balance === void 0 || value.balance === null ? void 0 : decimal(value.balance, "credit balance");
+	const expiry = value.unlimited ? void 0 : creditExpiry({
+		planType,
+		balance,
+		apiExpiresAt: expiryOf(value)
+	});
+	const local = messageRange(value.approx_local_messages), cloud = messageRange(value.approx_cloud_messages);
+	return {
+		unlimited: value.unlimited,
+		...balance === void 0 ? {} : { balance },
+		...expiry === void 0 ? {} : {
+			expiresAt: expiry.expiresAt,
+			expirySource: expiry.source
+		},
+		...local === void 0 ? {} : { approxLocalMessages: local },
+		...cloud === void 0 ? {} : { approxCloudMessages: cloud }
+	};
+}
+function chatPassOf(value) {
+	if (!record$1(value) || !Array.isArray(value.windows)) return void 0;
+	const windows = value.windows.map(windowOf).filter(Boolean);
+	return windows.length === 0 ? void 0 : { windows };
+}
+function individualOf(value) {
+	if (value === void 0 || value === null) return void 0;
+	if (!record$1(value)) throw new Error("Codex returned malformed spend control");
+	const item = value.individual_limit;
+	if (item === void 0 || item === null) return void 0;
+	if (!record$1(item) || !Number.isFinite(item.remaining_percent) || item.remaining_percent < 0 || item.remaining_percent > 100) throw new Error("Codex returned an invalid individual-limit percentage");
+	const resetsAt = epochSeconds(item.reset_at, "individual-limit reset time");
+	return {
+		limit: decimal(item.limit, "individual limit"),
+		used: decimal(item.used, "individual usage"),
+		remainingPercent: item.remaining_percent,
+		...resetsAt === void 0 ? {} : { resetsAt }
+	};
+}
+function spendControlReachedOf(value) {
+	if (value === void 0 || value === null) return void 0;
+	if (!record$1(value)) throw new Error("Codex returned malformed spend control");
+	if (value.reached === void 0 || value.reached === null) return void 0;
+	if (typeof value.reached !== "boolean") throw new Error("Codex returned an invalid spend-control state");
+	return value.reached;
+}
+function resetCreditsOf(value) {
+	if (value === void 0 || value === null) return void 0;
+	if (!record$1(value) || !Number.isSafeInteger(value.available_count) || value.available_count < 0) throw new Error("Codex returned malformed reset credit details");
+	if (value.credits !== void 0 && value.credits !== null && !Array.isArray(value.credits)) throw new Error("Codex returned malformed reset credit details");
+	const available = (value.credits ?? []).filter((credit) => record$1(credit) && credit.status?.toLowerCase?.() === "available").map((credit) => {
+		const name = typeof credit.title === "string" && credit.title.trim().length > 0 ? credit.title.trim().slice(0, 120) : void 0;
+		let expiresAt;
+		if (Number.isSafeInteger(credit.expires_at) && credit.expires_at > 0) expiresAt = credit.expires_at * 1e3;
+		else if (typeof credit.expires_at === "string" && credit.expires_at.length <= 64) {
+			const parsed = Date.parse(credit.expires_at);
+			if (Number.isFinite(parsed) && parsed > 0) expiresAt = parsed;
+		}
+		return {
+			...name === void 0 ? {} : { name },
+			...expiresAt === void 0 ? {} : { expiresAt }
+		};
+	});
+	const expirations = available.map((credit) => credit.expiresAt).filter((expiration) => expiration !== void 0);
+	return {
+		availableCount: value.available_count,
+		...available.length === 0 ? {} : { credits: available },
+		...expirations.length === 0 ? {} : { nextExpiresAt: Math.min(...expirations) }
+	};
+}
+/** Reduce the provider payload to a browser-safe quota projection. */
+function parseCodexUsage(value, nowMs = Date.now()) {
+	const nowSeconds = Math.floor(nowMs / 1e3);
+	if (!record$1(value)) throw new Error("Codex returned a malformed usage response");
+	const rateLimits = [];
+	const seenLimitIds = /* @__PURE__ */ new Set();
+	const addLimit = (limit) => {
+		if (limit === void 0 || seenLimitIds.has(limit.id)) return;
+		seenLimitIds.add(limit.id);
+		rateLimits.push(limit);
+	};
+	addLimit(limitOf("codex", "Codex", value.rate_limit, nowSeconds));
+	if (value.additional_rate_limits !== void 0 && value.additional_rate_limits !== null && !Array.isArray(value.additional_rate_limits)) throw new Error("Codex returned malformed additional rate limits");
+	for (const entry of value.additional_rate_limits ?? []) {
+		if (!record$1(entry) || typeof entry.metered_feature !== "string" || entry.metered_feature.length === 0) throw new Error("Codex returned a malformed additional rate limit");
+		if (entry.limit_name !== void 0 && entry.limit_name !== null && typeof entry.limit_name !== "string") throw new Error("Codex returned an invalid additional rate-limit name");
+		addLimit(limitOf(entry.metered_feature, entry.limit_name || void 0, entry.rate_limit, nowSeconds));
+	}
+	addLimit(limitOf("code_review", "Code review", value.code_review_rate_limit, nowSeconds));
+	const chatPass = chatPassOf(value.chatpass);
+	const credits = creditsOf(value.credits, typeof value.plan_type === "string" ? value.plan_type : void 0);
+	const individualLimit = individualOf(value.spend_control);
+	const spendControlReached = spendControlReachedOf(value.spend_control);
+	const resetCredits = resetCreditsOf(value.rate_limit_reset_credits);
+	const planType = typeof value.plan_type === "string" && /^[a-z][a-z_]{0,31}$/u.test(value.plan_type) ? value.plan_type : void 0;
+	const reached = value.rate_limit_reached_type;
+	const reachedRaw = typeof reached === "string" ? reached : record$1(reached) ? reached.type : void 0;
+	const rateLimitReachedType = typeof reachedRaw === "string" && /^[a-z][a-z_]{0,63}$/u.test(reachedRaw) ? reachedRaw : void 0;
+	return {
+		rateLimits,
+		...rateLimitReachedType === void 0 ? {} : { rateLimitReachedType },
+		...planType === void 0 ? {} : { planType },
+		...chatPass === void 0 ? {} : { chatPass },
+		...credits === void 0 ? {} : { credits },
+		...individualLimit === void 0 ? {} : { individualLimit },
+		...spendControlReached === void 0 ? {} : { spendControlReached },
+		...resetCredits === void 0 ? {} : { resetCredits }
+	};
+}
+const requestSignal$1 = (signal, timeoutMs) => {
+	const timeout = AbortSignal.timeout(timeoutMs);
+	return signal === void 0 ? timeout : AbortSignal.any([signal, timeout]);
+};
+function retryAfterMs(response, now, maximum) {
+	if (response.status !== 429) return void 0;
+	const raw = response.headers?.get?.("retry-after")?.trim();
+	if (!raw) return void 0;
+	const seconds = Number(raw);
+	const delay = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1e3 : Date.parse(raw) - now();
+	if (!Number.isFinite(delay) || delay < 0) return void 0;
+	return Math.min(delay, maximum);
+}
+/**
+* Read quota through the same refreshable OAuth lifecycle used by model turns.
+* The browser receives only a parsed quota projection; bearer and account id
+* are request-local host values. Concurrent settings polls share one request.
+*/
+function createCodexUsageReader(options) {
+	const getAuth = options.getAuth;
+	const readCredential = options.readCredential;
+	const fetchUsage = options.fetch ?? fetch;
+	const now = options.now ?? Date.now;
+	const ttlFor = (value) => options.ttlMs ?? quotaRefreshMs(highestUsed(value?.rateLimits?.find((limit) => limit.id === "codex")?.windows));
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS$1;
+	const failureTtlMs = options.failureTtlMs ?? DEFAULT_FAILURE_TTL_MS;
+	const maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
+	let cached;
+	let failed;
+	let inFlight;
+	let generation = 0;
+	const load = async (signal) => {
+		const { access, accountId } = await readSubscriptionCredentials(getAuth, readCredential, signal);
+		if (typeof access !== "string" || access.length === 0 || typeof accountId !== "string" || accountId.length === 0) throw new Error("ChatGPT subscription is not signed in");
+		const response = await fetchUsage(CODEX_USAGE_URL, {
+			method: "GET",
+			redirect: "error",
+			headers: {
+				authorization: `Bearer ${access}`,
+				"chatgpt-account-id": accountId,
+				accept: "application/json",
+				"cache-control": "no-store",
+				"user-agent": USER_AGENT
+			},
+			signal: requestSignal$1(signal, timeoutMs)
+		});
+		if (!response.ok) {
+			const error = /* @__PURE__ */ new Error(response.status === 401 || response.status === 403 ? "ChatGPT sign-in needs to be renewed" : `ChatGPT usage request failed (HTTP ${response.status})`);
+			Object.defineProperty(error, "retryAfterMs", { value: retryAfterMs(response, now, maxRetryAfterMs) });
+			throw error;
+		}
+		let value;
+		try {
+			value = await response.json();
+		} catch {
+			throw new Error("ChatGPT returned an unreadable usage response");
+		}
+		return {
+			...parseCodexUsage(value, now()),
+			fetchedAt: now()
+		};
+	};
+	return Object.freeze({
+		read({ force = false, signal } = {}) {
+			if (failed !== void 0 && now() < failed.retryAt) return Promise.reject(new Error(failed.message));
+			if (!force && cached !== void 0 && now() - cached.fetchedAt < ttlFor(cached)) return Promise.resolve(structuredClone(cached));
+			if (inFlight !== void 0) return inFlight.then(structuredClone);
+			const currentGeneration = generation;
+			const current = load(signal).then((value) => {
+				if (generation === currentGeneration) {
+					cached = structuredClone(value);
+					failed = void 0;
+				}
+				return structuredClone(value);
+			}).catch((error) => {
+				if (generation === currentGeneration && error?.name !== "AbortError") {
+					const delay = Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : failureTtlMs;
+					failed = {
+						message: error instanceof Error ? error.message : "ChatGPT usage request failed",
+						retryAt: now() + delay
+					};
+				}
+				throw error;
+			}).finally(() => {
+				if (inFlight === current) inFlight = void 0;
+			});
+			inFlight = current;
+			return current;
+		},
+		clear() {
+			generation += 1;
+			cached = void 0;
+			failed = void 0;
+			inFlight = void 0;
+		}
+	});
+}
+//#endregion
+//#region src/quota-retry.js
+const DEFAULT_MAX_WAIT_MS = 360 * 60 * 1e3;
+const DEFAULT_RESET_MARGIN_MS = 1e4;
+const EXHAUSTED_PERCENT = 99.9;
+const CODEX_USAGE_LIMIT_MESSAGE = /^You have hit your ChatGPT usage limit(?: \([a-z0-9][a-z0-9 ._-]{0,39} plan\))?\.(?: Try again in ~\d{1,6} min\.)?$/u;
+const isCodexRateLimit = (failure) => failure?.code === "RATE_LIMIT" || failure?.code === "PI_AI_ERROR" && typeof failure.message === "string" && CODEX_USAGE_LIMIT_MESSAGE.test(failure.message);
+function cancellableDelay(delayMs, signal) {
+	if (signal?.aborted) return Promise.resolve(false);
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve(true);
+		}, delayMs);
+		function onAbort() {
+			clearTimeout(timer);
+			resolve(false);
+		}
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+function createWakeSignal() {
+	let revision = 0;
+	let reason;
+	const waiters = /* @__PURE__ */ new Set();
+	const notify = (nextReason) => {
+		revision += 1;
+		reason = nextReason;
+		for (const waiter of [...waiters]) waiter(nextReason);
+	};
+	const wait = (since, signal) => {
+		if (revision !== since) return Promise.resolve(reason);
+		if (signal?.aborted) return Promise.resolve("cancelled");
+		return new Promise((resolve) => {
+			const settle = (value) => {
+				waiters.delete(settle);
+				signal?.removeEventListener("abort", onAbort);
+				resolve(value);
+			};
+			const onAbort = () => settle("cancelled");
+			waiters.add(settle);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (revision !== since) settle(reason);
+		});
+	};
+	return {
+		revision: () => revision,
+		notify,
+		wait
+	};
+}
+function shortResetDelay(usage, nowMs, maxWaitMs, resetMarginMs) {
+	if (typeof usage?.rateLimitReachedType === "string" && /^workspace_[a-z_]*usage_limit_reached$/u.test(usage.rateLimitReachedType)) return void 0;
+	let latestDelayMs;
+	for (const limit of usage?.rateLimits ?? []) {
+		if (limit?.id !== "codex") continue;
+		for (const window of limit?.windows ?? []) {
+			if (!Number.isFinite(window?.usedPercent) || window.usedPercent < EXHAUSTED_PERCENT) continue;
+			if (!Number.isFinite(window?.windowSeconds) || window.windowSeconds * 1e3 > maxWaitMs) return void 0;
+			if (!Number.isFinite(window?.resetsAt)) return void 0;
+			const delayMs = window.resetsAt * 1e3 - nowMs;
+			if (delayMs <= 0 || delayMs + resetMarginMs > maxWaitMs) return void 0;
+			latestDelayMs = Math.max(latestDelayMs ?? 0, delayMs);
+		}
+	}
+	return latestDelayMs;
+}
+function publishScheduledRetry({ agent, turn, step, provider, failure }, delayMs, resetAtMs) {
+	if (typeof agent?.session?.append !== "function" || !Number.isSafeInteger(turn) || !Number.isSafeInteger(step)) return void 0;
+	const retryId = `codex-quota-${randomUUID()}`;
+	const message = `Codex usage limit exhausted. Waiting for quota reset at ${new Date(resetAtMs).toISOString()}; retrying shortly afterward.`;
+	const visibleFailure = {
+		code: failure.code,
+		message,
+		...Number.isInteger(failure.status) && failure.status >= 100 && failure.status <= 599 ? { status: failure.status } : {},
+		...typeof failure.requestId === "string" && failure.requestId.length > 0 ? { requestId: failure.requestId } : {}
+	};
+	try {
+		agent.session.append("llm/retry", {
+			retryId,
+			turn,
+			step,
+			provider,
+			mode: "normal",
+			policyKey: retryId,
+			retry: 1,
+			maxRetries: 1,
+			delayMs,
+			failure: visibleFailure
+		});
+		return {
+			retryId,
+			turn,
+			step,
+			retry: 1
+		};
+	} catch {
+		return;
+	}
+}
+function publishRetryStarted(agent, scheduled) {
+	try {
+		agent.session.append("llm/retry-started", scheduled);
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function waitForResetOrWake(delayMs, signal, wait, wakeSignal, revision) {
+	const controller = new AbortController();
+	const fusedSignal = signal === void 0 ? controller.signal : AbortSignal.any([signal, controller.signal]);
+	const delayed = Promise.resolve(wait(delayMs, fusedSignal)).then((completed) => completed ? "reset" : "cancelled");
+	const result = await Promise.race([delayed, wakeSignal.wait(revision, fusedSignal)]);
+	controller.abort();
+	return result;
+}
+async function modelsReadyOrCancelled(modelsReady, signal) {
+	if (signal?.aborted) return "cancelled";
+	let onAbort;
+	const cancelled = new Promise((resolve) => {
+		onAbort = () => resolve("cancelled");
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+	const ready = Promise.resolve().then(modelsReady).then((value) => value === true, () => false);
+	try {
+		return await Promise.race([ready, cancelled]);
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
+	}
+}
+/**
+* Model readiness for a retry after an account switch. The refresh joins the
+* switch's own catalog reload and is not tied to the turn, so cancelling one
+* turn never aborts the reload other consumers share.
+*/
+const catalogModelsReady = (modelCatalog) => async () => {
+	await modelCatalog.refresh();
+	return modelCatalog.getModels().length > 0;
+};
+/**
+* Recover a Codex subscription RATE_LIMIT only when the backend confirms an
+* exhausted short quota window whose reset is close enough to wait out.
+*
+* The listener owns the authoritative wait from `/wham/usage` and publishes
+* the host's standard model-retry surface event so the turn shows the reason,
+* countdown, and normal turn cancellation affordance while it is parked.
+*/
+function createCodexQuotaRetryHandler({ usageReader, provider = "openai-codex", enabled = () => true, now = Date.now, wait = cancellableDelay, modelsReady = () => true, maxWaitMs = DEFAULT_MAX_WAIT_MS, resetMarginMs = DEFAULT_RESET_MARGIN_MS } = {}) {
+	if (usageReader === void 0 || typeof usageReader.read !== "function") throw new TypeError("quota retry requires a usage reader");
+	if (typeof enabled !== "function" || typeof now !== "function" || typeof wait !== "function" || typeof modelsReady !== "function") throw new TypeError("quota retry requires enablement, clock, wait, and model readiness functions");
+	if (!Number.isFinite(maxWaitMs) || maxWaitMs <= 0 || !Number.isFinite(resetMarginMs) || resetMarginMs < 0) throw new TypeError("quota retry requires a positive wait cap and non-negative reset margin");
+	const wakeSignal = createWakeSignal();
+	const clearCache = async () => {
+		try {
+			if (typeof usageReader.clearCache === "function") await usageReader.clearCache();
+			else await usageReader.clear?.();
+		} catch {}
+	};
+	const handler = async ({ agent, turn, step, provider: requestProvider, failure, signal }, next) => {
+		if (requestProvider !== provider || !isCodexRateLimit(failure) || !enabled()) return next();
+		if (signal?.aborted) return void 0;
+		let wakeRevision = wakeSignal.revision();
+		let usage;
+		try {
+			usage = await usageReader.read({
+				force: true,
+				signal
+			});
+		} catch {
+			if (signal?.aborted) return void 0;
+			return next();
+		}
+		if (signal?.aborted) return void 0;
+		if (!enabled()) return next();
+		const observedAtMs = now();
+		let resetDelayMs = shortResetDelay(usage, observedAtMs, maxWaitMs, resetMarginMs);
+		if (resetDelayMs === void 0) return next();
+		const scheduled = publishScheduledRetry({
+			agent,
+			turn,
+			step,
+			provider: requestProvider,
+			failure
+		}, resetDelayMs + resetMarginMs, observedAtMs + resetDelayMs);
+		if (scheduled === void 0) return next();
+		while (true) {
+			const reason = await waitForResetOrWake(resetDelayMs + resetMarginMs, signal, wait, wakeSignal, wakeRevision);
+			if (reason === "cancelled" || signal?.aborted) return void 0;
+			if (!enabled()) return next();
+			if (reason === "account") {
+				const ready = await modelsReadyOrCancelled(modelsReady, signal);
+				if (ready === "cancelled" || signal?.aborted) return void 0;
+				if (!ready) return next();
+				break;
+			}
+			if (reason !== "configuration") break;
+			wakeRevision = wakeSignal.revision();
+			resetDelayMs = shortResetDelay(usage, now(), maxWaitMs, resetMarginMs);
+			if (resetDelayMs === void 0) return next();
+		}
+		await clearCache();
+		if (signal?.aborted) return void 0;
+		if (!publishRetryStarted(agent, scheduled)) return next();
+		return { kind: "retry" };
+	};
+	Object.defineProperties(handler, {
+		notifyAccountChanged: { value: () => wakeSignal.notify("account") },
+		notifyConfigurationChanged: { value: () => wakeSignal.notify("configuration") }
+	});
+	return handler;
+}
+//#endregion
+//#region src/quota-rate-interval.js
+function quotaRateInterval(samples, { quantum = 1, rounding = "unknown" } = {}) {
+	if (!(quantum > 0) || !Number.isFinite(quantum)) throw new RangeError("Invalid quantum");
+	const points = samples.map((sample) => {
+		const used = 100 - sample.remainingPercent;
+		const lower = rounding === "floor" ? used : used - quantum / (rounding === "nearest" ? 2 : 1);
+		const upper = rounding === "floor" ? used + quantum : used + quantum / (rounding === "nearest" ? 2 : 1);
+		return {
+			at: sample.at,
+			lower: Math.max(0, lower),
+			upper: Math.min(100, upper)
+		};
+	});
+	let min = 0, max = Infinity;
+	for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++) {
+		const minutes = (points[j].at - points[i].at) / 6e4;
+		if (minutes <= 0) continue;
+		min = Math.max(min, (points[j].lower - points[i].upper) / minutes);
+		max = Math.min(max, (points[j].upper - points[i].lower) / minutes);
+	}
+	return {
+		min,
+		max,
+		feasible: min <= max + 1e-10
+	};
+}
+function quotaSharedOffsetInterval(samples, { quantum = 1, maxLagMs = 12e4 } = {}) {
+	if (!(quantum > 0) || !Number.isFinite(quantum) || !Number.isFinite(maxLagMs) || maxLagMs < 0) throw new RangeError("Invalid interval options");
+	let min = 0, max = Infinity;
+	for (let i = 0; i < samples.length; i++) for (let j = i + 1; j < samples.length; j++) {
+		const elapsed = (samples[j].at - samples[i].at) / 6e4, lag = maxLagMs / 6e4;
+		if (elapsed <= 0) continue;
+		const delta = samples[i].remainingPercent - samples[j].remainingPercent;
+		min = Math.max(min, (delta - quantum) / (elapsed + lag));
+		if (elapsed > lag) max = Math.min(max, (delta + quantum) / (elapsed - lag));
+	}
+	return {
+		min,
+		max,
+		feasible: min <= max + 1e-10
+	};
+}
+function refineQuotaRate(samples, conservative) {
+	if (!conservative.feasible || samples.length < 4 || samples.at(-1).at - samples[0].at < 20 * 6e4) return conservative;
+	let crossings = 0;
+	for (let i = 0; i < samples.length; i++) {
+		const value = samples[i].remainingPercent;
+		if (!Number.isInteger(value) || value <= 0 || value >= 100) return conservative;
+		if (i > 0) {
+			if (value > samples[i - 1].remainingPercent || samples[i].at <= samples[i - 1].at) return conservative;
+			if (value < samples[i - 1].remainingPercent) crossings++;
+		}
+	}
+	if (crossings < 3) return conservative;
+	const candidate = quotaSharedOffsetInterval(samples);
+	if (!candidate.feasible || candidate.min <= 0) return conservative;
+	if (candidate.max - candidate.min >= conservative.max - conservative.min) return conservative;
+	return {
+		...candidate,
+		method: "shared-offset",
+		maxLagMs: 12e4
+	};
+}
+//#endregion
+//#region src/quota-forecast.js
+const HOUR_MS = 3600 * 1e3;
+const HISTORY_MS = 24 * HOUR_MS;
+const finite = (value) => value !== null && value !== void 0 && Number.isFinite(Number(value));
+const clampPercent = (value) => Math.max(0, Math.min(100, Number(value)));
+const cleanSegment = (value) => String(value ?? "default").slice(0, 96);
+const keyFor = (window, context = {}) => JSON.stringify([
+	cleanSegment(context.scope),
+	cleanSegment(context.limitId ?? "codex"),
+	Number(window.windowSeconds) || "limit"
+]);
+function observeQuotaForecast(state, windows, now = Date.now(), context = {}) {
+	const next = { windows: { ...state?.windows ?? {} } };
+	let changed = false;
+	for (const window of windows ?? []) {
+		if (!finite(window?.remainingPercent)) continue;
+		const key = keyFor(window, context);
+		const resetsAt = finite(window.resetsAt) ? Number(window.resetsAt) : null;
+		const remainingPercent = clampPercent(window.remainingPercent);
+		const previous = next.windows[key];
+		const resetChanged = previous !== void 0 && (previous.resetsAt === null !== (resetsAt === null) || previous.resetsAt !== null && Math.abs(previous.resetsAt - resetsAt) > 300);
+		const last = previous?.samples?.at(-1);
+		const quotaIncreased = last !== void 0 && remainingPercent > last.remainingPercent + .5;
+		const observationGap = last !== void 0 && now - last.at > 90 * 6e4;
+		const record = resetChanged || quotaIncreased || observationGap ? {
+			resetsAt,
+			samples: []
+		} : {
+			resetsAt,
+			samples: [...previous?.samples ?? []]
+		};
+		const latest = record.samples.at(-1);
+		if (latest === void 0 || now > latest.at) {
+			record.samples.push({
+				at: now,
+				remainingPercent
+			});
+			record.samples = record.samples.filter((sample) => sample.at >= now - HISTORY_MS).slice(-192);
+			changed = true;
+		}
+		next.windows[key] = record;
+	}
+	return {
+		state: next,
+		changed
+	};
+}
+function estimateQuotaForecast(state, window, now = Date.now(), context = {}) {
+	if (!finite(window?.remainingPercent)) return { status: "calibrating" };
+	const record = state?.windows?.[keyFor(window, context)];
+	if (record === void 0) return { status: "calibrating" };
+	const resetsAt = finite(window.resetsAt) ? Number(window.resetsAt) : null;
+	if (record.resetsAt === null !== (resetsAt === null) || resetsAt !== null && Math.abs(record.resetsAt - resetsAt) > 300) return { status: "calibrating" };
+	let samples = record.samples.filter((sample) => sample.at >= now - 2 * HOUR_MS && sample.at <= now);
+	if (samples.length < 2) return {
+		status: "calibrating",
+		sampleCount: samples.length
+	};
+	if (now - samples.at(-1).at > 20 * 6e4) return {
+		status: "calibrating",
+		reason: "stale"
+	};
+	let bounds = quotaRateInterval(samples);
+	let changedIntensity = false;
+	while (!bounds.feasible && samples.length > 3) {
+		samples = samples.slice(1);
+		bounds = quotaRateInterval(samples);
+		changedIntensity = true;
+	}
+	bounds = refineQuotaRate(samples, bounds);
+	const spanMs = samples.at(-1).at - samples[0].at;
+	const common = {
+		sampleCount: samples.length,
+		observedSpanMs: spanMs,
+		consumedPercent: samples[0].remainingPercent - samples.at(-1).remainingPercent,
+		lowerPacePerHour: bounds.min * 60,
+		upperPacePerHour: bounds.max * 60,
+		changedIntensity,
+		rateMethod: bounds.method ?? "conservative"
+	};
+	if (!bounds.feasible) return {
+		...common,
+		status: "calibrating",
+		reason: "changing-pace"
+	};
+	if (resetsAt !== null && resetsAt <= now / 1e3) return {
+		...common,
+		status: "calibrating",
+		reason: "stale"
+	};
+	if (spanMs >= 5 * 6e4 && samples.length >= 3 && bounds.min <= 1e-9 && common.consumedPercent >= 1) {
+		const pacePerHour = common.consumedPercent / (spanMs / HOUR_MS);
+		return {
+			...common,
+			status: "ready",
+			provisional: true,
+			pacePerHour,
+			runwaySeconds: clampPercent(window.remainingPercent) / pacePerHour * 3600,
+			survivesReset: false
+		};
+	}
+	if (spanMs < 6e4 || bounds.min <= 1e-9) return {
+		...common,
+		status: "calibrating",
+		reason: "resolution"
+	};
+	const pacePerHour = (bounds.min + bounds.max) * 30;
+	const remaining = clampPercent(window.remainingPercent);
+	const runwayMinSeconds = Math.max(0, remaining - 1) / common.upperPacePerHour * 3600;
+	const runwayMaxSeconds = Math.min(100, remaining + 1) / common.lowerPacePerHour * 3600;
+	const resetSeconds = resetsAt === null ? null : resetsAt - now / 1e3;
+	if (resetSeconds !== null && resetSeconds <= 0) return {
+		...common,
+		status: "calibrating",
+		reason: "stale"
+	};
+	return {
+		...common,
+		status: "ready",
+		pacePerHour,
+		runwaySeconds: remaining / pacePerHour * 3600,
+		runwayMinSeconds,
+		runwayMaxSeconds,
+		survivesReset: resetSeconds !== null && runwayMinSeconds >= resetSeconds
+	};
+}
+function forecastUsage(usage, state = { windows: {} }, now = Date.now(), options = {}) {
+	const observedAt = Number.isFinite(usage?.fetchedAt) ? usage.fetchedAt : now;
+	if (observedAt > now || now - observedAt > 5 * 6e4) return {
+		state,
+		changed: false,
+		usage: {
+			...usage,
+			rateLimits: (usage?.rateLimits ?? []).map((limit) => ({
+				...limit,
+				windows: limit.windows.map((window) => ({
+					...window,
+					forecast: {
+						status: "calibrating",
+						reason: "stale"
+					}
+				}))
+			}))
+		}
+	};
+	let nextState = state;
+	let changed = false;
+	const rateLimits = (usage?.rateLimits ?? []).map((limit) => {
+		const context = {
+			scope: options.scope,
+			limitId: limit.id
+		};
+		const observed = observeQuotaForecast(nextState, limit.windows, observedAt, context);
+		nextState = observed.state;
+		changed ||= observed.changed;
+		return {
+			...limit,
+			windows: limit.windows.map((window) => ({
+				...window,
+				forecast: estimateQuotaForecast(nextState, window, now, context)
+			}))
+		};
+	});
+	return {
+		state: nextState,
+		changed,
+		usage: {
+			...usage,
+			rateLimits
+		}
+	};
+}
+function createQuotaForecastReader({ reader, enabled, now = Date.now, scope = () => "default", stateStore }) {
+	let state = { windows: {} };
+	let loaded = false;
+	let loading;
+	let generation = 0;
+	let historyGeneration = 0;
+	let persistence = Promise.resolve();
+	const persist = (operation) => {
+		const pending = persistence.then(operation);
+		persistence = pending.catch(() => {});
+		return pending;
+	};
+	const load = async () => {
+		if (loaded) return;
+		if (loading) return loading;
+		const current = historyGeneration;
+		const pending = Promise.resolve().then(() => stateStore?.load?.()).then((restored) => {
+			if (current !== historyGeneration) return;
+			if (restored?.windows !== null && typeof restored?.windows === "object") state = restored;
+			loaded = true;
+		}).finally(() => {
+			if (loading === pending) loading = void 0;
+		});
+		loading = pending;
+		return pending;
+	};
+	const clearHistory = (clearReader = true) => {
+		generation += 1;
+		historyGeneration += 1;
+		state = { windows: {} };
+		loaded = true;
+		if (clearReader) reader.clear();
+		return persist(() => stateStore?.clear?.());
+	};
+	return Object.freeze({
+		async read(options) {
+			const current = generation;
+			const account = await scope();
+			const usage = await reader.read(options);
+			if (current !== generation) return usage;
+			await load();
+			const activeAccount = await scope();
+			if (current !== generation || account !== activeAccount) return usage;
+			if (!enabled()) {
+				await clearHistory(false);
+				return usage;
+			}
+			const forecast = forecastUsage(usage, state, now(), { scope: account });
+			state = forecast.state;
+			if (forecast.changed) await persist(() => stateStore?.save?.(forecast.state));
+			return current === generation ? forecast.usage : usage;
+		},
+		clear: () => clearHistory(),
+		storage: () => stateStore.usage(),
+		clearCache() {
+			generation += 1;
+			reader.clear();
+		},
+		async clearScope(targetScope) {
+			generation += 1;
+			await load();
+			const prefix = `[${JSON.stringify(cleanSegment(targetScope))},`;
+			state = { windows: Object.fromEntries(Object.entries(state.windows).filter(([key]) => !key.startsWith(prefix))) };
+			const snapshot = state;
+			await persist(() => stateStore?.save?.(snapshot));
+		}
+	});
+}
+//#endregion
+//#region src/quota-forecast-store.js
+const DEFAULT_MAX_BYTES = 256 * 1024;
+const MAX_WINDOWS = 128;
+const MAX_SAMPLES = 192;
+function sanitize(value) {
+	if (value === null || typeof value !== "object" || Array.isArray(value) || value.windows === null || typeof value.windows !== "object" || Array.isArray(value.windows)) return void 0;
+	const entries = Object.entries(value.windows);
+	if (entries.length > MAX_WINDOWS) return void 0;
+	const windows = {};
+	for (const [key, record] of entries) {
+		if (key.length === 0 || key.length > 320 || record === null || typeof record !== "object" || !Array.isArray(record.samples) || record.samples.length > MAX_SAMPLES) return void 0;
+		const resetsAt = record.resetsAt === null ? null : Number(record.resetsAt);
+		if (resetsAt !== null && !Number.isFinite(resetsAt)) return void 0;
+		const samples = [];
+		for (const sample of record.samples) {
+			const at = Number(sample?.at);
+			const remainingPercent = Number(sample?.remainingPercent);
+			if (!Number.isFinite(at) || !Number.isFinite(remainingPercent) || remainingPercent < 0 || remainingPercent > 100) return void 0;
+			samples.push({
+				at,
+				remainingPercent
+			});
+		}
+		windows[key] = {
+			resetsAt,
+			samples
+		};
+	}
+	return { windows };
+}
+var QuotaForecastStateStore = class {
+	constructor({ filename, maxBytes = DEFAULT_MAX_BYTES }) {
+		this.filename = filename;
+		this.maxBytes = maxBytes;
+	}
+	async load() {
+		try {
+			if ((await stat(this.filename)).size > this.maxBytes) return void 0;
+			return sanitize(JSON.parse(await readFile(this.filename, "utf8")));
+		} catch (error) {
+			if (error?.code === "ENOENT" || error instanceof SyntaxError) return void 0;
+			throw error;
+		}
+	}
+	async save(state) {
+		const safe = sanitize(state);
+		if (safe === void 0) throw new Error("Refusing to persist malformed quota forecast state");
+		const data = `${JSON.stringify(safe)}\n`;
+		if (Buffer.byteLength(data) > this.maxBytes) throw new Error("Quota forecast state is too large");
+		await mkdir(dirname(this.filename), {
+			recursive: true,
+			mode: 448
+		});
+		const temporary = `${this.filename}.${process.pid}.${randomUUID()}.tmp`;
+		let handle;
+		try {
+			handle = await open(temporary, "wx", 384);
+			await handle.writeFile(data);
+			await handle.sync();
+			await handle.close();
+			handle = void 0;
+			await rename(temporary, this.filename);
+		} finally {
+			await handle?.close().catch(() => void 0);
+			await rm(temporary, { force: true }).catch(() => void 0);
+		}
+	}
+	async clear() {
+		await rm(this.filename, { force: true });
+	}
+	async usage() {
+		try {
+			const info = await lstat(this.filename);
+			if (!info.isFile() || info.isSymbolicLink()) throw Error("Unexpected forecast cache entry");
+			return {
+				bytes: info.size,
+				limit: this.maxBytes
+			};
+		} catch (error) {
+			if (error.code === "ENOENT") return {
+				bytes: 0,
+				limit: this.maxBytes
+			};
+			throw error;
+		}
+	}
+};
+//#endregion
+//#region src/reset-credits.js
+const CODEX_RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const CODEX_RESET_CONSUME_URL = `${CODEX_RESET_CREDITS_URL}/consume`;
+const DEFAULT_CONFIRM_DELAY_MS = 5e3;
+const DEFAULT_CHALLENGE_TTL_MS = 6e4;
+const DEFAULT_TIMEOUT_MS = 15e3;
+const MAX_COPY_LENGTH = 240;
+const UNCERTAIN_RESET_RESULT = "Quota reset result is uncertain; retry this confirmation to check the same request";
+const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const requestSignal = (signal, timeoutMs) => {
+	const timeout = AbortSignal.timeout(timeoutMs);
+	return signal === void 0 ? timeout : AbortSignal.any([signal, timeout]);
+};
+function safeCopy(value) {
+	return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_COPY_LENGTH) : void 0;
+}
+function credentialsOf({ access, accountId }) {
+	if (typeof access !== "string" || access.length === 0 || typeof accountId !== "string" || accountId.length === 0) throw new Error("ChatGPT subscription is not signed in");
+	return {
+		access,
+		accountId
+	};
+}
+function expirationOf(value) {
+	if (value === void 0 || value === null) return void 0;
+	if (Number.isSafeInteger(value) && value > 0) return value * 1e3;
+	if (typeof value === "string" && value.length > 0 && value.length <= 64) {
+		const parsed = Date.parse(value);
+		if (Number.isFinite(parsed) && parsed > 0) return parsed;
+	}
+	throw new Error("ChatGPT returned malformed quota reset details");
+}
+function parseDetails(value, now) {
+	if (!record(value) || !Number.isSafeInteger(value.available_count) || value.available_count < 0 || !Array.isArray(value.credits)) throw new Error("ChatGPT returned malformed quota reset details");
+	if (value.available_count === 0) throw new Error("No quota reset is available");
+	const available = value.credits.filter((credit) => record(credit) && typeof credit.id === "string" && credit.id.length > 0 && credit.id.length <= 256 && typeof credit.status === "string" && credit.status.toLowerCase() === "available").map((credit) => {
+		return {
+			credit,
+			expiresAt: expirationOf(credit.expires_at)
+		};
+	}).filter(({ expiresAt }) => expiresAt === void 0 || expiresAt > now).sort((a, b) => (a.expiresAt ?? Number.MAX_SAFE_INTEGER) - (b.expiresAt ?? Number.MAX_SAFE_INTEGER));
+	if (available.length === 0) throw new Error("No usable quota reset is available");
+	return {
+		availableCount: value.available_count,
+		credits: available.map(({ credit, expiresAt }, index) => ({
+			creditId: credit.id,
+			title: safeCopy(credit.title),
+			description: safeCopy(credit.description),
+			creditExpiresAt: expiresAt,
+			index
+		}))
+	};
+}
+function parseConsumeResult(value) {
+	if (!record(value) || ![
+		"reset",
+		"nothing_to_reset",
+		"no_credit",
+		"already_redeemed"
+	].includes(value.code)) throw new Error("ChatGPT returned an unreadable quota reset response");
+	const windowsReset = Array.isArray(value.windows_reset) ? value.windows_reset.filter((item) => typeof item === "string").slice(0, 16) : [];
+	const windowsResetCount = Number.isSafeInteger(value.windows_reset) && value.windows_reset >= 0 && value.windows_reset <= 16 ? value.windows_reset : void 0;
+	return {
+		code: value.code,
+		windowsReset,
+		...windowsResetCount === void 0 ? {} : { windowsResetCount }
+	};
+}
+/**
+* Host-only reset redemption. The browser receives an opaque, short-lived
+* challenge; account ids, bearer tokens, credit ids, and idempotency keys stay
+* in memory on the host.
+*/
+function createCodexResetCreditService(options) {
+	const getAuth = options.getAuth;
+	const readCredential = options.readCredential;
+	const usageReader = options.usageReader;
+	const fetchReset = options.fetch ?? fetch;
+	const now = options.now ?? Date.now;
+	const randomUUID$1 = options.randomUUID ?? randomUUID;
+	const confirmDelayMs = options.confirmDelayMs ?? DEFAULT_CONFIRM_DELAY_MS;
+	const challengeTtlMs = options.challengeTtlMs ?? DEFAULT_CHALLENGE_TTL_MS;
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const challenges = /* @__PURE__ */ new Map();
+	const creditRefs = /* @__PURE__ */ new Map();
+	let creditRefSequence = 0;
+	const rememberCreditRef = (accountId, credit) => {
+		const ref = `${randomUUID$1()}-${++creditRefSequence}`;
+		creditRefs.set(ref, {
+			accountId,
+			creditId: credit.creditId,
+			index: credit.index
+		});
+		while (creditRefs.size > 64) creditRefs.delete(creditRefs.keys().next().value);
+		return ref;
+	};
+	const publicCredit = (accountId, credit) => ({
+		ref: rememberCreditRef(accountId, credit),
+		...credit.title === void 0 ? {} : { name: credit.title },
+		...credit.creditExpiresAt === void 0 ? {} : { expiresAt: credit.creditExpiresAt }
+	});
+	const resolveCredentials = async (signal) => credentialsOf(await readSubscriptionCredentials(getAuth, readCredential, signal));
+	const readDetails = async (signal, credentials) => {
+		const { access, accountId } = credentials ?? await resolveCredentials(signal);
+		const response = await fetchReset(CODEX_RESET_CREDITS_URL, {
+			method: "GET",
+			redirect: "error",
+			headers: {
+				authorization: `Bearer ${access}`,
+				"chatgpt-account-id": accountId,
+				accept: "application/json",
+				"cache-control": "no-store",
+				"user-agent": USER_AGENT
+			},
+			signal: requestSignal(signal, timeoutMs)
+		});
+		if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? "ChatGPT sign-in needs to be renewed" : `ChatGPT quota reset request failed (HTTP ${response.status})`);
+		let raw;
+		try {
+			raw = await response.json();
+		} catch {
+			throw new Error("ChatGPT returned unreadable quota reset details");
+		}
+		return {
+			accountId,
+			details: parseDetails(raw, now())
+		};
+	};
+	return Object.freeze({
+		async inspect({ signal } = {}) {
+			const { accountId, details } = await readDetails(signal);
+			return {
+				availableCount: details.availableCount,
+				credits: details.credits.map((credit) => publicCredit(accountId, credit)),
+				...details.credits[0]?.creditExpiresAt === void 0 ? {} : { nextExpiresAt: details.credits[0].creditExpiresAt }
+			};
+		},
+		async prepare({ creditRef, signal } = {}) {
+			const credentials = await resolveCredentials(signal);
+			for (const [challengeId, challenge] of challenges) {
+				if (challenge.accountId === credentials.accountId && challenge.uncertain === false && challenge.creditRef === creditRef) if (now() > challenge.expiresAt) challenges.delete(challengeId);
+				else return {
+					challengeId,
+					availableCount: challenge.availableCount,
+					readyAt: challenge.readyAt,
+					expiresAt: challenge.expiresAt,
+					...challenge.creditExpiresAt === void 0 ? {} : { creditExpiresAt: challenge.creditExpiresAt },
+					...challenge.title === void 0 ? {} : { title: challenge.title },
+					...challenge.description === void 0 ? {} : { description: challenge.description }
+				};
+				if (challenge.accountId !== credentials.accountId || challenge.uncertain !== true || creditRef !== void 0 && challenge.creditRef !== creditRef) continue;
+				if (now() > challenge.expiresAt) {
+					challenges.delete(challengeId);
+					continue;
+				}
+				return {
+					challengeId,
+					availableCount: challenge.availableCount,
+					readyAt: challenge.readyAt,
+					expiresAt: challenge.expiresAt,
+					...challenge.creditExpiresAt === void 0 ? {} : { creditExpiresAt: challenge.creditExpiresAt },
+					...challenge.title === void 0 ? {} : { title: challenge.title },
+					...challenge.description === void 0 ? {} : { description: challenge.description }
+				};
+			}
+			const { accountId, details } = await readDetails(signal, credentials);
+			let selected = details.credits[0];
+			if (creditRef !== void 0) {
+				const reference = typeof creditRef === "string" ? creditRefs.get(creditRef) : void 0;
+				if (reference === void 0 || reference.accountId !== accountId) throw new Error("This quota reset confirmation is no longer valid");
+				selected = details.credits.find((credit) => credit.creditId === reference.creditId && credit.index === reference.index);
+				if (selected === void 0) throw new Error("This quota reset confirmation is no longer valid");
+			}
+			if (selected === void 0) throw new Error("No usable quota reset is available");
+			const preparedAt = now();
+			const readyAt = preparedAt + confirmDelayMs;
+			const expiresAt = Math.min(preparedAt + challengeTtlMs, selected.creditExpiresAt ?? Number.MAX_SAFE_INTEGER);
+			if (expiresAt <= readyAt) throw new Error("The available quota reset expires too soon");
+			const challengeId = randomUUID$1();
+			challenges.set(challengeId, {
+				state: "prepared",
+				accountId,
+				creditRef,
+				creditId: selected.creditId,
+				redeemRequestId: randomUUID$1(),
+				readyAt,
+				expiresAt,
+				availableCount: details.availableCount,
+				creditExpiresAt: selected.creditExpiresAt,
+				title: selected.title,
+				description: selected.description,
+				uncertain: false
+			});
+			return {
+				challengeId,
+				availableCount: details.availableCount,
+				readyAt,
+				expiresAt,
+				...selected.creditExpiresAt === void 0 ? {} : { creditExpiresAt: selected.creditExpiresAt },
+				...selected.title === void 0 ? {} : { title: selected.title },
+				...selected.description === void 0 ? {} : { description: selected.description }
+			};
+		},
+		async consume({ challengeId, acknowledged, signal } = {}) {
+			const challenge = typeof challengeId === "string" ? challenges.get(challengeId) : void 0;
+			if (challenge === void 0) throw new Error("This quota reset confirmation is no longer valid");
+			if (challenge.state === "pending") throw new Error("This quota reset is already in progress");
+			if (now() < challenge.readyAt) throw new Error("Wait before confirming this quota reset");
+			if (now() > challenge.expiresAt) {
+				challenges.delete(challengeId);
+				throw new Error("This quota reset confirmation is no longer valid");
+			}
+			if (acknowledged !== true) throw new Error("You must acknowledge that this may consume one quota reset");
+			challenge.state = "pending";
+			let retryable = challenge.uncertain === true;
+			try {
+				const { access, accountId } = await resolveCredentials(signal);
+				if (accountId !== challenge.accountId) {
+					retryable = false;
+					throw new Error("The signed-in ChatGPT account changed");
+				}
+				let response;
+				try {
+					response = await fetchReset(CODEX_RESET_CONSUME_URL, {
+						method: "POST",
+						redirect: "error",
+						headers: {
+							authorization: `Bearer ${access}`,
+							"chatgpt-account-id": accountId,
+							accept: "application/json",
+							"content-type": "application/json",
+							"cache-control": "no-store",
+							"user-agent": USER_AGENT
+						},
+						body: JSON.stringify({
+							redeem_request_id: challenge.redeemRequestId,
+							credit_id: challenge.creditId
+						}),
+						signal: requestSignal(signal, timeoutMs)
+					});
+				} catch {
+					retryable = true;
+					throw new Error(UNCERTAIN_RESET_RESULT);
+				}
+				if (!response.ok) {
+					if (response.status >= 500) {
+						retryable = true;
+						throw new Error(UNCERTAIN_RESET_RESULT);
+					}
+					if (response.status !== 401 && response.status !== 403) retryable = false;
+					throw new Error(response.status === 401 || response.status === 403 ? "ChatGPT sign-in needs to be renewed" : `ChatGPT quota reset request failed (HTTP ${response.status})`);
+				}
+				let raw;
+				try {
+					raw = await response.json();
+				} catch {
+					retryable = true;
+					throw new Error(UNCERTAIN_RESET_RESULT);
+				}
+				let result;
+				try {
+					result = parseConsumeResult(raw);
+				} catch {
+					retryable = true;
+					throw new Error(UNCERTAIN_RESET_RESULT);
+				}
+				retryable = false;
+				usageReader.clear();
+				return result;
+			} finally {
+				if (retryable && now() <= challenge.expiresAt) {
+					challenge.state = "prepared";
+					challenge.uncertain = true;
+				} else challenges.delete(challengeId);
+			}
+		},
+		clear() {
+			challenges.clear();
+			creditRefs.clear();
+		}
+	});
+}
+//#endregion
+//#region src/subscription-rpc.js
+const publicError = (code, message) => ({
+	ok: false,
+	error: {
+		code,
+		message,
+		details: { issues: [] }
+	}
+});
+function createSubscriptionRpcHandler({ authHandler, usageReader, resetCreditService, preferences, defaultModel, runtimeManagement, diagnosticsReader, modelCatalog, originalImages, resolveInheritedOriginal, closeConnections, onAccountChanged, onCleanupFailure }) {
+	return async (endpoint, payload, signal) => {
+		if (endpoint === "default-model/status" || endpoint === "default-model/select") try {
+			signal.throwIfAborted();
+			if (!defaultModel) return publicError("unavailable", "The default model is unavailable");
+			return {
+				ok: true,
+				value: endpoint === "default-model/status" ? defaultModel.status() : await defaultModel.select({ model: payload?.model })
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			if (error?.code === "invalid-model") return publicError("invalid-input", "Invalid default model");
+			if (error?.code === "unavailable") return publicError("unavailable", endpoint === "default-model/status" ? "The default model is unavailable" : "Could not save the default model");
+			return publicError("internal", endpoint === "default-model/status" ? "Could not read the default model" : "Could not save the default model");
+		}
+		if (endpoint === "storage/status" || endpoint === "storage/clear-forecast") try {
+			signal.throwIfAborted();
+			if (endpoint === "storage/clear-forecast") await usageReader.clear();
+			return {
+				ok: true,
+				value: await usageReader.storage()
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return publicError("operation-error", "Could not manage forecast cache");
+		}
+		if ([
+			"runtime/status",
+			"runtime/install",
+			"runtime/remove",
+			"runtime/cancel"
+		].includes(endpoint)) try {
+			signal.throwIfAborted();
+			if (!runtimeManagement) return publicError("unavailable", "Runtime management is unavailable");
+			const action = endpoint.split("/")[1];
+			return {
+				ok: true,
+				value: action === "status" ? await runtimeManagement.status() : action === "cancel" ? await runtimeManagement.cancel() : await runtimeManagement.start(action)
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			const code = [
+				"busy",
+				"active-tasks",
+				"restart-required",
+				"unavailable"
+			].includes(error.message) ? error.message : "operation-error";
+			return publicError(code, code);
+		}
+		if (endpoint === "image/original/chunk") try {
+			signal.throwIfAborted();
+			if (typeof payload?.sessionId !== "string" || payload.sessionId.length === 0 || payload.sessionId.length > 512 || typeof payload?.assetId !== "string" || !ORIGINAL_IMAGE_ID_PATTERN.test(payload.assetId) || !Number.isSafeInteger(payload?.offset) || payload.offset < 0 || payload.offset % 4194304 !== 0) return publicError("invalid-input", "Invalid original image request");
+			const inherited = resolveInheritedOriginal?.(payload.sessionId, payload.assetId);
+			const chunk = await originalImages?.chunk(payload.sessionId, payload.assetId, payload.offset, inherited);
+			if (chunk === void 0) return publicError("not-found", "Original image is unavailable");
+			return {
+				ok: true,
+				value: chunk
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return publicError("internal", "Could not read the original image");
+		}
+		if (endpoint === "diagnostics") try {
+			signal.throwIfAborted();
+			return {
+				ok: true,
+				value: await diagnosticsReader()
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return publicError("internal", "Could not create support diagnostics");
+		}
+		if (endpoint === "preferences/models") try {
+			signal.throwIfAborted();
+			if (typeof modelCatalog?.refresh !== "function" || typeof preferences?.status !== "function") return publicError("internal", "Could not refresh Codex model catalog");
+			await modelCatalog.refresh({ signal });
+			const value = preferences.status();
+			return {
+				ok: true,
+				value: {
+					availableModels: Array.isArray(value?.availableModels) ? value.availableModels : [],
+					contextModels: Array.isArray(value?.contextModels) ? value.contextModels : [],
+					verbosityModels: Array.isArray(value?.verbosityModels) ? value.verbosityModels : [],
+					fastModels: Array.isArray(value?.fastModels) ? value.fastModels : [],
+					ultrafastModels: Array.isArray(value?.ultrafastModels) ? value.ultrafastModels : [],
+					catalogStatus: value?.catalogStatus
+				}
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return publicError("internal", "Could not refresh Codex model catalog");
+		}
+		if (endpoint === "preferences/status" || endpoint === "preferences/update") try {
+			signal.throwIfAborted();
+			let patch;
+			if (endpoint === "preferences/update") {
+				patch = capabilityPatch(payload);
+				if (Object.hasOwn(payload ?? {}, "disabledModels")) {
+					const disabled = payload[DISABLED_MODELS_FIELD];
+					if (!Array.isArray(disabled) || disabled.length > 100 || disabled.length !== normalizeDisabledModels(disabled).length) return publicError("internal", "Invalid disabled models preference");
+					patch[DISABLED_MODELS_FIELD] = disabled;
+				}
+				if (Object.hasOwn(payload ?? {}, "autoQuotaRetry")) {
+					if (typeof payload["autoQuotaRetry"] !== "boolean") return publicError("internal", "Invalid automatic quota retry preference");
+					patch[AUTO_QUOTA_RETRY_FIELD] = payload[AUTO_QUOTA_RETRY_FIELD];
+				}
+				for (const [field, rule] of Object.entries(PREFERENCE_FIELDS)) {
+					if (!Object.hasOwn(payload ?? {}, field)) continue;
+					if (!rule.choices.includes(payload[field])) return publicError("internal", rule.error);
+					patch[field] = payload[field];
+				}
+				if (Object.hasOwn(payload ?? {}, "customContextWindow")) {
+					if (normalizeCustomContextWindow(payload["customContextWindow"]) !== payload["customContextWindow"]) return publicError("internal", "Invalid custom context window");
+					patch[CUSTOM_CONTEXT_WINDOW_FIELD] = payload[CUSTOM_CONTEXT_WINDOW_FIELD];
+				}
+				for (const [modelKey, field] of Object.entries(CUSTOM_CONTEXT_MODEL_FIELDS)) {
+					if (!Object.hasOwn(payload ?? {}, field)) continue;
+					if (normalizeCustomContextWindow(payload[field], CUSTOM_CONTEXT_MODEL_CAPS[modelKey]) !== payload[field]) return publicError("internal", "Invalid custom model context window");
+					patch[field] = payload[field];
+				}
+				if (Object.keys(patch).length === 0) return publicError("internal", "Invalid preference update");
+				await preferences.update(patch);
+			}
+			const status = preferences.status();
+			return {
+				ok: true,
+				value: patch === void 0 ? status : {
+					...status,
+					...patch
+				}
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return publicError("internal", "Could not update preferences");
+		}
+		if (endpoint === "usage") try {
+			signal.throwIfAborted();
+			return {
+				ok: true,
+				value: await usageReader.read({
+					force: payload?.force === true,
+					signal
+				})
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			const known = /* @__PURE__ */ new Set(["ChatGPT subscription is not signed in", "ChatGPT sign-in needs to be renewed"]);
+			const message = error instanceof Error && known.has(error.message) ? error.message : "Could not read ChatGPT usage";
+			return publicError("internal", message);
+		}
+		if (endpoint === "reset-credit/inspect" || endpoint === "reset-credit/prepare" || endpoint === "reset-credit/consume") try {
+			signal.throwIfAborted();
+			return {
+				ok: true,
+				value: endpoint === "reset-credit/inspect" ? await resetCreditService.inspect({ signal }) : endpoint === "reset-credit/prepare" ? await resetCreditService.prepare({
+					creditRef: payload?.creditRef,
+					signal
+				}) : await resetCreditService.consume({
+					challengeId: payload?.challengeId,
+					acknowledged: payload?.acknowledged,
+					signal
+				})
+			};
+		} catch (error) {
+			if (signal.aborted) throw error;
+			const known = /* @__PURE__ */ new Set([
+				"ChatGPT subscription is not signed in",
+				"ChatGPT sign-in needs to be renewed",
+				"No quota reset is available",
+				"No usable quota reset is available",
+				"The available quota reset expires too soon",
+				"This quota reset confirmation is no longer valid",
+				"This quota reset is already in progress",
+				"Wait before confirming this quota reset",
+				"You must acknowledge that one quota reset will be consumed",
+				"The signed-in ChatGPT account changed"
+			]);
+			const fallback = endpoint === "reset-credit/inspect" ? "Could not read quota reset details" : endpoint === "reset-credit/prepare" ? "Could not prepare a quota reset" : "Could not use the quota reset";
+			const message = error instanceof Error && known.has(error.message) ? error.message : fallback;
+			return publicError("internal", message);
+		}
+		const result = await authHandler(endpoint, payload, signal);
+		if (result.ok === true && (endpoint === "logout" || endpoint === "account/select" || endpoint === "account/remove" || endpoint === "login/status" && result.value?.authenticated === true)) {
+			const tasks = [
+				() => closeConnections?.(),
+				() => usageReader.clearCache(),
+				() => resetCreditService.clear(),
+				() => modelCatalog?.clear(),
+				() => onAccountChanged?.()
+			];
+			if (endpoint === "logout") tasks.push(() => usageReader.clear());
+			if (endpoint === "account/remove" && typeof payload?.id === "string") tasks.push(() => usageReader.clearScope(payload.id));
+			if ((await Promise.allSettled(tasks.map((task) => Promise.resolve().then(task)))).some((value) => value.status === "rejected")) try {
+				onCleanupFailure?.();
+			} catch {}
+			if (endpoint !== "logout") Promise.resolve().then(() => modelCatalog?.refresh({ signal: void 0 })).catch(() => {});
+		} else if (result.ok === true && (endpoint === "status" || result.value?.authenticated === true)) modelCatalog?.refresh({ signal: void 0 }).catch(() => {});
+		return result;
+	};
+}
+//#endregion
+//#region src/index.js
+const z = createRequire(import.meta.resolve("@deepseek-ai/dsh-settings"))("@deepseek-ai/schemastery");
+const name = "codex-subscription";
+const inject = [
+	"llm",
+	"credentials",
+	"settings",
+	"web",
+	"loader",
+	"tools",
+	"attachments"
+];
+const PROVIDER = "openai-codex";
+const OAUTH_EXPIRY_SKEW_MS = 6e4;
+const CREDENTIAL_REF = dshCredentials.credentialRef("OPENAI_CODEX_SUBSCRIPTION_OAUTH");
+const LEGACY_CREDENTIAL_REF = dshCredentials.credentialRef("WSL043_OPENAI_CODEX_OAUTH");
+const ACCOUNT_VAULT_KEY = typeof dshCredentials.credentialKey === "function" ? dshCredentials.credentialKey("codex-subscription", "accounts") : void 0;
+const WEB_ENTRY_ID = "web";
+const DSH_SEARCH_PROVIDER_FALLBACK = "deepseek-official";
+const MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024;
+const REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048;
+const REQUEST_IMAGE_MAX_BYTES = 1024 * 1024;
+function createSearchProviderSwitcher(loader) {
+	const webEntry = () => [...loader.entries()].find((entry) => entry.options?.id === WEB_ENTRY_ID);
+	const dshProviderId = () => {
+		const baseConfig = webEntry()?.options?.config ?? {};
+		return typeof baseConfig.searchProvider === "string" && baseConfig.searchProvider.length > 0 ? baseConfig.searchProvider : DSH_SEARCH_PROVIDER_FALLBACK;
+	};
+	return Object.freeze({
+		dshProviderId,
+		async select(selection) {
+			const entry = webEntry();
+			const fiber = entry?.fiber;
+			if (entry === void 0 || fiber === void 0 || typeof fiber.update !== "function") throw new Error("DSH web runtime is unavailable");
+			const baseConfig = entry.options?.config ?? {};
+			const currentConfig = fiber.config ?? baseConfig;
+			const dshProvider = dshProviderId();
+			const provider = selection === "codex" ? CODEX_SEARCH_PROVIDER_ID : selection === "auto" ? CODEX_AUTO_SEARCH_PROVIDER_ID : dshProvider;
+			if (currentConfig.searchProvider === provider) return;
+			await fiber.update({
+				...currentConfig,
+				searchProvider: provider
+			}, true);
+		}
+	});
+}
+const settingsFields = {
+	[DISABLED_MODELS_FIELD]: z.transform(z.array(z.string()).max(100), normalizeDisabledModels).default([]),
+	[AUTO_QUOTA_RETRY_FIELD]: z.boolean().default(false),
+	...Object.fromEntries(Object.entries(PREFERENCE_FIELDS).map(([field, rule]) => [field, rule.default === void 0 ? z.union(rule.choices) : z.union(rule.choices).default(rule.default)])),
+	imageModel: z.union(Object.keys(IMAGE_MODELS)).default(DEFAULT_IMAGE_MODEL),
+	imageQuality: z.union([
+		"auto",
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max"
+	]).default("auto"),
+	...Object.fromEntries(Object.entries(IMAGE_FEATURE_DEFAULTS).map(([key, value]) => [key, z.boolean().default(value)])),
+	[CUSTOM_CONTEXT_OVERRIDES_FIELD]: z.dict(z.number().step(1).min(1).max(MAX_CONTEXT_BUDGET)).default({}),
+	[SEARCH_MODE_FIELD]: z.union(SEARCH_MODES).default("live"),
+	[SEARCH_DOMAINS_FIELD]: z.transform(z.array(z.string()).max(20), normalizeSearchDomains).default([]),
+	...Object.fromEntries(QUOTA_THRESHOLD_FIELDS.map((key) => [key, z.number().step(1).min(1).max(100).default(20)])),
+	[QUOTA_ALERTS_FIELD]: z.union(QUOTA_ALERT_MODES).default("important"),
+	[LEGACY_QUICK_QUOTA_FIELD]: z.boolean(),
+	[CUSTOM_CONTEXT_WINDOW_FIELD]: z.number().step(1).min(128e3).max(1e6).default(DEFAULT_CUSTOM_CONTEXT_WINDOW),
+	...Object.fromEntries(Object.entries(CUSTOM_CONTEXT_MODEL_FIELDS).map(([modelKey, field]) => [field, z.number().step(1).min(128e3).max(CUSTOM_CONTEXT_MODEL_CAPS[modelKey]).default(CUSTOM_CONTEXT_MODEL_DEFAULTS[modelKey])]))
+};
+const Config = z.object(Object.fromEntries(Object.entries(settingsFields).map(([key, field]) => [key, field.extra("volatile", true)])));
+// Desktop Pet embedding seam: a separately owned settings adapter avoids
+// writing subscription preferences into the parent Loader entry. MIT upstream
+// implementation below is otherwise retained; see ../FORK.md.
+async function apply(ctx, config = {}, createEmbeddedSettings) {
+	const settings = typeof createEmbeddedSettings === "function"
+		? await createEmbeddedSettings(z.object(settingsFields), config)
+		: createSettingsAdapter(ctx, z.object(settingsFields), config, SETTINGS_NAMESPACE);
+	// No await between this final embedding ownership check and registration.
+	settings.assertEmbeddedOwner?.();
+	const settingsWritable = () => typeof createEmbeddedSettings === "function" ? settings.writable === true : ctx.settings.writable === true;
+	const searchProvider = createSearchProviderSwitcher(ctx.loader);
+	const network = createCodexNetworkTransport();
+	const diagnosticOperations = createDiagnosticOperations();
+	ctx.effect(() => ctx.on?.("tools/result", (exec, result) => diagnosticOperations.tool(exec, result)), "codex-subscription: operation evidence");
+	const originalImages = new OriginalImageStore();
+	const accountVault = ACCOUNT_VAULT_KEY !== void 0 && typeof ctx.credentials.readRecord === "function" && typeof ctx.credentials.modifyRecord === "function" && typeof ctx.credentials.deleteRecord === "function" ? new DshOAuthAccountVault(ctx.credentials, {
+		key: ACCOUNT_VAULT_KEY,
+		legacyRef: CREDENTIAL_REF,
+		legacyRefs: [LEGACY_CREDENTIAL_REF]
+	}) : void 0;
+	const store = new DshOAuthCredentialStore(ctx.credentials, CREDENTIAL_REF, [LEGACY_CREDENTIAL_REF], {
+		expirySkewMs: OAUTH_EXPIRY_SKEW_MS,
+		vault: accountVault
+	});
+	const baseProvider = createOpenAICodexProvider();
+	let resolveAuth = async () => void 0;
+	let subagentBackend;
+	const runtimeManagement = createRuntimeManagement({
+		manager: () => ctx.get?.("pluginManager"),
+		inspect: inspectSubagentRuntime,
+		active: () => subagentBackend?.activeCount() ?? 0,
+		selectDsh: async () => {
+			if (subagentBackend) await subagentBackend.select("dsh");
+			else await settings.update({ subagentBackend: "dsh" });
+		}
+	});
+	ctx.effect(() => ctx.on?.("plugin-manager/install-state", (value) => runtimeManagement.progress(value)));
+	const modelCatalog = createOfficialModelCatalog({
+		onUpdated: () => ctx.llm.emitAdaptersUpdated?.(),
+		getAuth: (options) => resolveAuth(options),
+		readCredential: (options) => store.read(PROVIDER, options),
+		baseModels: () => baseProvider.getModels(),
+		fetch: (input, init) => network.fetch("catalog", input, init)
+	});
+	const connection = createSubscriptionConnection({ resolveMode: () => settings.get().connectionMode });
+	const defaultModel = createDefaultModelController({
+		resolveService: () => ctx.get?.("agentDefaultModel"),
+		listModels: () => modelCatalog.getModels().map((model) => model.id)
+	});
+	const compaction = createCompactionBridge({
+		enabled: () => settings.get().compactionMode === "cloud",
+		accountScope: async () => {
+			await resolveAuth();
+			const credential = await store.read(PROVIDER);
+			return credential?.type === "oauth" ? credential.accountId : void 0;
+		}
+	});
+	ctx.effect(() => () => connection.dispose());
+	const provider = openaiCodexSubscriptionProvider({
+		bindRequestAuth: (handle, signal) => requestAuth.bind(handle, signal),
+		connection,
+		compaction,
+		resolveSpeedMode: () => settings.get()[SPEED_MODE_FIELD],
+		resolveOutputVerbosity: () => normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
+		resolveInputImageDetail: () => settings.get()[INPUT_IMAGE_DETAIL_FIELD],
+		resolveReasoningSummary: () => settings.get()[REASONING_SUMMARY_FIELD],
+		resolveContextMode: () => normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
+		resolveCustomContextWindow: (modelKey) => {
+			const overrides = readCapabilitySettings(settings.get())[CUSTOM_CONTEXT_OVERRIDES_FIELD];
+			if (Object.hasOwn(overrides, modelKey)) return overrides[modelKey];
+			const field = CUSTOM_CONTEXT_MODEL_FIELDS[modelKey];
+			if (field === void 0) return void 0;
+			return normalizeCustomContextWindow(settings.get()[field] ?? CUSTOM_CONTEXT_MODEL_DEFAULTS[modelKey], CUSTOM_CONTEXT_MODEL_CAPS[modelKey]);
+		},
+		resolveReviewModel: () => settings.get().reviewModel,
+		catalog: modelCatalog,
+		runNetwork: network.run
+	});
+	const preferences = {
+		status: () => {
+			const models = modelCatalog.getModels();
+			return {
+				[DISABLED_MODELS_FIELD]: normalizeDisabledModels(settings.get()[DISABLED_MODELS_FIELD]),
+				[AUTO_QUOTA_RETRY_FIELD]: normalizeAutoQuotaRetry(settings.get()[AUTO_QUOTA_RETRY_FIELD]),
+				compactionMode: settings.get().compactionMode ?? "dsh",
+				connectionMode: settings.get().connectionMode ?? "sse",
+				reviewModel: settings.get().reviewModel ?? "session",
+				subagentBackend: settings.get().subagentBackend ?? "dsh",
+				subagentBackendAvailable: subagentBackend !== void 0,
+				subagentRuntimeInstalled: inspectSubagentRuntime().installed,
+				...readCapabilitySettings(settings.get()),
+				[QUICK_QUOTA_MODE_FIELD]: normalizeQuickQuotaMode(settings.get()[QUICK_QUOTA_MODE_FIELD], settings.get()[LEGACY_QUICK_QUOTA_FIELD]),
+				[SEARCH_PROVIDER_FIELD]: settings.get()[SEARCH_PROVIDER_FIELD],
+				[SPEED_MODE_FIELD]: settings.get()[SPEED_MODE_FIELD],
+				[OUTPUT_VERBOSITY_FIELD]: normalizeOutputVerbosity(settings.get()[OUTPUT_VERBOSITY_FIELD]),
+				[INPUT_IMAGE_DETAIL_FIELD]: normalizeInputImageDetail(settings.get()[INPUT_IMAGE_DETAIL_FIELD]),
+				[REASONING_SUMMARY_FIELD]: normalizeReasoningSummary(settings.get()[REASONING_SUMMARY_FIELD]),
+				[RETRY_POLICY_FIELD]: normalizeRetryPolicy(settings.get()[RETRY_POLICY_FIELD]),
+				[STREAM_IDLE_TIMEOUT_MINUTES_FIELD]: normalizeStreamIdleTimeoutMinutes(settings.get()[STREAM_IDLE_TIMEOUT_MINUTES_FIELD]),
+				[CONTEXT_MODE_FIELD]: normalizeContextMode(settings.get()[CONTEXT_MODE_FIELD]),
+				[CUSTOM_CONTEXT_WINDOW_FIELD]: normalizeCustomContextWindow(settings.get()[CUSTOM_CONTEXT_WINDOW_FIELD]),
+				...Object.fromEntries(Object.entries(CUSTOM_CONTEXT_MODEL_FIELDS).map(([modelKey, field]) => [field, normalizeCustomContextWindow(settings.get()[field] ?? CUSTOM_CONTEXT_MODEL_DEFAULTS[modelKey], CUSTOM_CONTEXT_MODEL_CAPS[modelKey])])),
+				contextModels: contextModelGroups(models),
+				availableModels: models.map(({ id, name }) => ({
+					id,
+					name
+				})),
+				catalogStatus: modelCatalog.status(),
+				verbosityModels: provider.getModels().filter((model) => modelCatalog.metadata(model.id)?.supportVerbosity ?? model.id !== "gpt-5.3-codex-spark").map((model) => model.id),
+				ultrafastModels: provider.getModels().filter((model) => modelCatalog.metadata(model.id)?.supportsUltrafast === true).map((model) => model.id),
+				fastModels: provider.getModels().filter((model) => modelCatalog.metadata(model.id)?.supportsFast ?? supportsCodexFastMode(model.id)).map((model) => model.id),
+				writable: settingsWritable()
+			};
+		},
+		update: async (patch) => {
+			if (!settingsWritable()) throw new Error("Subscription preferences are read-only");
+			if (Object.hasOwn(patch, "subagentBackend")) {
+				if (!subagentBackend) throw new Error("DSH subagent services are unavailable");
+				await subagentBackend.select(patch.subagentBackend);
+			}
+			const rest = { ...patch };
+			delete rest.subagentBackend;
+			if (Object.keys(rest).length) await settings.update(rest);
+		}
+	};
+	const authModels = createModels({ credentials: store });
+	authModels.setProvider(provider);
+	const profile = Object.freeze({
+		provider: PROVIDER,
+		displayName: "ChatGPT subscription",
+		piProvider: provider,
+		configuredMaxTokens: /* @__PURE__ */ new Map(),
+		modelErrors: /* @__PURE__ */ new Map(),
+		maxRequestImageBytes: MAX_REQUEST_IMAGE_BYTES,
+		requestImagePixelBudget: REQUEST_IMAGE_PIXEL_BUDGET,
+		requestImageMaxBytes: REQUEST_IMAGE_MAX_BYTES,
+		cacheRetention: "short",
+		transport: "sse"
+	});
+	const retryProfile = (choice) => {
+		const retryPolicy = retryPolicyFor(choice, dshLlm.resolveRetryPolicy);
+		return retryPolicy === void 0 ? {} : { retryPolicy };
+	};
+	let profileKey;
+	let profileSnapshot;
+	const profiles = () => {
+		const preferences = settings.get();
+		const streamIdleTimeoutMinutes = normalizeStreamIdleTimeoutMinutes(preferences[STREAM_IDLE_TIMEOUT_MINUTES_FIELD]);
+		const retryChoice = normalizeRetryPolicy(preferences[RETRY_POLICY_FIELD]);
+		const key = JSON.stringify([
+			modelCatalog.revision(),
+			streamIdleTimeoutMinutes,
+			retryChoice,
+			normalizeContextMode(preferences[CONTEXT_MODE_FIELD]),
+			preferences[CUSTOM_CONTEXT_OVERRIDES_FIELD],
+			...Object.values(CUSTOM_CONTEXT_MODEL_FIELDS).map((field) => preferences[field])
+		]);
+		if (key !== profileKey) {
+			profileKey = key;
+			profileSnapshot = /* @__PURE__ */ new Map([[PROVIDER, Object.freeze({
+				...profile,
+				streamIdleTimeoutMs: streamIdleTimeoutMinutes * 60 * 1e3,
+				...retryProfile(retryChoice)
+			})]]);
+		}
+		return profileSnapshot;
+	};
+	resolveAuth = (options) => network.run("oauth", () => authModels.getAuth(PROVIDER, options));
+	const requestAuth = createSubscriptionRequestAuth({
+		readAccountKey: () => accountVault ? accountVault.activeId() : "legacy-oauth",
+		readCredential: (options) => store.read(PROVIDER, options),
+		resolveAuth
+	});
+	ctx.effect(() => () => requestAuth.dispose());
+	ctx.inject([
+		"subagents",
+		"subprocess",
+		"sandboxPolicy"
+	], (scoped) => {
+		const instance = createSubscriptionSubagent({
+			ctx: scoped,
+			nativeHome: dshHomePath("state", "codex-subscription", "native-subagent"),
+			resolveAuth,
+			store,
+			refresh: (credential) => network.run("oauth", () => baseProvider.auth.oauth.refresh(credential)),
+			loadRuntime: loadSubagentRuntime,
+			maintenance: runtimeManagement.blocked
+		});
+		scoped.subagents.registerProvider(instance.provider);
+		const switcher = createSubagentBackendSwitcher({
+			entries: () => [...scoped.loader.entries(), ...presetEntries(scoped)],
+			prepare: instance.prepare,
+			persist: (mode) => settings.update({ subagentBackend: mode })
+		});
+		const unconfigure = scoped.on("internal/config", function(_config, next) {
+			return switcher.configure(this, next());
+		}, { global: true });
+		let requested = "dsh";
+		const select = async (mode) => {
+			requested = mode;
+			try {
+				await switcher.select(mode);
+			} catch (error) {
+				requested = settings.get().subagentBackend ?? "dsh";
+				throw error;
+			}
+		};
+		subagentBackend = {
+			select,
+			activeCount: instance.activeCount
+		};
+		const sync = (value) => {
+			const mode = value.subagentBackend ?? "dsh";
+			if (mode !== requested) select(mode).catch(() => scoped.logger.warn("Could not switch the subscription subagent backend"));
+		};
+		scoped.loader.await().then(() => sync(settings.get())).catch(() => scoped.logger.warn("Could not initialize the subscription subagent backend"));
+		const unwatch = settings.watch(sync);
+		scoped.effect(() => async () => {
+			unwatch();
+			unconfigure();
+			subagentBackend = void 0;
+			instance.dispose();
+			await switcher.dispose();
+		}, "codex-subscription: subagent backend");
+	});
+	const adapterAuth = Object.freeze({
+		credentials: store,
+		authContext: Object.freeze({
+			env: async () => void 0,
+			fileExists: async () => false
+		})
+	});
+	ctx.effect(() => watchImageTool(settings, () => ctx.tools.register(createCodexImageTool({
+		getFeatures: () => settings.get(),
+		getAuth: resolveAuth,
+		readCredential: (options) => store.read(PROVIDER, options),
+		attachments: ctx.attachments,
+		getSessionMessages: (sessionId) => ctx.get?.("sessions")?.get?.(sessionId)?.deriveMessages?.() ?? [],
+		originalImages,
+		fetch: (input, init) => network.fetch("image", input, init)
+	}))), "codex-subscription: image tool availability");
+	const adapter = new PiAiAdapter({
+		profiles,
+		resolveApiKey: async () => {
+			try {
+				return await requestAuth.capture();
+			} catch {
+				throw new dshLlm.LlmError("ChatGPT subscription authorization unavailable; check the embedded account page", "AUTH_FAILED");
+			}
+		},
+		auth: adapterAuth,
+		resolveAttachments: () => ctx.get?.("attachments")
+	});
+	ctx.llm.registerAdapter([PROVIDER], compaction.wrapAdapter(adapter));
+	const currentAgent = () => ctx.get?.("agents")?.currentInitiator?.();
+	const codexSearch = createCodexSearchProvider({
+		resolvePreferences: () => readCapabilitySettings(settings.get()),
+		getAuth: resolveAuth,
+		readCredential: (options) => store.read(PROVIDER, options),
+		resolveModel: () => {
+			const request = currentAgent()?.session.requestContext?.();
+			return request?.provider === PROVIDER ? request.model : void 0;
+		},
+		resolveSessionId: () => currentAgent()?.session.id,
+		fetch: (input, init) => network.fetch("search", input, init)
+	});
+	ctx.web.registerSearchProvider(codexSearch);
+	ctx.web.registerSearchProvider(createCodexAutoSearchProvider({
+		codex: codexSearch,
+		resolveModelProvider: () => currentAgent()?.session.requestContext?.()?.provider,
+		resolveDshProvider: () => ctx.web.searchProviders?.get(searchProvider.dshProviderId())
+	}));
+	ctx.effect(() => {
+		const select = async (value) => {
+			try {
+				await searchProvider.select(value[SEARCH_PROVIDER_FIELD]);
+			} catch (error) {
+				ctx.logger?.warn?.("could not select the configured web search provider: %s", error.message);
+			}
+		};
+		select(settings.get());
+		return settings.watch(select);
+	}, "codex-subscription: search provider selection");
+	const auth = createCodexAuthService(authModels, store, {
+		runLogin: (operation) => network.run("login", operation),
+		accountVault,
+		createLoginModels: (credentials) => {
+			const loginModels = createModels({ credentials });
+			loginModels.setProvider(provider);
+			return loginModels;
+		}
+	});
+	const coordinator = new CodexLoginCoordinator(auth);
+	const usageReader = createQuotaForecastReader({
+		reader: createCodexUsageReader({
+			getAuth: resolveAuth,
+			readCredential: (options) => store.read(PROVIDER, options),
+			fetch: (input, init) => network.fetch("quota", input, init)
+		}),
+		enabled: () => normalizeQuickQuotaMode(settings.get()[QUICK_QUOTA_MODE_FIELD], settings.get()[LEGACY_QUICK_QUOTA_FIELD]) === QUICK_QUOTA_MODE_FORECAST,
+		scope: async () => await accountVault?.activeId() ?? "legacy",
+		stateStore: new QuotaForecastStateStore({ filename: dshHomePath("state", "codex-subscription", "quota-forecast.json") })
+	});
+	ctx.effect(() => {
+		let forecasting = false;
+		const warmForecast = (value) => {
+			if (!(normalizeQuickQuotaMode(value["quickQuotaMode"], value["quickQuotaVisible"]) === "forecast")) {
+				if (forecasting) usageReader.clear().catch((error) => ctx.logger?.debug?.("could not clear Codex quota forecast: %s", error.message));
+				forecasting = false;
+				return;
+			}
+			forecasting = true;
+			usageReader.read().catch((error) => ctx.logger?.debug?.("could not warm Codex quota forecast: %s", error.message));
+		};
+		warmForecast(settings.get());
+		const unwatch = settings.watch(warmForecast);
+		return () => {
+			unwatch();
+			usageReader.clearCache();
+		};
+	}, "codex-subscription: quota forecast warm-up");
+	const quotaRetryLifetime = new AbortController();
+	const activeQuotaRetries = /* @__PURE__ */ new Set();
+	const quotaRetryHandler = createCodexQuotaRetryHandler({
+		usageReader,
+		enabled: () => normalizeAutoQuotaRetry(settings.get()[AUTO_QUOTA_RETRY_FIELD]),
+		modelsReady: catalogModelsReady(modelCatalog)
+	});
+	const disposeQuotaRetry = ctx.on("agent/request-error", (payload, next) => {
+		if (quotaRetryLifetime.signal.aborted) return Promise.resolve(void 0);
+		const signal = payload.signal === void 0 ? quotaRetryLifetime.signal : AbortSignal.any([payload.signal, quotaRetryLifetime.signal]);
+		const tracked = quotaRetryHandler({
+			...payload,
+			signal
+		}, next).finally(() => activeQuotaRetries.delete(tracked));
+		activeQuotaRetries.add(tracked);
+		return tracked;
+	});
+	ctx.effect(() => async () => {
+		disposeQuotaRetry();
+		quotaRetryLifetime.abort(/* @__PURE__ */ new Error("codex-subscription quota retry disposed"));
+		await Promise.allSettled([...activeQuotaRetries]);
+	}, "codex-subscription: abort and drain quota recovery");
+	ctx.effect(() => settings.watch((value, previous) => {
+		if (normalizeAutoQuotaRetry(value["autoQuotaRetry"]) !== normalizeAutoQuotaRetry(previous?.["autoQuotaRetry"])) quotaRetryHandler.notifyConfigurationChanged();
+	}), "codex-subscription: update quota recovery preference");
+	const resetCreditService = createCodexResetCreditService({
+		getAuth: resolveAuth,
+		readCredential: (options) => store.read(PROVIDER, options),
+		usageReader,
+		fetch: (input, init) => network.fetch("quota-reset", input, init)
+	});
+	const sketchBridge = createSketchAgentBridge({ enabled: () => settings.get().imageSketchAgent && settings.get().imageSketch && settings.get().imageEditing });
+	ctx.effect(() => {
+		let dispose;
+		const sync = () => {
+			const value = settings.get();
+			if (value.imageSketchAgent && value.imageSketch && value.imageEditing) dispose ??= ctx.tools.register(createSketchAgentTool(sketchBridge, ctx.attachments, (sessionId) => ctx.get?.("sessions")?.get?.(sessionId)?.deriveMessages?.() ?? []));
+			else {
+				dispose?.();
+				dispose = void 0;
+				sketchBridge.dispose();
+			}
+		};
+		sync();
+		const unwatch = settings.watch(sync);
+		return () => {
+			unwatch();
+			dispose?.();
+			sketchBridge.dispose();
+		};
+	}, "codex-subscription: native sketch tool");
+	const subscriptionHandler = createSubscriptionRpcHandler({
+		authHandler: createCodexRpcHandler(coordinator, { openExternal: openCodexAuthUrl }),
+		usageReader,
+		resetCreditService,
+		preferences,
+		defaultModel,
+		runtimeManagement,
+		onAccountChanged: quotaRetryHandler.notifyAccountChanged,
+		diagnosticsReader: () => createSubscriptionDiagnostics({
+			auth,
+			preferences,
+			login: coordinator.supportState(),
+			network,
+			modelCatalog,
+			connection,
+			compaction,
+			review: provider,
+			operations: diagnosticOperations,
+			runtimeManagement,
+			storage: () => usageReader.storage(),
+			tools: ctx.tools
+		}),
+		onCleanupFailure: () => diagnosticOperations.record("account/cleanup", "failed"),
+		modelCatalog,
+		closeConnections: () => connection.dispose(),
+		originalImages,
+		resolveInheritedOriginal: (sessionId, assetId) => inheritedOriginalImageRef(ctx.get?.("sessions")?.get?.(sessionId), assetId)
+	});
+	const handler = diagnosticOperations.wrap((endpoint, payload, signal) => endpoint.startsWith("sketch/") ? sketchBridge.rpc(endpoint, payload) : subscriptionHandler(endpoint, payload, signal));
+	ctx.effect(() => {
+		modelCatalog.refresh().catch((error) => ctx.logger?.debug?.("could not refresh Codex model catalog: %s", error.message));
+	}, "codex-subscription: official model catalog");
+	ctx.inject(["connection"], (connectionContext) => connectionContext.effect(() => registerSubscriptionTransport(connectionContext.connection, handler), "codex-subscription: DSH-trusted account RPC"));
+}
+//#endregion
+export { CODEX_IMAGE_GENERATION_URL, CODEX_IMAGE_TOOL_NAME, CODEX_RESET_CONSUME_URL, CODEX_RESET_CREDITS_URL, CODEX_USAGE_URL, CodexLoginCoordinator, Config, DEFAULT_MODEL_PROVIDER, DshOAuthCredentialStore, apply, assertCodexAuthUrl, commandForCodexAuthUrl, createCodexAuthService, createCodexImageTool, createCodexResetCreditService, createCodexRpcHandler, createCodexUsageReader, createDefaultModelController, createSearchProviderSwitcher, createSubscriptionDiagnostics, createSubscriptionRpcHandler, decodeCodexPng, inject, name, normalizeContextMode, normalizeCustomContextWindow, openCodexAuthUrl, parseCodexUsage };

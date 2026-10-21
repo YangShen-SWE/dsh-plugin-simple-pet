@@ -1,0 +1,6 @@
+# One plugin owns the provider route, selectable subscription search,
+# host-only account RPC, and settings surface. It leaves DSH's model and
+# persistent web configuration untouched.
+- insert:
+    - id: codex-subscription
+      name: 'dsh-codex-subscription'

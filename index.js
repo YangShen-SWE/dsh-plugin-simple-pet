@@ -21,6 +21,7 @@ import { MultiWarmupStore, MultiWarmupScheduler, multiWarmupHandler } from './mu
 import { discoverBoundAccounts, runBoundWarmup } from './multi-warmup-provider.js';
 import { officialAccountRpc, readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy } from './official-accounts.js';
 import { embeddedAccountsPlugin } from './embedded-accounts.js';
+import { createEmbeddedSubscription } from './embedded-subscription.js';
 import { loadExpertRoutePolicy, installExpertSessionCompatibility, loadExpertMessageFactory } from './expert-session-compat.js';
 
 export const name = 'dsh-plugin-simple-pet';
@@ -161,7 +162,12 @@ export function readLegacyWarmup(file) {
 export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability, panelStarter = startPanelAccounts } = {}) {
   // A child fiber shares the host's public services and is disposed with simple-pet.
   // Mock-only contexts without plugin() never activate a real account engine.
-  if (typeof ctx.plugin === 'function') ctx.plugin(embeddedAccountsPlugin);
+  let subscriptionOwner = 'loading';
+  const supportsAccountSwitch = provider => (provider === 'openai-codex' && subscriptionOwner === 'embedded') || switchSupported(provider);
+  if (typeof ctx.plugin === 'function') {
+    ctx.plugin(createEmbeddedSubscription({ onOwner: owner => { subscriptionOwner = owner; } }));
+    ctx.plugin(embeddedAccountsPlugin);
+  }
   let live = true;
   const instance = randomUUID();
   const profile = (process.env.DSH_PET_PROFILE || process.env.DSH_PROFILE || 'desktop').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -594,10 +600,10 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
         ? createHash('sha256').update(bytes).digest('hex') : null;
     } catch { return null; }
   }
-  const panelReady = () => live && petStop?.applicationRuntime?.()?.active === true && !!panelGrant() && !!codexBridge && (refreshAccountBackend() === 'official' || switchSupported(codex.provider))
+  const panelReady = () => live && petStop?.applicationRuntime?.()?.active === true && !!panelGrant() && !!codexBridge && (refreshAccountBackend() === 'official' || supportsAccountSwitch(codex.provider))
     && !accountChanging && !warmupSwitchUncertain && !warmupModeUncertain && !prefsReading && !warmup.active && !multiWarmup.active;
   const accountControl = createAccountControl({
-    context: () => live && refreshAccountBackend() === 'legacy' && petStop?.applicationRuntime?.()?.active === true && panelGrant() && codexBridge && switchSupported(codex.provider)
+    context: () => live && refreshAccountBackend() === 'legacy' && petStop?.applicationRuntime?.()?.active === true && panelGrant() && codexBridge && supportsAccountSwitch(codex.provider)
       ? { bridge: codexBridge, provider: codex.provider, generation: `${bridgeRevision}:${accountSourceGeneration}:${codexProvider}:${panelGrant()}` } : null,
     blocked: () => accountChanging || warmupSwitchUncertain || warmupModeUncertain || prefsReading || !!warmup.active || !!multiWarmup.active,
     begin() {
@@ -663,11 +669,20 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     return { enabled: true, grant, canSwitch: valid && panelReady() && Number.isSafeInteger(codex.accountCount) && codex.accountCount >= 2,
       email: valid ? codexIdentity.panelEmail ?? '' : '', selection: valid ? evidence.selection : 'none',
       accountKey: valid ? evidence.accountKey : null, validForMs: valid ? Math.min(evidence.validForMs, 6000) : 2000,
-      reason: !switchSupported(codex.provider) ? '请安装并启用支持的订阅依赖版本' : !valid ? '等待账号状态' : codex.accountCount < 2 ? '至少绑定两个账号' : !panelReady() ? '预热或切换中，或结果待核验' : null };
+      reason: !supportsAccountSwitch(codex.provider) ? '请安装并启用支持的订阅依赖版本' : !valid ? '等待账号状态' : codex.accountCount < 2 ? '至少绑定两个账号' : !panelReady() ? '预热或切换中，或结果待核验' : null };
   }
   let petStop = null, panelServer = null;
   const applicationRuntime = () => live ? petStop?.applicationRuntime?.() : null;
   ctx.inject(['webServer', 'connection'], routeCtx => {
+    routeCtx.effect(() => routeCtx.webServer.register({
+      kind: 'exact', path: '/api/dsh-plugin-simple-pet/subscription-owner',
+      handler(req, res) {
+        if (!guard(routeCtx, req, res)) return;
+        const method = req.method ?? 'GET';
+        if (method !== 'GET' && method !== 'HEAD') return json(res, 405, { error: 'method not allowed' }, method);
+        return json(res, 200, { owner: live ? subscriptionOwner : 'closed', version: '2.6.8' }, method);
+      },
+    }), 'simple-pet: read-only embedded subscription ownership');
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/preferences',
       handler: preferencesHandler(preferencesStore, (req, res) => guard(routeCtx, req, res)),

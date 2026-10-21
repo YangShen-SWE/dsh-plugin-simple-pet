@@ -1,12 +1,20 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.1.1 · 后台只读加载与重置卡界面](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.1)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.1.2 · 完整内置订阅与授权时效修复](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.2)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
 
 A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the integrated official-component account service; both default off. Install only the simple-pet package.
 
-## v1.1.1 重点
+## v1.1.2 更新原因与重点
+
+- **完整承接旧连接：** 将 MIT 授权的 `dsh-codex-subscription@2.6.8` 完整前后端内置，保留账号/额度、模型/运行、图片/草图、维护、输入框、搜索和工具贡献，而非零散 provider alias。进入 **设置 → 订阅管理（桌宠内置）**；桌宠原功能仍在 **设置 → 桌宠**。
+- **修复授权过期：** 取存储期限和 JWT 到期较早值，并在上下文/图片/代理准备后重新核验同一绑定的授权。解决两类合成复现缺陷，不承诺所有真实刷新令牌或旧聊天已恢复；不自动重发失败模型请求或跨账号回退。
+- **更简洁的账号页：** 隐藏正常状态下冗长的本地凭据/接收时间说明，保留异常与过期提示；重置卡展示有效期。独立设置存储、所有权门控和原 MIT/第三方声明一并收录。
+
+**升级：** 只导入桌宠安装包，停用独立 `dsh-codex-subscription` 后完整退出 DSH（包括托盘）再重开。内置分支沿用原订阅账号库；桌宠 `codex-accounts` 账号仍独立，不迁移凭据、不重写历史、不清除预热或兑换保护。完整内置分支保留原有后台读取和可配置工具行为，不应将下面历史版本的“浏览不查询”泛化为整个原订阅插件的网络承诺。没有新增真实账号/模型/兑换验收。
+
+## v1.1.1 重点（历史）
 
 - 可见账号/模型页自动读取目录与当前账号卡片，取消相关手动检查按钮；失败同样节流，隐藏/离页可取消。
 - 重置卡直接展示可用与保护暂停数量，统一深浅主题和窄屏；准备、五秒等待和独立消费确认保留。

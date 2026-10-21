@@ -1,0 +1,79 @@
+{
+  "repository": "https://github.com/WSL043/dsh-codex-subscription",
+  "version": "2.6.8",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 WSL043",
+  "source": "Installed public distribution, code/assets only; no node_modules, credentials or user configuration copied",
+  "files": [
+    {
+      "path": "lib/client.js",
+      "bytes": 581056,
+      "sha256": "19483ef7818b1b27970105164ba924f393ec3b01cb75828ff826a22d59d29720"
+    },
+    {
+      "path": "lib/index.js",
+      "bytes": 267161,
+      "sha256": "6839f85c8626f07a1e5922d17929ef978a0c1fa30185a654fafc91123a15c972"
+    },
+    {
+      "path": "locale/en.json",
+      "bytes": 218,
+      "sha256": "466afb2befdd33e217ee259fc12b461bc1bb0baeb78b7f26c95d3c14e6290de6"
+    },
+    {
+      "path": "locale/zh-CN.json",
+      "bytes": 185,
+      "sha256": "e5ab79b0f9d61b41ae7fe4c8b31efa15bddd35a1e025ef6bf1eee15597be78ef"
+    },
+    {
+      "path": "package.json",
+      "bytes": 8582,
+      "sha256": "e0a9381c8b678b98e634c7d79af456576ea45b4d224c049db9ed26c1f58b8367"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1063,
+      "sha256": "71c8a05eaab1c5920a64d22a5496585256ac62fcc2879df50285d5e46760c8ae"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "bytes": 5226,
+      "sha256": "f017b502c6feb2d19a8e2395b56b40334de9eb98f76c473247aebd0e39b54c53"
+    },
+    {
+      "path": "SECURITY.md",
+      "bytes": 1872,
+      "sha256": "54acfa9b71c2a6986e0928702691ded7f8fbb4231610f493f68da4d3c6834790"
+    },
+    {
+      "path": "README.md",
+      "bytes": 28564,
+      "sha256": "df4841b953b5d06bb8e70d334d4da1ea9a3a7d8f41a77121e2ad92ee942bad3c"
+    },
+    {
+      "path": "README.en.md",
+      "bytes": 25763,
+      "sha256": "35130c3eab5b9d9d38e139a91c19459c2741e83b9b03af1081706403a4dd5eec"
+    },
+    {
+      "path": "DIRECTORY.md",
+      "bytes": 1632,
+      "sha256": "e9c5fbdd9f9f4f18007f3b09dad3dacdf23e78afc02cc51669b1f7665736fd33"
+    },
+    {
+      "path": "compatibility.json",
+      "bytes": 388,
+      "sha256": "0a6fc55425f52935b1a9f770df9813b4e410c6cb7929a986c942e7d21d668250"
+    },
+    {
+      "path": "icon-subscription.webp",
+      "bytes": 29122,
+      "sha256": "3802663fb5a5ef01072b49974c633e3def4b9d251d072244a014695fd8316763"
+    },
+    {
+      "path": "cordis.patch.yml",
+      "bytes": 261,
+      "sha256": "76537bbfeacfae4e936314edea4f9bad993fdf9c6ed51162338d199d3d1d26be"
+    }
+  ]
+}
