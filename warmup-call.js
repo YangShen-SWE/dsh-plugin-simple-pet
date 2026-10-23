@@ -32,14 +32,18 @@ export async function chooseWarmupModel(llm, bridge, signal) {
 
 // One direct logical call: no session, conversation history, agent loop or tool execution.
 // Existing provider middleware/transport may still retry internally; maxTokens is not an enforceable Codex cap.
-export async function runCodexWarmup({ llm, bridge, quota, signal, onUsage = () => {} }) {
-  let config;
+export async function runCodexWarmup({ llm, bridge, quota, signal, prepareCall, isCurrent = () => true, onUsage = () => {} }) {
+  let config, prepared;
   try {
     config = await chooseWarmupModel(llm, bridge, signal);
+    // The embedded owner captures account-bound auth before the final status check.
+    // A later account switch must reject that prepared auth, never retarget it.
+    if (typeof prepareCall === 'function') prepared = await prepareCall(PROVIDER, config.model, signal);
     if (await currentCodexAccountKey(bridge, signal) !== quota.accountKey) {
       const error = new Error('active account changed'); error.accountChanged = true; throw error;
     }
     signal.throwIfAborted();
+    if (isCurrent() !== true) throw new Error('warm-up authorization changed');
   } catch (cause) {
     const error = new Error('warm-up preflight failed', { cause });
     error.requestNotSent = true; error.accountChanged = cause?.accountChanged === true;
@@ -47,8 +51,9 @@ export async function runCodexWarmup({ llm, bridge, quota, signal, onUsage = () 
   }
   let usage = null, finish = null, hasText = false;
   try {
-    for await (const chunk of llm.stream({ provider: PROVIDER, ...config,
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply only OK.' }] }], tools: [], signal })) {
+    const options = { provider: PROVIDER, ...config,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply only OK.' }] }], tools: [], signal };
+    for await (const chunk of prepared ? prepared.stream(options) : llm.stream(options)) {
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') hasText ||= /\S/.test(chunk.text);
       if (chunk.type === 'usage') usage = chunk.usage;
       if (chunk.type === 'finish') finish = chunk.reason;

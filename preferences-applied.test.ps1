@@ -146,9 +146,14 @@ try {
   Assert-True (-not [IO.File]::Exists($script:PositionFile)) 'reload does not create position file'
 
   $before = [IO.File]::ReadAllText($script:PetReceiptFile); $reads = $script:SnapshotReadCount
+  # Pin the not-due boundaries: real WPF work or host scheduling can exceed 1s.
+  # The next block explicitly expires the heartbeat deadline; later blocks
+  # expire the reload deadline and verify an actual changed-byte reload.
+  $script:NextPrefsReload = [DateTime]::MaxValue
+  $script:PetReceiptNextWriteAt = [DateTime]::MaxValue
   & $tick; & $tick
-  Assert-Equal ([IO.File]::ReadAllText($script:PetReceiptFile)) $before '100ms full ticks do not renew heartbeat before five seconds'
-  Assert-Equal $script:SnapshotReadCount $reads 'one-second reload throttle remains'
+  Assert-Equal ([IO.File]::ReadAllText($script:PetReceiptFile)) $before 'full ticks before heartbeat deadline cannot renew evidence'
+  Assert-Equal $script:SnapshotReadCount $reads 'full ticks before reload deadline cannot reread preferences'
   $script:PetReceiptNextWriteAt = [DateTime]::UtcNow.AddSeconds(-1)
   & $tick
   Assert-Equal (Read-Receipt).appliedAt $receipt.appliedAt 'heartbeat preserves original appliedAt'
@@ -231,7 +236,7 @@ try {
   Assert-Equal $modeReceipt.values.billingMode 'codex' 'receipt reports actual transitioned billing mode'
   Assert-Equal $script:CodexPanel.Visibility 'Visible' 'actual Codex panel displayed'
   Assert-Equal $script:DeepSeekPanel.Visibility 'Collapsed' 'actual DeepSeek panel hidden'
-  Assert-Equal $script:Window.Height 306 'actual small Codex height applies'
+  Assert-Equal $script:Window.Height 330 'actual small Codex height includes the account row'
   Assert-Equal ($script:Card.Background.GradientStops[0].Color.ToString()) (Get-PetCardPalette 'amber' 'codex' $false).start 'actual Codex palette applies before receipt'
   $script:LastActivityAt = [DateTime]::UtcNow.AddMinutes(-30); $sleepActivity = $script:LastActivityAt
   & $tick

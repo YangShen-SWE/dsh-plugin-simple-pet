@@ -2,52 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { statBuckets, calendarDate, quotaStatus, quotaReset, createSimplePetClient, resetCreditExpiry, accountCredentialSummary } from './client-source.js';
+import { statBuckets, calendarDate, quotaStatus, quotaReset, accountSummary, createSimplePetClient, createPreferenceAutosave, AUTOSAVE_PREFERENCE_KEYS, resetCreditExpiry, accountCredentialSummary } from './client-source.js';
 import { DEFAULT_PREFERENCES } from './preferences.js';
 
-test('concise account status retains errors and card expiry never invents unknown dates', () => {
-  assert.equal(accountCredentialSummary({credentialStatus:'available',bound:true}),'');
-  assert.equal(accountCredentialSummary({bound:true}),'');
-  assert.match(accountCredentialSummary({credentialStatus:'identity-mismatch'}),/已暂停/);
-  for(const value of [undefined,null,0,-1,NaN,Infinity,'2026-10-21',8640000000000001]) assert.equal(resetCreditExpiry(value),'到期时间未提供');
-  assert.match(resetCreditExpiry(Date.UTC(2026,9,21,12)),/^到期时间：2026/);
-  const source=readFileSync(new URL('./client-source.js',import.meta.url),'utf8');
-  assert.match(source,/resetCreditExpiry\(card\.expiresAt\)[\s\S]*card\.paused/);
-});
+function settingsRegistrationHarness() {
+  const entries = new Map(), waiting = [], services = {}, effects = [];
+  let unauthorizedReads = 0, requests = 0;
+  const remote = Object.defineProperty({}, 'pluginManager', { get() { unauthorizedReads++; throw Error('cannot get property "remote.pluginManager" without inject'); } });
+  const plugin = createSimplePetClient({ createElement() {} }, () => { requests++; throw Error('FORBIDDEN_REQUEST'); }, services);
+  plugin.apply({ remote, inject(names, callback) {
+    assert.deepEqual(names, ['remote.pluginManager']);
+    const row = { active: true, callback, cleanup: null }; waiting.push(row);
+    const stop = () => { row.active = false; row.cleanup?.(); row.cleanup = null; }; effects.push(stop); return stop;
+  }, slots: { inject(name, callback) { assert.equal(name, 'settings.section'); effects.push(callback()); }, register(options, Component) {
+    entries.set(options.id, { options, Component }); return () => entries.delete(options.id);
+  } } });
+  return { entries, services, get unauthorizedReads() { return unauthorizedReads; }, get requests() { return requests; },
+    mount(manager) { const row = waiting[0]; if (!row.active) return null; row.cleanup = row.callback({ remote: { pluginManager: manager } }); return row.cleanup; },
+    unmount() { const row = waiting[0]; row.cleanup?.(); row.cleanup = null; },
+    dispose() { effects.reverse().forEach(fn => fn?.()); } };
+}
 
-function harness(send) {
-  const cells = [], effects = [];
-  let cursor = 0, tree;
-  const React = {
-    createElement(type, props, ...children) { return { type, props: props ?? {}, children: children.flat().filter(v => v !== null && v !== undefined && v !== false) }; },
-    useState(initial) { const i = cursor++; if (!(i in cells)) cells[i] = initial; return [cells[i], value => { cells[i] = typeof value === 'function' ? value(cells[i]) : value; }]; },
-    useRef(value) { const i = cursor++; return cells[i] ??= { current: value }; },
-    useEffect(fn) { const i = cursor++; if (!(i in cells)) { cells[i] = true; effects.push(fn()); } },
-  };
-  const plugin = createSimplePetClient(React, send);
-  const render = () => { cursor = 0; tree = plugin.SimplePetSettings(); return tree; };
-  function nodes(root = tree) { return typeof root !== 'object' || !root ? [] : [root, ...root.children.flatMap(nodes)]; }
-  const text = node => typeof node === 'object' && node ? node.children.map(text).join('') : String(node ?? '');
-  const find = predicate => { const node = nodes().find(predicate); assert.ok(node, 'node exists'); return node; };
-  render();
-  return { React, plugin, render, nodes, text, find, cleanup() { effects.forEach(fn => fn?.()); } };
-}
-const settle = () => new Promise(resolve => setImmediate(resolve));
-function mockTransport() {
-  const calls = [];
-  const accepted = { values: { ...DEFAULT_PREFERENCES }, revision: 'a'.repeat(64), timeZone: 'Europe/Copenhagen' };
-  let rejectSave = false;
-  const send = async (url, init) => {
-    calls.push({ url, ...init });
-    if (url.endsWith('/state')) return Response.json({ stats: { days: {} }, codexWarmup: { detail: '自动预热已关闭' } });
-    if (init.method === 'PUT') {
-      if (rejectSave) return Response.json({ error: 'conflict' }, { status: 409 });
-      const body = JSON.parse(init.body); accepted.values = { ...accepted.values, ...body.patch }; accepted.revision = 'b'.repeat(64);
-    }
-    return Response.json(accepted);
-  };
-  return { send, calls, accepted, conflict() { rejectSave = true; } };
-}
 
 test('chart buckets use local dates, Monday weeks, leap months and exact yearly sums', () => {
   const days = { '2024-02-29': { tokens: 48056876, cny: 3 }, '2024-03-01': { tokens: 20 }, '2023-12-31': { tokens: 9 }, '2024-01-01': { tokens: 12 } };
@@ -66,81 +41,6 @@ test('host timezone determines statistics date even when browser is elsewhere', 
   const browser = calendarDate('Europe/Copenhagen', instant);
   assert.deepEqual([browser.getFullYear(),browser.getMonth(),browser.getDate()],[2024,11,31]);
   assert.equal(calendarDate('invalid/timezone', instant),instant);
-});
-test('mount only reads local settings and state; defaults never enable warm-up', async () => {
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    assert.equal(transport.calls.length, 4); assert(transport.calls.every(c => c.method !== 'PUT'));
-    assert.deepEqual(transport.calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/account','api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
-    const checkboxes = ui.nodes().filter(n => n.type === 'input' && n.props.type === 'checkbox');
-    assert.equal(checkboxes.length, 8); assert(checkboxes.every(n => n.props.checked === false));
-    assert.equal(checkboxes.find(n => n.props.name === 'compactMode').props.checked, false);
-    assert.equal(checkboxes.filter(n => n.props.name?.startsWith('codexWarmup')).length, 3);
-    assert.equal(ui.nodes().filter(n => n.props.role === 'radio' && !n.props['data-card-theme-choice']).length, 6);
-    assert(ui.text(ui.render()).includes('Europe/Copenhagen'));
-    assert(!transport.calls.some(c => /subscription|llm|stream|warmup/.test(c.url)));
-  } finally { ui.cleanup(); }
-});
-test('ordinary settings have no manual save button and contradictory save instructions are absent',async t=>{
- t.mock.timers.enable({apis:['setTimeout']});const transport=mockTransport(),ui=harness(transport.send);
- try{
-  await settle();ui.render();assert(!ui.nodes().some(n=>n.props['data-settings-save']));
-  assert(!/跨页草稿保留，不自动保存|点击保存后桌宠应用|请使用顶部保存设置|立即保存普通偏好/.test(ui.text(ui.render())));
-  ui.find(n=>n.props.name==='size').props.onChange({target:{value:'tiny'}});ui.render();
-  assert(!ui.nodes().some(n=>n.props['data-settings-save']));t.mock.timers.tick(450);await settle();ui.render();
-  assert.equal(transport.accepted.values.size,'tiny');assert.equal(transport.calls.filter(c=>c.method==='PUT').length,1);
-  assert(!ui.nodes().some(n=>n.props['data-authorization-confirm']));
- }finally{ui.cleanup();}
-});
-test('spending authorization remains a draft until explicit confirmation, and time plus daily toggle commit atomically', async () => {
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    ui.find(n => n.type === 'input' && n.props.type === 'text').props.onChange({ target: { value: '08:15' } });
-    ui.find(n => n.type === 'input' && n.props.name === 'codexWarmupDaily').props.onChange({ target: { checked: true } });
-    ui.render(); assert.equal(transport.calls.length, 4);
-    const radio = ui.find(n => n.props.role === 'radio' && ui.text(n).includes('薄荷')); radio.props.onClick(); ui.render();
-    ui.find(n => n.props['data-settings-save']).props.onClick();
-    await settle(); ui.render();
-    const writes = transport.calls.filter(c => c.method === 'PUT'); assert.equal(writes.length, 1);
-    assert.deepEqual(JSON.parse(writes[0].body), { patch: { skin: 'mint', codexWarmupDaily: true, codexWarmupTime: '08:15' }, revision: 'a'.repeat(64) });
-    assert.match(ui.text(ui.render()), /已保存/);
-  } finally { ui.cleanup(); }
-});
-test('optimistic conflict preserves draft and does not automatically retry or overwrite', async () => {
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render(); transport.conflict();
-    ui.find(n => n.props.role === 'radio' && ui.text(n).includes('星砂')).props.onClick(); ui.render();
-    ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); ui.render();
-    assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 1);
-    assert.equal(ui.find(n => n.props.role === 'radio' && ui.text(n).includes('星砂')).props['aria-checked'], true);
-    assert.match(ui.text(ui.render()), /当前草稿已保留/);
-  } finally { ui.cleanup(); }
-});
-test('Codex selection shows percent option but chart is correctly locked to Token', async () => {
-  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
-  const ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    assert(ui.nodes().some(n => n.type === 'option' && n.props.value === 'percent'));
-    const previews = ui.nodes().filter(n => n.props.className === 'pet-settings-sprite');
-    assert.equal(previews.length, 6);
-    assert(previews.every(n => n.props.title === '形象预览'));
-    ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
-    ui.find(n => n.props['data-pet-tab'] === 'stats').props.onClick(); ui.render();
-    assert.equal(ui.find(n => n.type === 'select' && n.props.disabled === true).props.value, 'tokens');
-    assert.match(ui.text(ui.render()), /5 小时额度剩余/);
-    assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
-  } finally { ui.cleanup(); }
-});
-test('unmount cancels requests and polling; errors expose retry without destroying existing prefs', async () => {
-  let signal;
-  const ui = harness(async (_url, init) => { signal = init.signal; return Response.json({ error:'设置文件不可用' }, { status:503 }); });
-  await settle(); ui.render();
-  assert.match(ui.text(ui.render()), /未修改原文件/); ui.find(n => n.type === 'button' && ui.text(n) === '重新读取');
-  ui.cleanup(); assert.equal(signal.aborted, true);
 });
 test('native Codex status distinguishes stale, cached, missing and fresh quota reports', () => {
   const now = Date.parse('2024-12-31T16:30:00Z');
@@ -161,63 +61,6 @@ test('quota reset labels use the host timezone and reject invalid timestamps', (
   for (const window of [undefined,{}, {resetAt:NaN},{resetAt:Infinity},{resetAt:0},{resetAt:-1}]) assert.equal(quotaReset(window,'Asia/Shanghai'),'重置时间未知');
   assert.equal(quotaReset({resetAt},'invalid/timezone'),'重置时间未知');
 });
-test('top navigation partitions all setting groups without extra requests or writes', async () => {
-  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
-  const ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    const tabs = () => ui.nodes().filter(n => n.props.role === 'tab');
-    assert.deepEqual(tabs().map(ui.text), ['账号与额度', '模型设置', '桌宠设置', '自动预热']);
-    assert.equal(ui.find(n => n.props['data-pet-settings']).props['data-current-page'], 'accounts');
-    for (const id of ['models','appearance','accounts','warmup','appearance','stats','accounts']) {
-      ui.find(n => n.props['data-pet-tab'] === id).props.onClick(); ui.render();
-      assert.equal(tabs().filter(n => n.props['aria-selected']).length, 1);
-      assert.equal(tabs().filter(n => n.props.tabIndex === 0).length, 1);
-      assert.equal(ui.find(n => n.props.role === 'tabpanel').props['aria-labelledby'], `pet-tab-${id === 'stats' ? 'appearance' : id}`);
-      const visible = ui.nodes().filter(n => n.props['data-pet-page'] && !n.props.hidden);
-      assert(visible.every(n => n.props['data-pet-page'] === id));
-      if (id !== 'stats') assert(visible.length > 0, id);
-      assert.equal(ui.nodes().some(n => n.type === 'form'), id !== 'stats');
-    }
-    assert.equal(transport.calls.length, 4);
-  } finally { ui.cleanup(); }
-});
-test('navigation keeps cross-page drafts and commits a single explicit preference patch', async () => {
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
-    ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
-    ui.find(n => n.props.name === 'compactMode').props.onChange({ target: { checked: true } });
-    ui.find(n => n.props['data-pet-tab'] === 'stats').props.onClick(); ui.render();
-    ui.find(n => n.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render();
-    assert.equal(ui.find(n => n.props.name === 'compactMode').props.checked, true);
-    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'tiny');
-    assert.equal(transport.calls.length, 4);
-    const form = ui.find(n => n.type === 'form'); assert.equal(form.props.noValidate, true);
-    form.props.onSubmit({ preventDefault() {} }); await settle(); ui.render();
-    assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, { size: 'tiny', compactMode: true });
-    assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 1);
-    assert(!transport.calls.some(c => c.url.endsWith('/multi-warmup')));
-  } finally { ui.cleanup(); }
-});
-test('navigation keyboard wraps arrows and Home/End with roving focus', async () => {
-  const ui = harness(mockTransport().send);
-  try {
-    await settle(); ui.render(); let focused = -1, prevented = 0;
-    const press = key => { ui.find(n => n.props.role === 'tablist').props.onKeyDown({ key, preventDefault() { prevented++; }, currentTarget: { querySelectorAll() { return Array.from({ length: 4 }, (_, i) => ({ focus() { focused = i; } })); } } }); ui.render(); };
-    press('ArrowLeft'); assert.equal(focused, 3);
-    press('ArrowRight'); assert.equal(focused, 0);
-    press('End'); assert.equal(focused, 3);
-    press('Home'); assert.equal(focused, 0);
-    press('ArrowRight'); assert.equal(focused, 1);
-    press('Escape'); assert.equal(prevented, 5);
-  } finally { ui.cleanup(); }
-});
-test('DeepSeek account subpage permits account setup without installing or reading accounts', async () => {
-  const transport = mockTransport(), ui = harness(transport.send);
-  try { await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'accounts').props.onClick(); ui.render(); assert.match(ui.text(ui.render()), /可在此管理订阅账号/); assert(ui.find(n => n.props.name === 'codexAccountBackend')); assert(!ui.nodes().some(n => n.props['data-dependency-install'])); assert.equal(transport.calls.length, 4); } finally { ui.cleanup(); }
-});
 test('built bundle follows the real host factory contract and owns native settings registration/CSS lifecycle', () => {
   let factory, added = 0, removed = 0, registration;
   const effects = [], React = { createElement() {}, useState() {}, useEffect() {}, useRef() {} };
@@ -237,132 +80,125 @@ test('built bundle follows the real host factory contract and owns native settin
   assert.match(css, /repeat\(auto-fit,minmax\(min\(100%,130px\),1fr\)\)/); assert.match(css, /background-size:400% 200%/);
 });
 
+test('account identity requires fresh matching owner, selection and account proof instead of inferring an email from quota', () => {
+  const accountKey = 'a1b2c3d4a1b2c3d4';
+  const snapshot = { codex: { status: 'ready', provider: 'openai-codex', selection: 'active', accountKey } };
+  const proof = { status: 'ready', provider: 'openai-codex', selection: 'active', accountKey, maskedEmail: 't***@e***.com', validForMs: 120000 };
+  assert.match(accountSummary(snapshot, proof, 0), /当前账号（统一订阅）.*t\*\*\*@e\*\*\*\.com/);
+  assert.match(accountSummary(snapshot, proof, 119999), /t\*\*\*@e\*\*\*\.com/);
+  const unconfirmed = [null, { ...proof, status: 'unavailable' }, { ...proof, provider: 'codex-accounts' }, { ...proof, selection: 'default' }, { ...proof, accountKey: 'b'.repeat(16) }, { ...proof, accountKey: 'not-an-account-key' }, { ...proof, validForMs: 0 }, { ...proof, validForMs: 120001 }];
+  for (const value of unconfirmed) {
+    assert.match(accountSummary(snapshot, value), /账号身份待确认/);
+    assert.doesNotMatch(accountSummary(snapshot, value), /t\*\*\*@e\*\*\*\.com/);
+  }
+  for (const elapsed of [-1, NaN, Infinity, 120000]) assert.match(accountSummary(snapshot, proof, elapsed), /账号身份待确认/);
+  for (const codex of [null, { ...snapshot.codex, status: 'switching' }, { ...snapshot.codex, accountKey: 'b'.repeat(16) }]) assert.match(accountSummary({ codex }, proof), /账号身份待确认/);
+  const unsafeEmail = accountSummary(snapshot, { ...proof, maskedEmail: 'unmasked@example.com' });
+  assert.match(unsafeEmail, /邮箱未提供/); assert.doesNotMatch(unsafeEmail, /unmasked@example\.com/);
+});
+
+function preferenceAutosaveHarness({ initial = {}, beforeWrite } = {}) {
+  const writes = [], timers = new Map(); let timerId = 0, sequence = 0;
+  let saved = { ...DEFAULT_PREFERENCES, ...initial }, revision = 'a'.repeat(64);
+  const autosave = createPreferenceAutosave({
+    setTimer(fn) { const id = ++timerId; timers.set(id, fn); return id; },
+    clearTimer(id) { timers.delete(id); },
+    async write(patch, expected, signal) {
+      const record = { patch: { ...patch }, revision: expected, signal }; writes.push(record);
+      await beforeWrite?.(record, writes.length);
+      assert.equal(expected, revision);
+      saved = { ...saved, ...patch }; revision = (++sequence).toString(16).padStart(64, '0');
+      return { values: { ...saved }, revision };
+    },
+  });
+  autosave.load({ values: { ...saved }, revision });
+  return {
+    autosave, writes, timers, get saved() { return saved; }, get revision() { return revision; },
+    async runTimers() {
+      for (const [id, fn] of [...timers]) { timers.delete(id); fn(); }
+      await new Promise(resolve => setImmediate(resolve));
+    },
+  };
+}
+
+test('every unified grant and warmup schedule change, including revocation, is excluded from autosave until explicit flush', async () => {
+  const booleans = ['codexUnifiedControls', 'codexUnifiedWarmup', 'codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup'];
+  assert.ok(Object.isFrozen(AUTOSAVE_PREFERENCE_KEYS));
+  for (const key of [...booleans, 'codexWarmupTime', 'multiAccountManagement', 'codexAccountBackend']) assert.ok(!AUTOSAVE_PREFERENCE_KEYS.includes(key), key);
+  const cases = booleans.flatMap(key => [[key, false, true], [key, true, false]]).concat([['codexWarmupTime', '09:30', '11:45']]);
+  for (const [key, original, edited] of cases) {
+    const host = preferenceAutosaveHarness({ initial: { [key]: original, multiAccountManagement: true, codexAccountBackend: 'official' } });
+    try {
+      host.autosave.edit(key, edited);
+      assert.equal(host.timers.size, 0, key); await host.runTimers(); await host.autosave.flush();
+      assert.equal(host.writes.length, 0, key); assert.equal(host.saved[key], original);
+      assert.equal(host.autosave.state().explicitDirty, true); assert.equal(host.autosave.state().safeDirty, false);
+      await host.autosave.flush(true);
+      assert.equal(host.writes.length, 1, key);
+      assert.deepEqual(host.writes[0].patch, { [key]: edited }); assert.equal(host.writes[0].revision, 'a'.repeat(64));
+      assert.equal(host.saved[key], edited); assert.equal(host.autosave.state().explicitDirty, false);
+      assert.equal(host.saved.multiAccountManagement, true); assert.equal(host.saved.codexAccountBackend, 'official');
+    } finally { host.autosave.dispose(); }
+  }
+});
+
+test('in-flight appearance saves retain all pending grants and later visual edits without carrying authorization into either autosave', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const host = preferenceAutosaveHarness({ initial: { multiAccountManagement: true, codexAccountBackend: 'official' }, beforeWrite: (_record, count) => count === 1 ? gate : undefined });
+  let saving;
+  try {
+    host.autosave.edit('codexUnifiedControls', true); host.autosave.edit('size', 'tiny'); saving = host.autosave.flush();
+    assert.equal(host.autosave.state().inFlight, true); assert.deepEqual(host.writes[0].patch, { size: 'tiny' });
+    host.autosave.edit('codexUnifiedWarmup', true); host.autosave.edit('codexWarmupTime', '11:45'); host.autosave.edit('size', 'small');
+    await host.autosave.flush(true); assert.equal(host.writes.length, 1);
+    release(); await saving;
+    assert.equal(host.autosave.state().draft.codexUnifiedControls, true);
+    assert.equal(host.autosave.state().draft.codexUnifiedWarmup, true);
+    assert.equal(host.autosave.state().draft.codexWarmupTime, '11:45'); assert.equal(host.autosave.state().draft.size, 'small');
+    assert.equal(host.saved.codexUnifiedControls, false); assert.equal(host.saved.codexUnifiedWarmup, false);
+    const secondRevision = host.revision; await host.runTimers();
+    assert.equal(host.writes.length, 2); assert.deepEqual(host.writes[1].patch, { size: 'small' }); assert.equal(host.writes[1].revision, secondRevision);
+    assert.equal(host.autosave.state().explicitDirty, true); assert.equal(host.autosave.state().safeDirty, false);
+    const confirmedRevision = host.revision; await host.autosave.flush(true);
+    assert.equal(host.writes.length, 3); assert.equal(host.writes[2].revision, confirmedRevision);
+    assert.deepEqual(host.writes[2].patch, { codexWarmupTime: '11:45', codexUnifiedControls: true, codexUnifiedWarmup: true });
+    assert.equal(host.autosave.state().explicitDirty, false);
+    assert.equal(host.saved.multiAccountManagement, true); assert.equal(host.saved.codexAccountBackend, 'official');
+  } finally { release(); host.autosave.dispose(); await saving; }
+});
+
+test('invalid explicit warmup time cannot block visual autosave or bypass validation when confirmation is clicked', async () => {
+  const host = preferenceAutosaveHarness();
+  try {
+    host.autosave.edit('codexUnifiedWarmup', true); host.autosave.edit('codexWarmupTime', '25:00'); host.autosave.edit('quietMode', true);
+    await host.runTimers(); assert.equal(host.writes.length, 1); assert.deepEqual(host.writes[0].patch, { quietMode: true });
+    assert.equal(host.saved.codexUnifiedWarmup, false); assert.equal(host.saved.codexWarmupTime, '09:30');
+    await host.autosave.flush(true); assert.equal(host.writes.length, 1); assert.equal(host.autosave.state().error.validation, true);
+    assert.equal(host.autosave.state().draft.codexUnifiedWarmup, true); assert.equal(host.autosave.state().draft.codexWarmupTime, '25:00');
+    host.autosave.edit('codexWarmupTime', '11:45'); assert.equal(host.timers.size, 0); assert.equal(host.writes.length, 1);
+    await host.autosave.flush(true); assert.equal(host.writes.length, 2);
+    assert.deepEqual(host.writes[1].patch, { codexWarmupTime: '11:45', codexUnifiedWarmup: true });
+  } finally { host.autosave.dispose(); }
+});
+
+test('CAS conflict preserves explicit drafts and blocks both retries and explicit confirmation until deliberate reload', async () => {
+  const host = preferenceAutosaveHarness({ beforeWrite() { throw Object.assign(new Error('synthetic CAS conflict'), { status: 409 }); } });
+  try {
+    host.autosave.edit('codexUnifiedControls', true); host.autosave.edit('size', 'tiny'); await host.runTimers();
+    assert.equal(host.writes.length, 1); assert.deepEqual(host.writes[0].patch, { size: 'tiny' });
+    assert.equal(host.autosave.state().error.conflict, true); assert.equal(host.autosave.state().draft.codexUnifiedControls, true);
+    await host.autosave.flush(true); await host.autosave.retry(); await host.runTimers(); assert.equal(host.writes.length, 1);
+    assert.equal(host.saved.codexUnifiedControls, false); assert.equal(host.saved.size, DEFAULT_PREFERENCES.size);
+    host.autosave.load({ values: { ...host.saved }, revision: 'b'.repeat(64) });
+    assert.equal(host.autosave.state().error, null); assert.equal(host.autosave.state().explicitDirty, false);
+    assert.equal(host.autosave.state().draft.codexUnifiedControls, false);
+  } finally { host.autosave.dispose(); }
+});
+
 function visibleSettingsNodes(root) {
   if (!root || typeof root !== 'object' || root.props?.hidden) return [];
   const children = root.type === 'details' && !root.props.open ? root.children.filter(child => child?.type === 'summary') : root.children;
   return [root, ...children.flatMap(visibleSettingsNodes)];
-}
-
-test('B model page is independent, starts empty and never reads accounts or models on tab selection', async () => {
-  const transport = mockTransport(); transport.accepted.values.codexAccountBackend = 'official';
-  const ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    ui.find(n => n.props['data-pet-tab'] === 'models').props.onClick(); ui.render();
-    const visible = visibleSettingsNodes(ui.render());
-    assert.equal(ui.find(n => n.props['data-settings-design']).props['data-settings-design'], 'b-complete');
-    assert(visible.some(n => n.props['data-model-workbench']));
-    assert(!visible.some(n => n.props['data-official-panel']));
-    assert.match(ui.text(ui.find(n => n.props['data-model-workbench'])), /正在后台读取账号/);
-    assert(!ui.nodes().some(n => n.props['data-official-model-panel']));
-    assert.equal(transport.calls.length, 4); assert(transport.calls.every(c => c.method === undefined || c.method === 'GET'));
-  } finally { ui.cleanup(); }
-});
-
-test('B desktop page prioritizes preview and ordinary switches while appearance, motion and panel grants stay folded', async () => {
-  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
-  const ui = harness(transport.send);
-  try {
-    await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
-    const visible = visibleSettingsNodes(ui.render());
-    assert(visible.some(n => n.props['data-desktop-intro']));
-    assert(visible.some(n => n.props.className?.includes('pet-combination-preview')));
-    assert.deepEqual(visible.filter(n => n.props.role === 'switch').map(n => n.props.name), ['compactMode','quietMode']);
-    for (const attr of ['data-appearance-library','data-motion-settings','data-application-details','data-panel-switch-settings']) {
-      const details = ui.find(n => n.props[attr]); assert.equal(details.type, 'details'); assert(!details.props.open);
-    }
-    assert(!visible.some(n => n.props['data-card-theme-choice']));
-    assert.equal(ui.nodes().filter(n => n.props.role === 'radio').length, 11);
-    assert(visible.some(n => n.props['data-stats-entry']));
-    assert.equal(transport.calls.length, 4);
-  } finally { ui.cleanup(); }
-});
-
-test('B statistics is a secondary desktop page with an explicit return and no extra reads', async () => {
-  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
-  const ui = harness(transport.send);
-  try {
-    await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
-    ui.find(n => n.props['data-pet-tab'] === 'stats').props.onClick(); ui.render();
-    assert(ui.find(n => n.props['data-statistics-page']));
-    assert.equal(ui.find(n => n.props.role === 'tab' && n.props['aria-selected']).props['data-pet-tab'], 'appearance');
-    assert(!ui.nodes().some(n => n.props.role === 'tab' && n.props['data-pet-tab'] === 'stats'));
-    assert.equal(ui.find(n => n.props['data-current-page']).props['data-current-page'], 'stats');
-    ui.find(n => n.props['data-stats-back']).props.onClick(); ui.render();
-    assert.equal(ui.find(n => n.props['data-current-page']).props['data-current-page'], 'appearance');
-    assert.equal(transport.calls.length, 4);
-  } finally { ui.cleanup(); }
-});
-
-test('B warmup keeps the spending warning and unknown-result pause visible while optional triggers remain disabled and folded', async () => {
-  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex'; transport.accepted.values.codexAccountBackend = 'official';
-  const ui = harness(async (url, init) => {
-    const response = await transport.send(url, init);
-    return url.endsWith('/state') ? Response.json({codexMultiWarmup:{status:'unknown',detail:'请求可能已发送；结果未知，保持暂停'}}) : response;
-  });
-  try {
-    await settle(); ui.render(); ui.find(n => n.props['data-pet-tab'] === 'warmup').props.onClick(); ui.render();
-    const visible = visibleSettingsNodes(ui.render());
-    assert(visible.some(n => n.props['data-warmup-warning']));
-    assert.match(ui.text(ui.find(n => n.props['data-warmup-warning'])), /消耗额度.*不自动重试/);
-    assert(!ui.find(n => n.props['data-multi-boundaries']).props.open);
-    assert(!ui.find(n => n.props['data-legacy-warmup']).props.open);
-    const triggers = ui.nodes().filter(n => n.props['data-multi-trigger']); assert.equal(triggers.length, 2);
-    assert(triggers.every(n => n.props.disabled && n.props.checked === false));
-    assert(!visible.some(n => n.props['data-multi-trigger']));
-    assert(visible.some(n => n.props.role === 'alert' && /设置保存不能清除暂停/.test(ui.text(n))));
-    assert(!ui.nodes().some(n => n.props['data-multi-save']));
-    assert.equal(transport.calls.length, 4);
-  } finally { ui.cleanup(); }
-});
-
-test('B header moves reload into closed maintenance without replacing automatic saves or implicit authorization', async () => {
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render(); const visible = visibleSettingsNodes(ui.render());
-    assert.equal(ui.find(n => n.props['data-save-explanation']).type, 'details');
-    assert(!ui.find(n => n.props['data-save-explanation']).props.open);
-    assert(!visible.some(n => n.props['data-settings-reload']));
-    assert(!ui.nodes().some(n => n.props['data-settings-save']));
-    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved');
-    assert.equal(transport.calls.length, 4);
-  } finally { ui.cleanup(); }
-});
-
-test('B switches expose stable accessible labels and keep explicit panel permission separate from ordinary preferences', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const transport = mockTransport(); transport.accepted.values.billingMode = 'codex';
-  const ui = harness(transport.send);
-  try {
-    await settle(); ui.render();
-    for (const name of ['compactMode','quietMode','multiAccountManagement']) {
-      const toggle = ui.find(n => n.props.name === name); assert.equal(toggle.props.role, 'switch'); assert(toggle.props['aria-label']);
-    }
-    ui.find(n => n.props.name === 'multiAccountManagement').props.onChange({target:{checked:true}});
-    ui.find(n => n.props.name === 'quietMode').props.onChange({target:{checked:true}}); ui.render();
-    t.mock.timers.tick(450); await settle(); ui.render();
-    assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, {quietMode:true});
-    assert.equal(transport.accepted.values.multiAccountManagement, false);
-    assert(ui.find(n => n.props['data-authorization-apply']));
-  } finally { ui.cleanup(); }
-});
-
-function settingsRegistrationHarness() {
-  const entries = new Map(), waiting = [], services = {}, effects = [];
-  let unauthorizedReads = 0, requests = 0;
-  const remote = Object.defineProperty({}, 'pluginManager', { get() { unauthorizedReads++; throw Error('cannot get property "remote.pluginManager" without inject'); } });
-  const plugin = createSimplePetClient({ createElement() {} }, () => { requests++; throw Error('FORBIDDEN_REQUEST'); }, services);
-  plugin.apply({ remote, inject(names, callback) {
-    assert.deepEqual(names, ['remote.pluginManager']);
-    const row = { active: true, callback, cleanup: null }; waiting.push(row);
-    const stop = () => { row.active = false; row.cleanup?.(); row.cleanup = null; }; effects.push(stop); return stop;
-  }, slots: { inject(name, callback) { assert.equal(name, 'settings.section'); effects.push(callback()); }, register(options, Component) {
-    entries.set(options.id, { options, Component }); return () => entries.delete(options.id);
-  } } });
-  return { entries, services, get unauthorizedReads() { return unauthorizedReads; }, get requests() { return requests; },
-    mount(manager) { const row = waiting[0]; if (!row.active) return null; row.cleanup = row.callback({ remote: { pluginManager: manager } }); return row.cleanup; },
-    unmount() { const row = waiting[0]; row.cleanup?.(); row.cleanup = null; },
-    dispose() { effects.reverse().forEach(fn => fn?.()); } };
 }
 
 test('settings menu registers without reading an undeclared optional remote namespace', () => {
@@ -399,104 +235,4 @@ test('sticky settings toolbar flattens translucent host surfaces and ships its o
   assert(toolbar.includes('background:linear-gradient(var(--dsw-alias-bg-layer-2,#202126),var(--dsw-alias-bg-layer-2,#202126)),#202126;'));
   const opaque = 'background:rgb(from var(--dsw-alias-bg-layer-2,#202126) r g b / 1);'; assert(toolbar.includes(opaque));
   assert(readFileSync(new URL('./lib/client.js', import.meta.url),'utf8').includes(opaque));
-});
-
-test('debounced ordinary changes persist across tabs without submitting spending drafts or implicit Enter grants', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render(); t.mock.timers.tick(5000); await settle(); assert.equal(transport.calls.length, 4);
-    ui.find(n => n.props.name === 'codexWarmupDaily').props.onChange({ target: { checked: true } });
-    ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
-    ui.find(n => n.props['data-pet-tab'] === 'appearance').props.onClick(); ui.render();
-    ui.find(n => n.props.name === 'compactMode').props.onChange({ target: { checked: true } }); ui.render();
-    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'waiting');
-    t.mock.timers.tick(449); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
-    t.mock.timers.tick(1); ui.render(); assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saving');
-    await settle(); ui.render();
-    assert.deepEqual(JSON.parse(transport.calls.at(-1).body).patch, { size: 'tiny', compactMode: true });
-    assert.equal(ui.find(n => n.props.name === 'codexWarmupDaily').props.checked, true);
-    assert.match(ui.text(ui.find(n => n.props['data-autosave-status'])), /授权待确认/);
-    assert(ui.find(n => n.props['data-authorization-apply']));
-    ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle();
-    t.mock.timers.tick(10000); await settle(); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 1);
-    assert.equal(transport.accepted.values.codexWarmupDaily, false);
-    assert(!transport.calls.some(c => /oauth|warmup|subscription|llm/.test(c.url)));
-    assert.match(ui.text(ui.render()), /等待独立的桌宠应用回执/);
-  } finally { ui.cleanup(); }
-});
-
-test('autosave keeps controls editable during writes and serially persists the newer draft', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const transport = mockTransport(), pending = [], writes = [];
-  const ui = harness((url, init) => {
-    if (init.method !== 'PUT') return transport.send(url, init);
-    writes.push(JSON.parse(init.body)); return new Promise(resolve => pending.push(() => resolve(transport.send(url, init))));
-  });
-  try {
-    await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
-    t.mock.timers.tick(450); ui.render(); assert.equal(writes.length, 1);
-    const size = ui.find(n => n.props.name === 'size'); assert.equal(size.props.disabled, false);
-    size.props.onChange({ target: { value: 'large' } }); ui.render();
-    t.mock.timers.tick(5000); assert.equal(writes.length, 1);
-    pending.shift()(); await settle(); ui.render(); assert.equal(ui.find(n => n.props.name === 'size').props.value, 'large');
-    t.mock.timers.tick(450); assert.equal(writes.length, 2); assert.deepEqual(writes[1].patch, { size: 'large' }); assert.equal(writes[1].revision, 'b'.repeat(64));
-    pending.shift()(); await settle(); ui.render(); assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved');
-  } finally { ui.cleanup(); }
-});
-
-test('unmount drops queued debounce and aborts autosave; late success cannot write again', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const transport = mockTransport(); let signal, finish, puts = 0;
-  const ui = harness((url, init) => {
-    if (init.method !== 'PUT') return transport.send(url, init);
-    puts++; signal = init.signal; return new Promise(resolve => { finish = () => resolve(Response.json(transport.accepted)); });
-  });
-  await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
-  t.mock.timers.tick(450); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'large' } });
-  ui.cleanup(); assert.equal(signal.aborted, true); finish(); await settle(); t.mock.timers.tick(5000); await settle(); assert.equal(puts, 1);
-});
-
-test('late initial preference read cannot overwrite a later explicit reload', async () => {
-  const transport = mockTransport(); let first, reads = 0;
-  const ui = harness((url, init) => {
-    if (!url.endsWith('/preferences')) return transport.send(url, init);
-    if (++reads === 1) return new Promise(resolve => { first = resolve; });
-    return Response.json({ ...transport.accepted, revision: 'c'.repeat(64), values: { ...DEFAULT_PREFERENCES, size: 'large' } });
-  });
-  try {
-    await settle(); ui.render(); ui.find(n => n.type === 'button' && ui.text(n) === '重新读取').props.onClick(); await settle(); ui.render();
-    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'large');
-    first(Response.json(transport.accepted)); await settle(); ui.render();
-    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'large'); assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0);
-  } finally { ui.cleanup(); }
-});
-
-test('autosave network error retains drafts and pauses until explicit safe retry', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const transport = mockTransport(); let fail = true, puts = 0;
-  const ui = harness((url, init) => {
-    if (init.method === 'PUT') { puts++; if (fail) throw new Error('private network log'); }
-    return transport.send(url, init);
-  });
-  try {
-    await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } });
-    t.mock.timers.tick(450); await settle(); ui.render(); assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'error');
-    assert.equal(ui.find(n => n.props.name === 'size').props.value, 'tiny'); assert(!ui.text(ui.render()).includes('private network log'));
-    ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'large' } }); t.mock.timers.tick(10000); await settle(); ui.render(); assert.equal(puts, 1);
-    fail = false; ui.find(n => n.props['data-settings-save']).props.onClick(); await settle(); ui.render(); assert.equal(puts, 2);
-    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved'); assert.equal(transport.accepted.values.size, 'large');
-  } finally { ui.cleanup(); }
-});
-
-test('explicit reload cancels pending auto-save and safely discards the draft before a new revision', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const transport = mockTransport(), ui = harness(transport.send);
-  try {
-    await settle(); ui.render(); ui.find(n => n.props.name === 'size').props.onChange({ target: { value: 'tiny' } }); ui.render();
-    const reload = ui.find(n => n.type === 'button' && ui.text(n) === '放弃草稿并重新读取');
-    reload.props.onClick(); await settle(); ui.render(); t.mock.timers.tick(5000); await settle();
-    assert.equal(transport.calls.filter(c => c.method === 'PUT').length, 0); assert.equal(ui.find(n => n.props.name === 'size').props.value, DEFAULT_PREFERENCES.size);
-    assert.equal(ui.find(n => n.props['data-autosave-status']).props['data-autosave-status'], 'saved');
-  } finally { ui.cleanup(); }
 });

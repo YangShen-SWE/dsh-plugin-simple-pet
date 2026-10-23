@@ -20,7 +20,7 @@ async function readBody(req) {
   catch { throw Object.assign(new Error('设置请求不是有效 JSON。'), { status: 400 }); }
 }
 
-export function preferencesHandler(store, authorize) {
+export function preferencesHandler(store, authorize, { allowedKeys = null } = {}) {
   return async function handler(req, res) {
     if (!authorize(req, res)) return;
     const method = req.method ?? 'GET';
@@ -31,6 +31,7 @@ export function preferencesHandler(store, authorize) {
       if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'patch' && key !== 'revision')) {
         return respond(res, 400, { error: '设置请求格式无效。' }, method);
       }
+      if (allowedKeys && body.patch && Object.keys(body.patch).some(key => !allowedKeys.includes(key))) return respond(res, 400, { error: '账号与连接设置请使用订阅管理。' }, method);
       return respond(res, 200, { ...await store.update(body.patch, body.revision), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }, method);
     } catch (error) {
       const status = [400, 409, 413, 415, 503].includes(error.status) ? error.status : 503;

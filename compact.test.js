@@ -73,7 +73,7 @@ test('compact-only atomic saves retain coordinates, unknown fields, automation a
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('native settings compact toggle is draft-only, preview hides character and save patches only compactMode', async () => {
+test('native settings compact preview hides character immediately and debounced autosave patches only compactMode', async () => {
   const ui = harness();
   try {
     await settle(); ui.render();
@@ -82,7 +82,7 @@ test('native settings compact toggle is draft-only, preview hides character and 
     const preview = ui.find(n => n.props['aria-label'] === '简洁面板示意（无人物与动效）');
     assert.equal(ui.nodes(preview).some(n => n.props.className === 'pet-combination-stage'), false);
     assert.match(ui.text(ui.find(n => n.props['data-companion-summary'])), /全部视觉动效关闭/);
-    ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); ui.render();
+    await new Promise(resolve => setTimeout(resolve, 500)); ui.render();
     const saves = ui.calls.filter(c => c.method === 'PUT'); assert.equal(saves.length, 1);
     assert.deepEqual(JSON.parse(saves[0].body).patch, { compactMode: true });
     assert.equal(ui.accepted.values.skin, 'night'); assert.equal(ui.accepted.values.cardTheme, 'forest');
@@ -99,7 +99,7 @@ test('compact draft is retained on conflict, without retry or extra automation r
   try {
     await settle(); ui.render();
     ui.find(n => n.props.name === 'compactMode').props.onChange({ target: { checked: true } }); ui.render();
-    ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await settle(); ui.render();
+    await new Promise(resolve => setTimeout(resolve, 500)); ui.render();
     assert.equal(ui.find(n => n.props.name === 'compactMode').props.checked, true);
     assert.equal(ui.accepted.values.compactMode, false); assert.match(ui.text(ui.render()), /当前草稿已保留/);
     assert.equal(ui.calls.filter(c => c.method === 'PUT').length, 1);

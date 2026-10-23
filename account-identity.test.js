@@ -94,7 +94,7 @@ test('account route is authenticated, no-store, read-only and never triggers ups
 test('frontend cannot confuse different sources/accounts or expose arbitrary upstream strings', () => {
   const q = { status: 'ready', provider: 'openai-codex', selection: 'active', accountKey: KEY };
   const id = { status: 'ready', ...q, maskedEmail: 'a***@e***.com', validForMs: 1000 };
-  const good = accountSummary({ codex: q }, id); assert.match(good, /激活账号/); assert.match(good, /a\*\*\*@e\*\*\*.com/);
+  const good = accountSummary({ codex: q }, id); assert.match(good, /当前账号（统一订阅）/); assert.match(good, /a\*\*\*@e\*\*\*.com/);
   assert.match(accountSummary({ codex: { ...q, provider: 'codex', selection: 'default' } }, { ...id, provider: 'codex', selection: 'default' }), /Pool/);
   assert.match(accountSummary({ codex: q }, { ...id, maskedEmail: rawEmail }), /邮箱未提供/);
   for (const [quota, identity, elapsed] of [[{ ...q, accountKey: 'b'.repeat(16) }, id, 0], [q, id, 1000], [q, id, -1], [q, { ...id, provider: 'codex' }, 0], [q, null, 0]]) assert.doesNotMatch(accountSummary({ codex: quota }, identity, elapsed), /a\*\*\*@/);
@@ -125,7 +125,7 @@ test('settings identity stays local-only and switching controls exist only on na
   });
   try {
     await settle(); ui.render(); const row = () => ui.nodes().find(n => n.props['data-account-identity']);
-    assert.match(ui.text(row()), /a\*\*\*@/); assert.match(ui.text(ui.render()), /至少两个有效绑定账号/);
+    assert.match(ui.text(row()), /a\*\*\*@/); assert.match(ui.text(ui.render()), /允许桌宠点击切换统一订阅账号/);
     assert.equal(calls.length, 4); assert(calls.every(c => !c.method || c.method === 'GET'));
     assert(!ui.nodes().some(n => n.props['data-account-prepare'] || n.props['data-account-list']));
     assert(!ui.nodes().some(n => n.props['data-account-confirm']));
@@ -153,9 +153,10 @@ test('actual backend keeps even masked email out of every persisted snapshot/led
     rejected = 401; assert.equal((await invoke(account)).code, 401); rejected = undefined;
     assert.equal((await invoke(account, { method: 'POST' })).code, 405);
     const stateBody = (await invoke(state)).body; assert.doesNotMatch(stateBody, /alice|sensitive|a\*\*\*|maskedEmail|secret-id/);
-    // A provider transition immediately clears the memory-only identity before the new async read completes.
+    // An unrelated legacy provider's model event cannot switch the sole unified
+    // owner or erase its confirmed account identity.
     events.get('session/event')({ id: 'test' }, { seq: 1, type: 'assistant/message', time: new Date().toISOString(), data: { message: { source: { kind: 'model', provider: 'codex', model: 'test' } } } });
-    assert.equal((await invoke(account)).data.status, 'unavailable');
+    assert.equal((await invoke(account)).data.maskedEmail, 'a***@e***.com');
   } finally {
     for (const cleanup of cleanups.reverse()) await cleanup?.();
     for (const file of await readdir(data)) {

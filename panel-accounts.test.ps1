@@ -154,10 +154,13 @@ foreach ($bad in @(('a' * 63), ('z' * 64), (('a' * 64) + "`n"))) {
 }
 Reset-Fixture
 $script:Prefs.multiAccountManagement = $false; Update-PetPanelAccounts
-Assert ($script:Requests.Count -eq 0 -and $script:PanelAccountArea.Visibility -eq 'Collapsed') 'off forbids GET'
-$script:Prefs.multiAccountManagement = 'true'; Update-PetPanelAccounts
-Assert ($script:Requests.Count -eq 0) 'string true cannot open controller'
-$script:Prefs.multiAccountManagement = $true; $script:Prefs.billingMode = 'deepseek'; Update-PetPanelAccounts
+Assert ($script:Requests.Count -eq 1 -and $script:PanelAccountArea.Visibility -eq 'Visible') 'read-only identity does not depend on retired switch grant'
+$readonly = New-PanelValue; $readonly.canSwitch = $false; $readonly.grant = $null; $readonly.email = 'p***@e***.invalid'
+$script:MockResult = [pscustomobject]@{ Status = 'ready'; Value = $readonly }; Update-PetPanelAccounts
+Invoke-PetPanelAccountSwitch
+Assert ($script:Requests.Count -eq 1 -and -not $script:PanelAccountSwitch.IsEnabled) 'read-only response can never authorize POST'
+Reset-Fixture
+$script:Prefs.billingMode = 'deepseek'; Update-PetPanelAccounts
 Assert ($script:Requests.Count -eq 0) 'DeepSeek forbids GET'
 $script:Prefs.billingMode = 'codex'; $script:Preview = $true; Update-PetPanelAccounts
 Assert ($script:Requests.Count -eq 0) 'Preview forbids GET'
@@ -176,11 +179,11 @@ $script:PetPanelExpiresAt = [DateTime]::UtcNow.AddMilliseconds(-1); Update-PetPa
 Assert (-not $script:PanelAccountSwitch.IsEnabled -and $null -eq $script:PanelAccountEmail.ToolTip -and $null -eq $script:PetPanelState) 'expiry clears email and grant'
 
 Reset-Fixture; Update-PetPanelAccounts; $late = $script:PetPanelOperation
-$script:Prefs.multiAccountManagement = $false; Update-PetPanelAccounts
+$script:Prefs.billingMode = 'deepseek'; Update-PetPanelAccounts
 Assert ($late.Stopped -and $null -eq $script:PetPanelOperation -and $null -eq $script:PetPanelState) 'switch off aborts and detaches'
 $script:MockResult = [pscustomobject]@{ Status = 'ready'; Value = (New-PanelValue) }; Update-PetPanelAccounts
 Assert ($script:Receives -eq 0 -and $script:PanelAccountEmail.Text -ceq '') 'late response cannot restore off UI'
-$script:Prefs.multiAccountManagement = $true; Update-PetPanelAccounts; Complete-MockGet
+$script:Prefs.billingMode = 'codex'; Update-PetPanelAccounts; Complete-MockGet
 Assert ($script:Requests.Count -eq 2 -and $script:PanelAccountSwitch.IsEnabled) 'reopen requires fresh GET'
 $script:Prefs.billingMode = 'deepseek'; Update-PetPanelAccounts
 Assert ($null -eq $script:PetPanelState -and $script:PanelAccountArea.Visibility -eq 'Collapsed') 'billing transition clears identity'
@@ -200,7 +203,7 @@ Reset-Fixture; Update-PetPanelAccounts; Complete-MockGet
 $script:StartFailure = $true; Invoke-PetPanelAccountSwitch; Invoke-PetPanelAccountSwitch
 Assert ($script:Requests.Count -eq 2 -and $null -eq $script:PetPanelState) 'POST startup failure is not repeated'
 Reset-Fixture; Update-PetPanelAccounts; Complete-MockGet
-function Reload-PetPreferences { param([switch]$Force); $script:Prefs.multiAccountManagement = $false }
+function Reload-PetPreferences { param([switch]$Force); $script:PetCandidateRevision = 'consent-revoked' }
 Invoke-PetPanelAccountSwitch
 Assert ($script:Requests.Count -eq 1 -and $null -eq $script:PetPanelState) 'click rechecks current local setting, blocks stale handler'
 Remove-Item Function:\Reload-PetPreferences
@@ -251,8 +254,8 @@ try {
     Assert-Equal $script:Window.Left 123 'does not save or move left coordinate'
     Assert-Equal $script:Window.Top 234 'does not save or move top coordinate'
     $script:Prefs.multiAccountManagement = $false; Update-PetUsageCard; Set-PetSize
-    Assert-Equal $script:Card.Height 156 'disable restores original quota geometry'
-    Assert-Equal $script:PanelAccountArea.Visibility 'Collapsed' 'disable hides email/button area'
+    Assert-Equal $script:Card.Height 184 'read-only identity preserves footer without old grant'
+    Assert-Equal $script:PanelAccountArea.Visibility 'Visible' 'read-only Codex identity remains visible'
   } } }
   if ($requestedCapture) {
     $script:Prefs.multiAccountManagement = $true; $script:Prefs.compactMode = $true; $script:Prefs.size = 'medium'; $script:Prefs.cardTheme = 'default'

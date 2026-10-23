@@ -20,6 +20,10 @@ function bridge(values) {
     return Response.json({ type: 'server-response', rpcId: body.rpcId, result: { ok: true, value } });
   } };
 }
+test('sole-owner pet quota never falls back to another subscription source when the complete owner is unavailable',async()=>{
+ const b=bridge(()=>null);const value=await readCodexQuota(b,undefined,NOW,'openai-codex',{allowFallback:false});
+ assert.equal(value.status,'unavailable');assert.deepEqual(b.calls.map(x=>x.method),['codex-subscription/status']);
+});
 test('quota windows are classified by duration, not position or code-review quota', () => {
   const quota = normalizeCodexQuota(sample(0, 100), 'a', NOW);
   assert.equal(quota.status, 'ready');

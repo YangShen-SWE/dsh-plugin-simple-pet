@@ -34,6 +34,12 @@ test('strict PUT passes only validated envelope arguments to the store', async (
   assert.equal(result.status, 200); assert.deepEqual(seen, [{ size: 'tiny' }, revision]);
   assert.equal(result.data.values.size, 'tiny');
 });
+test('pet-only preference allowlist rejects retired source, warmup, polling and panel grants before store mutation',async()=>{
+ let writes=0;const handler=preferencesHandler({async update(){writes++;return{values,revision};}},()=>true,{allowedKeys:['size','quietMode']});
+ for(const key of ['codexAccountBackend','codexWarmupDaily','codexWarmupReset','codexWarmupTime','codexQuotaRefreshSeconds','multiAccountManagement']){
+ const result=await invoke(handler,'PUT',{patch:{[key]:true,size:'tiny'},revision},json);assert.equal(result.status,400);assert.match(result.data.error,/订阅管理/);
+ }assert.equal(writes,0);assert.equal((await invoke(handler,'PUT',{patch:{size:'tiny'},revision},json)).status,200);assert.equal(writes,1);
+});
 test('bad methods, MIME types, JSON and extra envelope fields cannot mutate settings', async () => {
   const handler = preferencesHandler({ update() { throw new Error('unexpected write'); } }, () => true);
   for (const [method, body, headers, status] of [

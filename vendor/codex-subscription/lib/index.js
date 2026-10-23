@@ -1,3 +1,4 @@
+import { createSubscriptionLegacyAdapter } from '../../../subscription-legacy-route.js';
 import { oauthCredentialForResolution, createSubscriptionRequestAuth } from "../../../subscription-oauth.js";
 import { createRequire } from "node:module";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -3722,7 +3723,7 @@ function isDshAutoReview(context) {
 * persistence, headers, transport, and model behavior remain owned by the
 * original provider.
 */
-function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT, resolveInputImageDetail = () => void 0, resolveReasoningSummary = () => void 0, resolveContextMode = () => void 0, resolveCustomContextWindow = () => void 0, resolveReviewModel = () => REVIEW_MODEL_SESSION, catalog, connection, compaction, bindRequestAuth, runNetwork = (_area, operation) => operation() } = {}) {
+function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, standardSpeedOnly = false, resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT, resolveInputImageDetail = () => void 0, resolveReasoningSummary = () => void 0, resolveContextMode = () => void 0, resolveCustomContextWindow = () => void 0, resolveReviewModel = () => REVIEW_MODEL_SESSION, catalog, connection, compaction, bindRequestAuth, runNetwork = (_area, operation) => operation() } = {}) {
 	const provider = createOpenAICodexProvider();
 	const requestToken = Object.freeze({
 		name: "DSH-managed Codex OAuth request token",
@@ -3741,11 +3742,13 @@ function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, reso
 		const metadata = modelMetadata(model);
 		const requestedVerbosity = resolveOutputVerbosity();
 		const textVerbosity = supportsVerbosity(model) ? requestedVerbosity === "default" ? metadata?.defaultVerbosity ?? "medium" : requestedVerbosity : void 0;
-		const speedMode = resolveSpeedMode();
+		// This policy is fixed by the private adapter's provider, never by browser input.
+		const speedMode = standardSpeedOnly ? "standard" : resolveSpeedMode();
 		const serviceTier = speedMode === "ultrafast" && metadata?.supportsUltrafast === true ? ULTRAFAST_SERVICE_TIER : speedMode === "fast" && (metadata?.supportsFast ?? supportsCodexFastMode(model?.id)) ? FAST_SERVICE_TIER : void 0;
 		const inputImageDetail = normalizeInputImageDetail(resolveInputImageDetail());
 		const reasoningSummary = normalizeReasoningSummary(resolveReasoningSummary());
 		const { temperature: _temperature, onPayload, ...rest } = options;
+		if (standardSpeedOnly) delete rest.serviceTier;
 		return {
 			...rest,
 			...rest.headers === void 0 ? {} : { headers: withoutUserAgent(rest.headers) },
@@ -3760,10 +3763,12 @@ function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, reso
 					} },
 					...serviceTier === void 0 ? {} : { service_tier: serviceTier }
 				};
+				if (standardSpeedOnly) delete preferred.service_tier;
 				const managed = compaction?.preparePayload(preferred, model?.contextWindow) ?? preferred;
 				const next = await onPayload?.(managed, requestModel);
 				const detailed = inputImageDetail === "auto" ? next ?? managed : withInputImageDetail(next ?? managed, inputImageDetail);
 				const { temperature: _dropped, ...accepted } = withReasoningSummary(detailed, reasoningSummary);
+				if (standardSpeedOnly) delete accepted.service_tier;
 				return {
 					...accepted,
 					...textVerbosity === void 0 ? {} : { text: {
@@ -6516,6 +6521,7 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		: createSettingsAdapter(ctx, z.object(settingsFields), config, SETTINGS_NAMESPACE);
 	// No await between this final embedding ownership check and registration.
 	settings.assertEmbeddedOwner?.();
+	if (createEmbeddedSettings && ctx.llm.listProviders().some(row => row.id === 'codex-accounts')) throw Object.assign(new Error('SUBSCRIPTION_LEGACY_OWNER_CONFLICT'), { code: 'SUBSCRIPTION_LEGACY_OWNER_CONFLICT' });
 	const settingsWritable = () => typeof createEmbeddedSettings === "function" ? settings.writable === true : ctx.settings.writable === true;
 	const searchProvider = createSearchProviderSwitcher(ctx.loader);
 	const network = createCodexNetworkTransport();
@@ -6565,7 +6571,7 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		}
 	});
 	ctx.effect(() => () => connection.dispose());
-	const provider = openaiCodexSubscriptionProvider({
+	const providerOptions = {
 		bindRequestAuth: (handle, signal) => requestAuth.bind(handle, signal),
 		connection,
 		compaction,
@@ -6584,7 +6590,9 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		resolveReviewModel: () => settings.get().reviewModel,
 		catalog: modelCatalog,
 		runNetwork: network.run
-	});
+	};
+	const provider = openaiCodexSubscriptionProvider(providerOptions);
+	const petWarmupProvider = openaiCodexSubscriptionProvider({ ...providerOptions, standardSpeedOnly: true });
 	const preferences = {
 		status: () => {
 			const models = modelCatalog.getModels();
@@ -6748,11 +6756,12 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		originalImages,
 		fetch: (input, init) => network.fetch("image", input, init)
 	}))), "codex-subscription: image tool availability");
-	const adapter = new PiAiAdapter({
-		profiles,
+	const petCallScope = new AsyncLocalStorage();
+	const createAdapter = (resolveProfiles) => new PiAiAdapter({
+		profiles: resolveProfiles,
 		resolveApiKey: async () => {
 			try {
-				return await requestAuth.capture();
+				return await requestAuth.capture(petCallScope.getStore());
 			} catch {
 				throw new dshLlm.LlmError("ChatGPT subscription authorization unavailable; check the embedded account page", "AUTH_FAILED");
 			}
@@ -6760,7 +6769,23 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		auth: adapterAuth,
 		resolveAttachments: () => ctx.get?.("attachments")
 	});
-	ctx.llm.registerAdapter([PROVIDER], compaction.wrapAdapter(adapter));
+	const completeAdapter = compaction.wrapAdapter(createAdapter(profiles));
+	// Only the private capability receives this immutable standard-speed profile.
+	// Keep the same auth, cancellation, compaction and live non-speed preferences.
+	const petWarmupAdapter = compaction.wrapAdapter(createAdapter(() => new Map([[PROVIDER, Object.freeze({
+		...profiles().get(PROVIDER),
+		piProvider: petWarmupProvider
+	})]])));
+	// Private embedding capability: expected account is checked at OAuth capture,
+	// then rechecked by requestAuth at dispatch. No browser RPC or new account store.
+	settings.onSubscriptionAdapter?.(Object.freeze({
+		prepareCall(provider, model, signal, expectedAccountKey) {
+			if (provider !== PROVIDER || typeof expectedAccountKey !== 'string' || !/^[a-f0-9]{16}$/.test(expectedAccountKey)) throw new Error('SUBSCRIPTION_WARMUP_BINDING_REQUIRED');
+			return petCallScope.run({ signal, expectedAccountKey }, () => petWarmupAdapter.prepareCall(provider, model, signal));
+		}
+	}));
+	ctx.llm.registerAdapter([PROVIDER], completeAdapter);
+	if (createEmbeddedSettings) ctx.llm.registerAdapter(['codex-accounts'], createSubscriptionLegacyAdapter(completeAdapter));
 	const currentAgent = () => ctx.get?.("agents")?.currentInitiator?.();
 	const codexSearch = createCodexSearchProvider({
 		resolvePreferences: () => readCapabilitySettings(settings.get()),

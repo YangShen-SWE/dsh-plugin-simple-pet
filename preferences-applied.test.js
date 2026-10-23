@@ -167,9 +167,9 @@ function uiHarness(send) {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 test('settings polls local receipt, clears save evidence and preserves drafts on unavailable old host', async t => {
-  t.mock.timers.enable({ apis: ['setInterval'] });
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
   let elapsed = 0; t.mock.method(performance, 'now', () => elapsed);
-  const calls = []; let revision = preferences.revision, proof = 'applied', fail = false, stall = false;
+  const calls = []; let revision = preferences.revision, values = { ...preferences.values }, proof = 'applied', fail = false, stall = false;
   const ui = uiHarness(async (url, init) => {
     calls.push({ url, ...init });
     if (stall) return new Promise(() => {});
@@ -178,20 +178,36 @@ test('settings polls local receipt, clears save evidence and preserves drafts on
       return Response.json({ revision, status: proof, validForMs: 14000 });
     }
     if (url.endsWith('/state')) return Response.json({ stats: { days: {} } });
-    if (init.method === 'PUT') revision = 'b'.repeat(64);
-    return Response.json({ ...preferences, revision });
+    if (url.endsWith('/account')) return Response.json({ status: 'unavailable' });
+    assert.ok(url.endsWith('/preferences'), 'only local preferences may be written');
+    if (init.method === 'PUT') {
+      const body = JSON.parse(init.body); assert.equal(body.revision, revision);
+      assert.deepEqual(body.patch, { quietMode: true });
+      values = { ...values, ...body.patch }; revision = 'b'.repeat(64);
+    }
+    return Response.json({ values, revision });
   });
   const status = () => ui.nodes().find(n => Object.hasOwn(n.props, 'data-application-status'));
   try {
     await settle(); ui.render(); assert.match(ui.text(status()), /最近确认桌宠已应用/);
-    assert.deepEqual(calls.map(c => c.url).sort(), ['api/dsh-plugin-simple-pet/account','api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state']);
+    assert.deepEqual(calls.map(c => c.url), ['api/dsh-plugin-simple-pet/preferences','api/dsh-plugin-simple-pet/state','api/dsh-plugin-simple-pet/application','api/dsh-plugin-simple-pet/account']);
+    assert(calls.every(c => (c.method ?? 'GET') === 'GET'), 'initial account identity is a fourth read-only request');
     ui.nodes().find(n => n.props.name === 'quietMode').props.onChange({ target: { checked: true } });
     ui.render(); assert.match(ui.text(status()), /草稿尚未应用/);
+    assert.match(ui.text(status()), /已保存版本：最近确认桌宠已应用/, 'old saved revision evidence never confirms the dirty draft');
     ui.nodes().find(n => n.type === 'form').props.onSubmit({ preventDefault() {} });
-    await settle(); ui.render(); assert.doesNotMatch(ui.text(status()), /最近确认桌宠已应用/);
+    assert.equal(calls.filter(c => c.method === 'PUT').length, 0, 'form submit is not a save');
+    t.mock.timers.tick(449); await settle(); assert.equal(calls.filter(c => c.method === 'PUT').length, 0);
+    t.mock.timers.tick(1); await settle(); ui.render();
+    assert.equal(calls.filter(c => c.method === 'PUT').length, 1);
+    assert.equal(status().props['data-application-status'], 'unconfirmed');
+    assert.doesNotMatch(ui.text(status()), /最近确认桌宠已应用/);
+    assert.equal(ui.nodes().find(n => n.props.name === 'quietMode').props.checked, true);
     proof = 'pending'; t.mock.timers.tick(5000); await settle(); ui.render(); assert.match(ui.text(status()), /尚在应用/);
     fail = true; t.mock.timers.tick(5000); await settle(); ui.render(); assert.doesNotMatch(ui.text(status()), /最近确认桌宠已应用/);
     assert.equal(calls.filter(c => c.method === 'PUT').length, 1);
+    assert.equal(ui.nodes().find(n => n.props.name === 'quietMode').props.checked, true, 'unavailable application evidence never resets the preference draft');
+    assert(calls.filter(c => c.url.endsWith('/account')).every(c => (c.method ?? 'GET') === 'GET'));
     assert.ok(!calls.some(c => /subscription|llm|stream|warmup/.test(c.url)));
     fail = false; proof = 'applied'; t.mock.timers.tick(5000); await settle(); ui.render();
     assert.equal(status().props['data-application-status'], 'applied');

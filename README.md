@@ -1,18 +1,29 @@
 # dsh-plugin-simple-pet
 
-**最新版：[v1.1.2 · 完整内置订阅与授权时效修复](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.2)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz)
+**最新版：[v1.1.3 · 统一订阅协作与桌宠功能恢复](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.3)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz) · [下一版：多账号 warmup](MULTI-ACCOUNT-WARMUP-PLAN.md)
 
-陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式、顶部子页面设置。可选面板邮箱一键切号和逐账号授权的每日预热；均默认关闭，可选旧订阅插件或桌宠内置的官方组件账号服务；新版只安装桌宠一包。
+陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式和本机统计。只安装桌宠一包，完整内置订阅管理。
 
-A Windows anime companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and tabbed settings. Optional panel account cycling and separately authorized daily account-bound warm-up can use a compatible legacy addon or the integrated official-component account service; both default off. Install only the simple-pet package.
+**v1.1.3：** 账号、模型和实际连接统一到 **订阅管理（桌宠内置）**，不再运行第二套账号引擎。恢复经典/文字简洁面板的当前账号显示、明确授权后的点击切号，以及明确授权后的单当前账号自动预热。新授权独立确认，外观自动保存不夹带；旧凭据、聊天与预热保护记录保留。旧路由兼容同一完整适配器及可验证压缩检查点，不改写历史或自动重发。多账号批量 warmup 仅有[下一版方案](MULTI-ACCOUNT-WARMUP-PLAN.md)，本版不实现或启用；超大上下文仍需按[使用指南](USAGE.md)缩减。
 
-## v1.1.2 更新原因与重点
+A Windows companion for DeepSeek balances and Codex quotas, with six skins, five card themes, compact mode and local statistics. Version 1.1.3 uses one embedded subscription manager for accounts, models and connections. It restores account display, authorized panel switching and opt-in warm-up for the current account. Old grants are not new consent. It does not resend history, migrate credentials or bypass context limits. Multi-account warm-up is a next-version proposal, not a feature in this release.
+
+## v1.1.3 更新重点
+
+- **桌宠协作恢复：** 经典与文字面板正确显示统一订阅当前账号，额度失败不冒用旧身份；独立授权后恢复面板切号及单当前账号预热。
+- **安全授权与应用回执：** 新授权默认关闭、单独提交，旧开关不自动迁移；原生面板按严格类型应用新字段，修复已保存却持续未应用的问题。普通外观仍自动保存。
+- **旧聊天与压缩兼容：** 可解析旧路由跟随内置订阅当前账号，保留可信压缩检查点、取消、用量及图片卸载信号；不复用跨账号签名，不编辑历史或自动重试。旧 hash 模型需重选，超大上下文不绕过保护。
+- **下一版边界：** 本版不恢复多账号批量预热；拟议 v1.2.0 方案采用逐账号授权与固定账号执行，不轮换全局默认账号。
+
+发布前完整离线回归 902 项通过；用户反馈本机验收完成，不将其泛化为所有账号与全部远端能力保证。发布过程不新增真实模型/额度/兑换调用，不自动重启。
+
+## v1.1.2 更新原因与重点（历史）
 
 - **完整承接旧连接：** 将 MIT 授权的 `dsh-codex-subscription@2.6.8` 完整前后端内置，保留账号/额度、模型/运行、图片/草图、维护、输入框、搜索和工具贡献，而非零散 provider alias。进入 **设置 → 订阅管理（桌宠内置）**；桌宠原功能仍在 **设置 → 桌宠**。
 - **修复授权过期：** 取存储期限和 JWT 到期较早值，并在上下文/图片/代理准备后重新核验同一绑定的授权。解决两类合成复现缺陷，不承诺所有真实刷新令牌或旧聊天已恢复；不自动重发失败模型请求或跨账号回退。
 - **更简洁的账号页：** 隐藏正常状态下冗长的本地凭据/接收时间说明，保留异常与过期提示；重置卡展示有效期。独立设置存储、所有权门控和原 MIT/第三方声明一并收录。
 
-**升级：** 只导入桌宠安装包，停用独立 `dsh-codex-subscription` 后完整退出 DSH（包括托盘）再重开。内置分支沿用原订阅账号库；桌宠 `codex-accounts` 账号仍独立，不迁移凭据、不重写历史、不清除预热或兑换保护。完整内置分支保留原有后台读取和可配置工具行为，不应将下面历史版本的“浏览不查询”泛化为整个原订阅插件的网络承诺。没有新增真实账号/模型/兑换验收。
+**升级到 v1.1.3：** 只导入桌宠安装包，停用独立 `dsh-codex-subscription` 和旧独立账号插件后，完整退出 DSH（包括托盘）再重开。内置分支沿用原订阅账号库；旧桌宠账号目录仅保留、不再挂载独立引擎，可解析旧路由后续请求跟随内置订阅当前账号。请核对当前账号；不迁移凭据、不重写历史、不清除预热或兑换保护。新切号与预热授权必须在 **设置 → 桌宠 → Codex → 订阅协作 · 账号与预热** 单独确认；升级不代为启用。完整内置分支保留原后台读取和可配置工具行为，不应将下面历史版本的“浏览不查询”泛化为整个订阅管理的网络承诺。
 
 ## v1.1.1 重点（历史）
 
@@ -29,7 +40,7 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 
 ## 界面展示 / Screenshots
 
-部分设置截图来自此前版本，自动保存提示以当前界面与使用指南为准。面板使用生产 WPF 与内置人物素材渲染，设置使用真实 React 组件隔离渲染；邮箱、额度和预算均为合成演示，不含真实账号或用户数据，不代表正在运行宿主已验收。Panels use production WPF; settings use isolated production React. All accounts and values are synthetic, not live-host/account validation.
+设置截图保留历史版本样式：旧桌宠账号管理和多账号预热页不代表 v1.1.3 当前入口，当前账号/模型在内置订阅管理，本版仅支持单当前账号预热。面板使用生产 WPF 与内置人物素材渲染，设置使用真实 React 组件隔离渲染；邮箱、额度和预算均为合成演示，不含真实账号或用户数据。Panels use production WPF; settings screenshots are historical isolated React demos. Multi-account warm-up is not available in v1.1.3. All accounts and values are synthetic.
 
 ![DeepSeek 模式：余额、峰谷价牌与缓存命中](docs/screenshots/deepseek.png)
 
@@ -37,7 +48,7 @@ A Windows anime companion for DeepSeek balances and Codex quotas, with six skins
 
 ![B 双栏工作台：账号导航、额度卡片与自动保存；合成演示](docs/screenshots/settings.png)
 
-![多账号每日授权及明确禁用的启动和5h满额触发](docs/screenshots/multi-account-warmup.png)
+![历史截图：旧多账号每日授权页；v1.1.3 不提供，多账号 warmup 见下一版方案](docs/screenshots/multi-account-warmup.png)
 
 ![六款人物与五种信息框的独立搭配示例](docs/screenshots/characters-and-themes.png)
 

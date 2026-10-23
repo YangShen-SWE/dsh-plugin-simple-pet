@@ -30,16 +30,16 @@ if (-not $Preview -and -not (Test-Path -LiteralPath $script:SettingsFile)) {
   }
 }
 
-$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexAccountBackend = 'legacy'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10; left = $null; top = $null }
+$script:Prefs = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexAccountBackend = 'legacy'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; codexUnifiedControls = $false; codexUnifiedWarmup = $false; multiAccountManagement = $false; sleepMinutes = 10; left = $null; top = $null }
 function Set-PetPreferenceValues($saved) {
   # Omitted/ill-typed fields use the same defaults at startup and on hot reload.
-  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexAccountBackend = 'legacy'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; multiAccountManagement = $false; sleepMinutes = 10 }
+  $defaults = [ordered]@{ skin = 'default'; cardTheme = 'default'; unit = 'cny'; size = 'medium'; billingMode = 'deepseek'; codexUnit = 'token'; codexAccountBackend = 'legacy'; compactMode = $false; quietMode = $false; feedbackStyle = 'classic'; reduceMotion = $false; disableFlashes = $false; disableFloats = $false; codexQuotaRefreshSeconds = 5; codexWarmupDaily = $false; codexWarmupTime = '09:30'; codexWarmupReset = $false; codexWarmupStartup = $false; codexUnifiedControls = $false; codexUnifiedWarmup = $false; multiAccountManagement = $false; sleepMinutes = 10 }
   foreach ($key in $defaults.Keys) {
     # Direct assignment preserves singleton JSON arrays so typed validation rejects them.
     if ($null -ne $saved.$key) { $script:Prefs[$key] = $saved.$key }
     else { $script:Prefs[$key] = $defaults[$key] }
   }
-  foreach ($key in @('compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats', 'multiAccountManagement')) {
+  foreach ($key in @('compactMode', 'quietMode', 'reduceMotion', 'disableFlashes', 'disableFloats', 'codexUnifiedControls', 'codexUnifiedWarmup', 'multiAccountManagement')) {
     if ($script:Prefs[$key] -isnot [bool]) { $script:Prefs[$key] = $false }
   }
   if ($script:Prefs.feedbackStyle -isnot [string] -or $script:Prefs.feedbackStyle -cnotin @('classic', 'gentle')) { $script:Prefs.feedbackStyle = 'classic' }
@@ -112,7 +112,7 @@ function Reload-PetPreferences([switch]$Force) {
     $oldAccounts = $script:Prefs.multiAccountManagement
     $oldTheme = $script:Prefs.cardTheme
     Set-PetPreferenceValues $snapshot.Saved
-    if (($script:Prefs.billingMode -cne 'codex' -or -not $script:Prefs.multiAccountManagement) -and
+    if (($script:Prefs.billingMode -cne 'codex') -and
         (Get-Command Reset-PetPanelAccounts -ErrorAction SilentlyContinue)) { Reset-PetPanelAccounts }
     if ($null -ne $script:Window) {
       # Refresh-BillingMode still owns real mode transitions; retry only repairs
@@ -306,7 +306,7 @@ function Set-PetSize {
   $script:Window.Width = 272 * $scale
   $codexMode = (Get-BillingMode) -eq 'codex'
   $height = if ($script:Prefs.compactMode -eq $true) { if ($codexMode) { 166 } else { 102 } } elseif ($codexMode) { 360 } else { 296 }
-  if ($codexMode -and $script:Prefs.multiAccountManagement -eq $true) { $height += 28 }
+  if ($codexMode) { $height += 28 }
   $script:Window.Height = $height * $scale
   if (-not $script:ApplyingPetPreferences) {
     $area = [Windows.SystemParameters]::WorkArea

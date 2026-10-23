@@ -96,7 +96,8 @@ test('upstream fork projects expiry at all store boundaries and scopes automatic
   const source = readFileSync(new URL('./vendor/codex-subscription/lib/index.js', import.meta.url), 'utf8');
   assert.match(source, /resolveAuth = \(options\) => network\.run\("oauth", \(\) => authModels\.getAuth\(PROVIDER, options\)\)/);
   assert.match(source, /bindRequestAuth: \(handle, signal\) => requestAuth\.bind\(handle, signal\)/);
-  assert.match(source, /return await requestAuth\.capture\(\)/);
+  assert.match(source, /return await requestAuth\.capture\(petCallScope\.getStore\(\)\)/);
+  assert.match(source, /onSubscriptionAdapter\?\.\(Object\.freeze/);
   assert.equal((source.match(/oauthCredentialForResolution\(/g) ?? []).length, 5);
   assert.doesNotMatch(source, /expires: current\.expires - this\.expirySkewMs/);
 });

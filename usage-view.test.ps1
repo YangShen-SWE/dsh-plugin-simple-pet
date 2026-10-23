@@ -63,8 +63,8 @@ try {
   Update-PetUsageCard
   Assert-Equal ([string]$script:DeepSeekPanel.Visibility) 'Collapsed' 'price and wallet panel hidden in Codex'
   Assert-Equal ([string]$script:CodexPanel.Visibility) 'Visible' 'Codex panel shown'
-  Assert-Equal $script:Root.Height 360 'Codex dimensions fit both quota windows'
-  Assert-Equal $script:Card.Height 156 'Codex information card expanded'
+  Assert-Equal $script:Root.Height 388 'Codex dimensions fit quota windows and account footer'
+  Assert-Equal $script:Card.Height 184 'Codex information card includes identity footer'
   Assert-Equal $script:Window.FindName('FiveHourValue').Text '0%' 'exhausted quota remains 0%'
   Assert-Equal $script:Window.FindName('WeeklyValue').Text '100%' 'unused quota remains 100%'
   Assert-Equal $script:Window.FindName('WeeklyBar').Value 100 'bar agrees with actual quota'

@@ -100,7 +100,7 @@ try {
   Assert-Equal $script:ActiveFloats.Count 0 'mode transition clears old floats'
   Assert-True (-not $script:Root.Children.Contains($float)) 'mode transition detaches old float'
   Assert-Equal $script:Window.Width 170.0 'native tiny width applies'
-  Assert-Equal $script:Window.Height 225.0 'native Codex tiny height applies'
+  Assert-Equal $script:Window.Height 242.5 'native Codex tiny height includes the account row without clipping'
   Assert-Equal $script:Window.Left 123.25 'mode and size change do not move left'
   Assert-Equal $script:Window.Top 234.75 'mode and size change do not move top'
   Assert-True (-not (Test-Path -LiteralPath $script:PositionFile)) 'reload does not save position'

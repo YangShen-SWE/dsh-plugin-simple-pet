@@ -151,12 +151,12 @@ for (const mode of ['deepseek','codex']) test(`native ${mode} page shows five pa
     ui.find(n => n.props.role==='radio' && ui.text(n).includes('星砂')).props.onClick(); ui.render();
     const selected=ui.find(n => n.props['data-card-theme-choice']==='paper'); assert.equal(selected.props['aria-checked'],true);
     const sprite=ui.find(n => n.props.className==='pet-combination-sprite'); assert(sprite.props.style.backgroundImage.includes('/star-valley.png'));
-    assert.match(ui.text(ui.render()),/数字为示意/);
+    assert.match(ui.text(ui.render()),/数字不是实时数据/);
     assert.equal(ui.calls.length,4); assert(ui.calls.every(c => !c.method || c.method==='GET'));
-    ui.find(n => n.type==='form').props.onSubmit({preventDefault(){}}); await settle(); ui.render();
+    await new Promise(resolve => setTimeout(resolve, 500)); ui.render();
     const writes=ui.calls.filter(c => c.method==='PUT'); assert.equal(writes.length,1);
     assert.deepEqual(JSON.parse(writes[0].body).patch,{ skin:'star', cardTheme:'paper' });
-    assert.match(ui.text(ui.render()),/等待独立的桌宠应用回执/);
+    assert.match(ui.text(ui.render()),/已保存版本尚未获得桌宠应用确认/);
     assert.doesNotMatch(ui.text(ui.render()),/最近确认桌宠已应用/);
   } finally { ui.cleanup(); }
 });

@@ -12,7 +12,8 @@
 .pet-settings .pet-reset-help{font-size:12px;margin-top:10px;opacity:.8}.pet-settings .pet-reset-help summary{cursor:pointer}
 @container pet-settings (max-width:400px){.pet-settings .pet-reset-panel{padding:12px}.pet-settings .pet-reset-card{align-items:stretch;flex-direction:column}.pet-settings .pet-reset-card button{align-self:flex-end}}
 
-/* B 整套设置：同一壳层、四个主页面；统计是桌宠页的二级入口。 */
+/* B 桌宠设置：保留统一壳层，仅外观与本机统计；账号/连接仅由内置订阅管理。 */
+.pet-settings[data-pet-only-settings] .pet-settings-page-nav{grid-template-columns:repeat(2,minmax(0,1fr))}
 .pet-settings.pet-settings-workbench{font:13px/1.65 "Segoe UI","Microsoft YaHei",sans-serif;max-width:1040px;margin:0 auto;padding:0 20px 20px;border-radius:16px;background:#27272d;background:linear-gradient(var(--dsw-alias-bg-layer-2,#27272d),var(--dsw-alias-bg-layer-2,#27272d)),#27272d;background:rgb(from var(--dsw-alias-bg-layer-2,#27272d) r g b / 1)}
 .pet-settings.pet-settings-workbench p{margin-top:6px;margin-bottom:8px}
 .pet-settings.pet-settings-workbench button,.pet-settings.pet-settings-workbench select,.pet-settings.pet-settings-workbench input:not([type=checkbox]){font:inherit;font-size:13px;line-height:1.5;border-radius:9px;padding:8px 11px;min-height:36px}

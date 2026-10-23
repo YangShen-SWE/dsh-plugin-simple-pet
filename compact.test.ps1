@@ -38,7 +38,7 @@ try {
     Assert-Equal $policy.Floats $false 'compact disables floats'
     Assert-Equal $script:SpriteLayer.Visibility 'Collapsed' 'character does not occupy render or hit-testing space'
     Assert-Equal ([Windows.Controls.Canvas]::GetTop($script:Card)) 5 'card moves into former character space'
-    $height = if ($mode -eq 'codex') { 166 } else { 102 }
+    $height = if ($mode -eq 'codex') { 194 } else { 102 }
     Assert-Equal $script:Root.Height $height 'root contains only card plus padding'
     Assert-Equal $script:Window.Height ($height * $script:Sizes[$size]) 'window shrinks, no invisible character area'
     Assert-Equal $script:Window.Width (272 * $script:Sizes[$size]) 'four widths preserved'
@@ -81,13 +81,13 @@ try {
   $saved = [pscustomobject]@{ compactMode = $true; quietMode = $true; billingMode = 'codex'; size = 'small'; skin = 'night'; cardTheme = 'forest' }
   $saved | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
   Reload-PetPreferences -Force
-  Assert-Equal $script:Window.Height (166 * .85) 'same-size compact toggle shrinks after hot reload'
+  Assert-Equal $script:Window.Height (194 * .85) 'same-size compact toggle shrinks after hot reload'
   $saved.compactMode = $false
   $saved | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
   Reload-PetPreferences -Force
   Assert-Equal $script:SpriteLayer.Visibility 'Visible' 'exit compact restores character even while quiet'
   Assert-Equal ([Windows.Controls.Canvas]::GetTop($script:Card)) 199 'full card position restored'
-  Assert-Equal $script:Window.Height (360 * .85) 'full Codex height restored'
+  Assert-Equal $script:Window.Height (388 * .85) 'full Codex height restored'
   Assert-True ($script:Window.FindName('FiveHourBar').Template -ne $script:CompactQuotaBarTemplate) 'exit restores original native progress style'
   Assert-Equal $script:Prefs.skin 'night' 'exit preserves character selection'
   Assert-Equal $script:Prefs.cardTheme 'forest' 'exit preserves theme'

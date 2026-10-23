@@ -55,7 +55,7 @@ function Update-PetUsageCard {
   $script:DeepSeekPanel.Visibility = if ($codexMode) { 'Collapsed' } else { 'Visible' }
   $script:CodexPanel.Visibility = if ($codexMode) { 'Visible' } else { 'Collapsed' }
   $compact = $script:Prefs.compactMode -eq $true
-  $accountExtra = if ($codexMode -and $script:Prefs.multiAccountManagement -eq $true) { 28 } else { 0 }
+  $accountExtra = if ($codexMode) { 28 } else { 0 }
   $script:Card.Height = if ($codexMode) { 156 + $accountExtra } else { 92 }
   $script:Root.Height = if ($compact) { $script:Card.Height + 10 } elseif ($codexMode) { 360 + $accountExtra } else { 296 }
   if ($script:PanelAccountArea) { $script:PanelAccountArea.Visibility = if ($accountExtra) { 'Visible' } else { 'Collapsed' } }

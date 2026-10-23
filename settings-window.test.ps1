@@ -316,16 +316,33 @@ function Test-RealPrefsPersistence {
   }
 }
 Test-RealPrefsPersistence
-$prefMatch = [regex]::Match($petSource, '(?ms)^\$script:Prefs = \[ordered\]@\{.*?(?=^function Save-Prefs)')
-Assert-True $prefMatch.Success 'preference initializer has a bounded standalone block'
-$prefBlock = [scriptblock]::Create($prefMatch.Value)
+$tokens = $null; $errors = $null
+$prefAst = [Management.Automation.Language.Parser]::ParseInput($petSource, [ref]$tokens, [ref]$errors)
+Assert-Equal $errors.Count 0 'preference source parses without executing its startup block'
+$prefInitializer = $prefAst.Find({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$script:Prefs' }, $true)
+Assert-True ($null -ne $prefInitializer) 'preference initializer is extracted through the production AST'
+$prefBlock = [scriptblock]::Create($prefInitializer.Extent.Text)
+foreach ($name in @('Set-PetPreferenceValues', 'Test-FinitePetCoordinate', 'Restore-PetPosition')) {
+  $fn = $prefAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+  Assert-True ($null -ne $fn) "production preference function $name exists"
+  Invoke-Expression $fn.Extent.Text
+}
 function Initialize-TestPrefs($savedPrefs) {
-  $json = if ($null -ne $savedPrefs) { $savedPrefs | ConvertTo-Json -Compress } else { $null }
-  function Test-Path { param($LiteralPath) return $null -ne $json }
-  function Get-Content { param($LiteralPath, [switch]$Raw, $Encoding) return $json }
   & $prefBlock
+  Set-PetPreferenceValues $savedPrefs
+  Restore-PetPosition $savedPrefs
 }
 Initialize-TestPrefs $null
+foreach ($key in @('codexUnifiedControls', 'codexUnifiedWarmup')) {
+  Assert-True ($script:Prefs[$key] -is [bool] -and -not $script:Prefs[$key]) 'unified-owner grants default strictly false'
+  foreach ($invalid in @('true', 1, @($true), @{ value = $true })) {
+    Initialize-TestPrefs @{ $key = $invalid }
+    Assert-True ($script:Prefs[$key] -is [bool] -and -not $script:Prefs[$key]) 'ill-typed unified-owner grant remains revoked'
+  }
+  Initialize-TestPrefs @{ $key = $true }
+  Assert-True $script:Prefs[$key] 'explicit Boolean unified-owner grant is represented accurately'
+  Initialize-TestPrefs $null
+}
 Assert-True ($script:Prefs.codexWarmupDaily -is [bool] -and -not $script:Prefs.codexWarmupDaily) 'daily warm-up defaults strictly false'
 Assert-True ($script:Prefs.codexWarmupReset -is [bool] -and -not $script:Prefs.codexWarmupReset) 'reset warm-up defaults strictly false'
 Assert-Equal $script:Prefs.codexWarmupTime '09:30' 'default daily time is 09:30'

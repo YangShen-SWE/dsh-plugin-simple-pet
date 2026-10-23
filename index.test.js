@@ -13,7 +13,7 @@ test('quota refresh interval defaults to 5 seconds and accepts only bounded inte
   for (const seconds of [1, 5, 12, 60, 3600]) assert.equal(codexQuotaRefreshSeconds({ codexQuotaRefreshSeconds: seconds }), seconds);
 });
 
-for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'startup', 'periodic']) test(`automatic warm-up integration: ${scenario}`, async (t) => {
+for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'startup', 'periodic']) test(`retired warm-up preferences never dispatch: ${scenario}`, async (t) => {
   const damaged = scenario === 'corrupt';
   const previous = process.env.LOCALAPPDATA, previousProfile = process.env.DSH_PET_PROFILE;
   process.env.DSH_PET_PROFILE = scenario === 'web' ? 'web' : 'desktop';
@@ -59,93 +59,13 @@ for (const scenario of ['normal', 'corrupt', 'drain', 'web', 'duplicate', 'start
     apply(ctx, { petLauncher: () => () => {}, warmupClock: () => now });
     const state = () => { let body; handlers.get('/api/dsh-plugin-simple-pet/state')({ method: 'GET', url: '/api/dsh-plugin-simple-pet/state?since=0', headers: {} },
       { writeHead() {}, end(value) { body = value; } }); return JSON.parse(body); };
-    for (let i = 0; i < 500; i++) {
-      if (scenario === 'periodic' && !fullRestored && state().codex.status === 'ready'
-        && state().codexWarmup.status === 'idle') {
-        assert.equal(modelCalls, 0); assert.equal(state().codexQuotaRefreshSeconds, 5);
-        fullRestored = true; t.mock.timers.tick(4999);
-        await new Promise(resolve => setTimeout(resolve, 50));
-        assert.equal(modelCalls, 0, 'does not poll before the five-second interval');
-        t.mock.timers.tick(1);
-      }
-      if (['succeeded', 'failed', 'skipped'].includes(state().codexWarmup.status) || streamPaused
-        || (scenario === 'web' && state().codex.status === 'ready' && state().balance === 50)) break;
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-    if (scenario === 'drain') {
-      assert.equal(streamPaused, true); assert.equal(modelCalls, 1);
-      for (const dispose of disposers.splice(0).reverse()) await dispose?.();
-      const saved = JSON.parse(await readFile(join(data, 'stats-codex-desktop.json'), 'utf8'));
-      assert.equal(Object.values(saved.days).reduce((sum, day) => sum + day.tokens, 0), 16);
-      assert.equal(state().events.length, 0, 'drained usage creates no events after unload'); return;
-    }
-    if (scenario === 'web') {
-      assert.equal(state().codexWarmup.status, 'disabled'); assert.equal(modelCalls, 0);
-      assert.ok(!calls.some(call => call.payload.force === true));
-      await assert.rejects(readFile(join(data, 'warmup.json')), { code: 'ENOENT' }); return;
-    }
-    const value = state();
-    if (damaged) {
-      assert.equal(value.codexWarmup.status, 'failed'); assert.ok(value.codexWarmup.alertId); assert.equal(modelCalls, 0);
-      assert.equal(await readFile(join(data, 'warmup.json'), 'utf8'), '{broken'); return;
-    }
-    if (scenario === 'periodic') assert.ok(['succeeded', 'skipped'].includes(value.codexWarmup.status), JSON.stringify(value.codexWarmup));
-    else assert.equal(value.codexWarmup.status, 'succeeded', JSON.stringify(value.codexWarmup));
-    assert.equal(modelCalls, 1); assert.equal(value.balance, 50);
-    assert.equal(Object.values(value.stats.days).length, 0);
-    assert.equal(Object.values(value.codexStats.days).reduce((sum, day) => sum + day.tokens, 0), 16);
-    assert.ok(value.events.every(event => event.billingMode === 'codex' && event.cny === null && event.warmup === true));
-    assert.ok(!JSON.stringify(value).includes('private-test')); assert.ok(!JSON.stringify(value).includes('Reply only'));
-    assert.ok(calls.some(call => call.method.endsWith('/usage') && call.payload.force === true));
-    const journal = JSON.parse(await readFile(join(data, 'warmup.json'), 'utf8'));
-    assert.equal(journal.keys.filter(key => key.startsWith('daily:')).length, ['startup', 'periodic'].includes(scenario) ? 0 : 1);
-    assert.equal(new Set(journal.keys.filter(key => key.startsWith('window:'))).size, 1); assert.equal(journal.lastSuccessAt, now);
-    if (scenario === 'periodic') {
-      assert.equal(value.codexWarmup.lastReason, 'full');
-      t.mock.timers.tick(5000); await new Promise(resolve => setTimeout(resolve, 100));
-      assert.equal(modelCalls, 1, 'sustained 100% never sends on every timer refresh');
-      const settingsFile = join(data, 'settings.json');
-      const saved = JSON.parse((await readFile(settingsFile, 'utf8')).replace(/^\uFEFF/, ''));
-      saved.codexQuotaRefreshSeconds = 12;
-      await writeFile(settingsFile, JSON.stringify(saved));
-      for (let i = 0; i < 100 && state().codexQuotaRefreshSeconds !== 12; i++) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      assert.equal(state().codexQuotaRefreshSeconds, 12, 'settings watcher rearms without restarting DSH');
-      const usageCount = () => calls.filter(call => call.method.endsWith('/usage')).length;
-      const before = usageCount();
-      t.mock.timers.tick(11_999); await new Promise(resolve => setTimeout(resolve, 50));
-      assert.equal(usageCount(), before, 'old five-second interval is removed');
-      t.mock.timers.tick(1); await new Promise(resolve => setTimeout(resolve, 100));
-      assert.equal(usageCount(), before + 1, 'uses the new twelve-second interval for upstream polling');
-      assert.equal(calls.filter(call => call.method.endsWith('/usage')).at(-1).payload.force, true);
-      assert.equal(modelCalls, 1, 'changing cadence never bypasses window dedup');
-      for (const dispose of disposers.splice(0).reverse()) await dispose?.();
-      const afterDispose = usageCount();
-      t.mock.timers.tick(120_000); await new Promise(resolve => setTimeout(resolve, 20));
-      assert.equal(usageCount(), afterDispose, 'disposal removes the configurable poll timer');
-    }
-    if (scenario === 'startup') {
-      assert.equal(value.codexWarmup.lastReason, 'startup');
-      for (const dispose of disposers.splice(0).reverse()) await dispose?.();
-      apply(ctx, { petLauncher: () => () => {}, warmupClock: () => now });
-      await new Promise(resolve => setTimeout(resolve, 100));
-      assert.equal(modelCalls, 1, 'persisted window prevents a second startup call');
-    }
-    if (scenario === 'duplicate') {
-      let duplicateBody;
-      const duplicateServices = { ...services, webServer: { register({ path, handler }) {
-        if (path.endsWith('/state')) duplicateBody = handler; return () => {};
-      } } };
-      apply({ ...ctx, inject(_names, fn) { fn(duplicateServices); } }, { petLauncher: () => () => {}, warmupClock: () => now });
-      for (let i = 0; i < 100; i++) {
-        let body; duplicateBody({ method: 'GET', url: '/api/dsh-plugin-simple-pet/state', headers: {} },
-          { writeHead() {}, end(value) { body = value; } });
-        if (JSON.parse(body).codexWarmup.status !== 'disabled') break;
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      assert.equal(modelCalls, 1, 'a second mounted context cannot repeat the local daily occurrence');
-    }
+    await new Promise(resolve=>setTimeout(resolve,35));
+    if(scenario==='periodic'){t.mock.timers.tick(60_000);await new Promise(resolve=>setTimeout(resolve,35));}
+    const value=state();assert.equal(value.codexWarmup.status,'disabled');assert.equal(modelCalls,0);assert.equal(streamPaused,false);
+    assert.ok(!calls.some(call=>/warmup|default-model/.test(call.method)||call.payload.force===true));
+    assert.equal(value.codexQuotaRefreshSeconds,5);assert.equal(Object.values(value.codexStats.days).reduce((n,d)=>n+d.tokens,0),0);
+    if(damaged)assert.equal(await readFile(join(data,'warmup.json'),'utf8'),'{broken');
+    else await assert.rejects(readFile(join(data,'warmup.json')),{code:'ENOENT'});
   } finally {
     for (const dispose of disposers.reverse()) await dispose?.();
     if (previous === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = previous;

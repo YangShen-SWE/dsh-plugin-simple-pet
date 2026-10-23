@@ -21,8 +21,9 @@ function Initialize-PetPanelAccounts {
 }
 
 function Test-PetPanelAccountsEnabled {
-  return (-not $Preview -and -not $script:PetPanelClosed -and $script:Prefs.billingMode -ceq 'codex' -and
-    $script:Prefs.multiAccountManagement -is [bool] -and $script:Prefs.multiAccountManagement)
+  # Read-only identity is useful without granting permission to switch accounts.
+  # The host separately checks the current, explicit unified-owner grant on POST.
+  return (-not $Preview -and -not $script:PetPanelClosed -and $script:Prefs.billingMode -ceq 'codex')
 }
 
 # These three transport functions are replaceable by isolated tests. Every stage is

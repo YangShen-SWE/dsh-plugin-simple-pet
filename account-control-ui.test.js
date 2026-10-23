@@ -17,16 +17,40 @@ function harness(send, services = {}) {
  const text=(n=tree)=>n&&typeof n==='object'?n.children.map(text).join(''):String(n??'');
  render();return {render,nodes,text,cleanup(){cleanups.splice(0).forEach(fn=>fn?.());}};
 }
-test('management defaults off and rejects non booleans',()=>{
+test('old management remains strictly typed but never authorizes unified controls or warm-up',()=>{
  assert.equal(DEFAULT_PREFERENCES.multiAccountManagement,false);
- for(const value of ['true',1,{},[],null]) assert.equal(preferenceValues({multiAccountManagement:value}).multiAccountManagement,false);
- assert.equal(preferenceValues({multiAccountManagement:true}).multiAccountManagement,true);
+ for(const key of ['multiAccountManagement','codexUnifiedControls','codexUnifiedWarmup']) {
+  assert.equal(DEFAULT_PREFERENCES[key],false);
+  for(const value of ['true',1,{},[],null]) assert.equal(preferenceValues({[key]:value})[key],false,key);
+ }
+ const legacy=preferenceValues({multiAccountManagement:true,codexAccountBackend:'official',codexWarmupStartup:true,codexWarmupReset:true,codexWarmupDaily:true});
+ assert.equal(legacy.multiAccountManagement,true);assert.equal(legacy.codexUnifiedControls,false);assert.equal(legacy.codexUnifiedWarmup,false);
 });
-test('settings has opt in and install only: no list, target or switch confirmation controls',async()=>{
- const calls=[];const ui=harness(async(url,init={})=>{calls.push({url,...init});return Response.json(url.endsWith('/preferences')?{values:{...DEFAULT_PREFERENCES,billingMode:'codex'},revision:'a'.repeat(64)}:{});});
- try {await settle();ui.render();assert.equal(calls.length,4);assert(!ui.nodes().some(n=>['data-account-list','data-account-target','data-account-prepare','data-account-confirm'].some(k=>n.props[k])));
- const box=ui.nodes().find(n=>n.props.name==='multiAccountManagement');assert(box);box.props.onChange({target:{checked:true}});ui.render();assert.equal(calls.length,4);
- assert.match(ui.text(),/不再二次确认/);assert.match(ui.text(),/完整邮箱/);assert.match(ui.text(),/至少两个/);
+test('settings exposes only an explicit unified-owner collaboration draft, never legacy install or actual switch UI',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const calls=[];let installs=0,values={...DEFAULT_PREFERENCES,billingMode:'codex',multiAccountManagement:true,codexAccountBackend:'official'},revision='a'.repeat(64);
+ const ui=harness(async(url,init={})=>{
+  calls.push({url,...init});
+  assert(!['accounts','multi-warmup','official-accounts'].some(path=>url.endsWith('/'+path)),'retired routes must not be used');
+  if(url.endsWith('/preferences')){if(init.method==='PUT'){const body=JSON.parse(init.body);assert.equal(body.revision,revision);values={...values,...body.patch};revision='b'.repeat(64);}return Response.json({values:{...values},revision});}
+  assert(!init.method||init.method==='GET');return Response.json({status:'unavailable'});
+ },{pluginManager:{listBundles(){installs++;assert.fail('settings must not inspect or install old dependency');}}});
+ const field=name=>{const node=ui.nodes().find(n=>n.props.name===name);assert(node,name);return node;};
+ try {
+  await settle();ui.render();assert.equal(calls.length,4);
+  assert.deepEqual(ui.nodes().filter(n=>n.props['data-pet-tab']).map(n=>n.props['data-pet-tab']),['appearance','stats']);
+  assert(!ui.nodes().some(n=>['data-account-list','data-account-target','data-account-prepare','data-account-confirm','data-panel-install'].some(k=>n.props[k])));
+  for(const name of ['multiAccountManagement','codexAccountBackend'])assert(!ui.nodes().some(n=>n.props.name===name));
+  assert.equal(field('codexUnifiedControls').props.checked,false);assert.equal(field('codexUnifiedWarmup').props.checked,false);
+  field('codexUnifiedControls').props.onChange({target:{checked:true}});ui.render();t.mock.timers.tick(1000);await settle();assert.equal(calls.length,4);
+  field('quietMode').props.onChange({target:{checked:true}});ui.render();t.mock.timers.tick(449);await settle();assert.equal(calls.filter(c=>c.method==='PUT').length,0);
+  t.mock.timers.tick(1);await settle();ui.render();assert.deepEqual(JSON.parse(calls.find(c=>c.method==='PUT').body).patch,{quietMode:true});
+  assert.equal(field('codexUnifiedControls').props.checked,true);assert.equal(values.codexUnifiedControls,false);
+  ui.nodes().find(n=>n.props['data-settings-save']).props.onClick();await settle();ui.render();
+  const writes=calls.filter(c=>c.method==='PUT');assert.equal(writes.length,2);assert.deepEqual(JSON.parse(writes[1].body).patch,{codexUnifiedControls:true});
+  assert.equal(values.codexUnifiedWarmup,false);assert.equal(installs,0);
+  assert.match(ui.text(),/登录、增删账号和模型选择仍只在订阅管理/);assert.match(ui.text(),/旧版授权不会自动沿用/);
+  assert.match(ui.text(),/不会重发或更改进行中的聊天/);assert(!calls.some(c=>/select|activate|switch|install/.test(c.url)));
  }finally{ui.cleanup();}
 });
 const accepted={status:'accepted',kind:'registry',name:'dsh-plugin-subscriptions',version:'0.9.9',bundle:true};

@@ -20,7 +20,6 @@ import { createAccountControl } from './account-control.js';
 import { MultiWarmupStore, MultiWarmupScheduler, multiWarmupHandler } from './multi-warmup.js';
 import { discoverBoundAccounts, runBoundWarmup } from './multi-warmup-provider.js';
 import { officialAccountRpc, readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy } from './official-accounts.js';
-import { embeddedAccountsPlugin } from './embedded-accounts.js';
 import { createEmbeddedSubscription } from './embedded-subscription.js';
 import { loadExpertRoutePolicy, installExpertSessionCompatibility, loadExpertMessageFactory } from './expert-session-compat.js';
 
@@ -159,14 +158,13 @@ export function readLegacyWarmup(file) {
   } catch (cause) { return { readable: cause.code === 'ENOENT', journal: null }; }
 }
 
-export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability, panelStarter = startPanelAccounts } = {}) {
+export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability, panelStarter = startPanelAccounts, subscriptionFactory = createEmbeddedSubscription } = {}) {
   // A child fiber shares the host's public services and is disposed with simple-pet.
   // Mock-only contexts without plugin() never activate a real account engine.
-  let subscriptionOwner = 'loading';
+  let subscriptionOwner = 'loading', subscriptionAdapter = null;
   const supportsAccountSwitch = provider => (provider === 'openai-codex' && subscriptionOwner === 'embedded') || switchSupported(provider);
   if (typeof ctx.plugin === 'function') {
-    ctx.plugin(createEmbeddedSubscription({ onOwner: owner => { subscriptionOwner = owner; } }));
-    ctx.plugin(embeddedAccountsPlugin);
+    ctx.plugin(subscriptionFactory({ onOwner: owner => { subscriptionOwner = owner; }, onAdapter: adapter => { subscriptionAdapter = adapter; } }));
   }
   let live = true;
   const instance = randomUUID();
@@ -176,19 +174,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   const statsFile = join(dataDir, `stats-${profile}.json`);
   const codexStatsFile = join(dataDir, `stats-codex-${profile}.json`);
   const prefsFile = join(dataDir, 'settings.json');
-  // Optional public Agent services must not become mandatory dependencies of
-  // the pet. No policy file means no route changes for any agent.
-  if (typeof ctx.inject === 'function') ctx.inject(['agents','sessionProjections'], async agentCtx => {
-    const policyFile = join(dataDir, `expert-routes-${profile}.json`);
-    if (!agentCtx.agents?.list || !agentCtx.sessionProjections?.stateOf) return;
-    try {
-      if (loadExpertRoutePolicy(policyFile).length === 0) return;
-      const createUserMessage = await loadExpertMessageFactory();
-      agentCtx.effect(() => installExpertSessionCompatibility(agentCtx, {
-        readPolicy: () => loadExpertRoutePolicy(policyFile), createUserMessage,
-      }));
-    } catch { agentCtx.logger?.warn?.('simple-pet: explicit expert route compatibility unavailable; original routes retained.'); }
-  });
+  // Legacy routes now delegate to the embedded subscription; old expert policy is retained but not activated.
   const warmupFile = join(dataDir, 'warmup.json');
   const initialWarmup = readLegacyWarmup(warmupFile);
   let storedWarmup = initialWarmup.journal, warmupJournalReadable = initialWarmup.readable, warmupJournalAlert = null;
@@ -201,21 +187,10 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   const revokeOfficialRequests=()=>{officialRequests.abort();officialRequests=new AbortController();};
   let codexBusy = false;
   let codexProvider = 'openai-codex';
-  let accountBackend = 'legacy';
-  try { accountBackend = JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, '')).codexAccountBackend === 'official' ? 'official' : 'legacy'; } catch { /* opt-in only */ }
-  function configureAccountBackend(raw) {
-    if (!raw || typeof raw !== 'object') return;
-    const next = raw.codexAccountBackend === 'official' ? 'official' : 'legacy';
-    if (next === accountBackend) return;
-    if (warmup.active || multiWarmup.active) warmupModeUncertain = true;
-    warmup.active?.abort(); multiWarmup.active?.abort();
-    revokeOfficialRequests();accountBackend = next; accountSourceGeneration++; codexRevision++; codexIdentity = null; warmupQuota = null;
-    codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
-  }
-  function refreshAccountBackend() {
-    try { configureAccountBackend(JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, ''))); } catch { /* never fall back on a malformed file */ }
-    return accountBackend;
-  }
+  // Subscription management is the sole connection/account owner. Retired preferences cannot re-enable the old service.
+  const accountBackend = 'legacy';
+  function configureAccountBackend() {}
+  function refreshAccountBackend() { return accountBackend; }
   const discoverAccounts = options => options.backend === 'official' ? discoverOfficialAccounts(options) : discoverBoundAccounts(options);
   let codexRevision = 0;
   let bridgeRevision = 0;
@@ -223,8 +198,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let quotaRefreshTimer = null;
   let quotaPollTimer = null;
   let quotaPollSeconds = 5;
-  try { quotaPollSeconds = codexQuotaRefreshSeconds(JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, ''))); }
-  catch { /* Missing or invalid settings keep the five-second default. */ }
+  // Pet display polls the subscription owner's cache; retired account preferences cannot force its network refresh policy.
   function configureQuotaPolling(raw) {
     const seconds = codexQuotaRefreshSeconds(raw);
     if (seconds === quotaPollSeconds && quotaPollTimer !== null) return;
@@ -273,14 +247,14 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       await rename(temporary, warmupFile);
     },
     async getQuota({ force, signal }) {
-      if (!live || refreshAccountBackend() === 'official' || !codexBridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
+      if (!warmupAuthorized() || refreshAccountBackend() === 'official' || !codexBridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
       const bridge = codexBridge, generation = bridgeRevision, selectionGeneration = codexRevision;
       const now = warmupClock();
       if (!force && codex.provider === 'openai-codex' && codex.observedAt === warmupQuota?.observedAt) return warmupQuota;
       if (!force && codex.provider === 'openai-codex' && codex.observedAt > 0) return codex;
       if (!force && warmupQuota && now - warmupPollAt < quotaPollSeconds * 1000) return warmupQuota;
       let identity = null;
-      const current = await readCodexQuota(bridge, signal, now, 'openai-codex', { force, onIdentity(value) { identity = value; } });
+      const current = await readCodexQuota(bridge, signal, now, 'openai-codex', { force, allowFallback: false, onIdentity(value) { identity = value; } });
       if (!live || generation !== bridgeRevision || selectionGeneration !== codexRevision || bridge !== codexBridge) throw new Error('subscription bridge changed');
       warmupQuota = current; warmupPollAt = now;
       if (codexProvider === 'openai-codex') {
@@ -292,8 +266,11 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     },
     async run({ quota, signal }) {
       const bridge = codexBridge, generation = bridgeRevision;
-      if (!live || refreshAccountBackend() === 'official' || !bridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
+      if (!warmupAuthorized() || refreshAccountBackend() === 'official' || !bridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || multiEnabled || legacyResumePaused || legacyDayBlocked || !multiReadable || !warmupJournalReadable) throw new Error('subscription bridge unavailable');
+      const adapter = subscriptionAdapter;
       const result = await runCodexWarmup({ llm: ctx.llm, bridge, quota, signal,
+        prepareCall: (...args) => adapter.prepareCall(...args, quota.accountKey),
+        isCurrent: () => warmupAuthorized() && adapter === subscriptionAdapter && bridge === codexBridge && generation === bridgeRevision && !accountChanging,
         onUsage(usage, model) {
           const items = codexTokenItems(usage), at = warmupClock();
           if (!items.length) return;
@@ -356,67 +333,39 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   let prefsWatcher = null;
   let prefsChangeTimer = null;
   let warmupRefreshPending = false;
+  function unifiedPermissions() {
+    try { return preferenceValues(JSON.parse(readFileSync(prefsFile, 'utf8').replace(/^\uFEFF/, ''))); }
+    catch { return preferenceValues(null); }
+  }
+  function warmupAuthorized() {
+    return live && profile === 'desktop' && subscriptionOwner === 'embedded' && !!subscriptionAdapter
+      && unifiedPermissions().codexUnifiedWarmup === true;
+  }
   function scheduleWarmup() {
-    clearTimeout(warmupTimer);
-    if (!live || warmupSwitchUncertain || warmupModeUncertain || !multiReadable || profile !== 'desktop' || process.platform !== 'win32') return;
-    const delay = multiEnabled ? multiWarmup.nextDelay(warmupClock()) : warmup.nextDelay(warmupClock());
-    // A <=30s local-file heartbeat distinguishes an armed timer from a long
-    // suspension even when the quota polling interval is set to one hour.
-    if (Number.isFinite(delay)) warmupTimer = setTimeout(pollWarmup, Math.max(1, Math.min(delay, multiEnabled ? 30_000 : 2_147_483_647)));
+    clearTimeout(warmupTimer); warmupTimer = null;
+    if (!warmupAuthorized() || !codexBridge || warmupSwitchUncertain || warmupModeUncertain || !multiReadable || legacyDayBlocked || !warmupJournalReadable) return;
+    const delay = warmup.nextDelay(warmupClock());
+    if (delay !== null) { warmupTimer = setTimeout(() => void pollWarmup(), Math.max(1, delay)); warmupTimer.unref?.(); }
   }
   async function pollWarmup({ preferencesChanged = false } = {}) {
-    if (!live || warmupSwitchUncertain || warmupModeUncertain || profile !== 'desktop' || process.platform !== 'win32') return;
-    if (accountChanging) { clearTimeout(warmupTimer); return; }
-    if (prefsReading) {
-      warmupRefreshPending = true;
-      if (preferencesChanged) warmup.active?.abort();
-      return;
-    }
-    prefsReading = true;
+    // Old account/backend grants never authorize a different unified owner.
+    if (prefsReading) { warmupRefreshPending = true; if (preferencesChanged) warmup.active?.abort(); return; }
+    prefsReading = true; clearTimeout(warmupTimer); warmupTimer = null;
     try {
-      let raw;
-      try { raw = JSON.parse((await readFile(prefsFile, 'utf8')).replace(/^\uFEFF/, '')); }
-      catch { raw = null; }
-      if (!live) return;
-      configureAccountBackend(raw);
+      const raw = JSON.parse((await readFile(prefsFile, 'utf8')).replace(/^\uFEFF/, ''));
       configureQuotaPolling(raw);
-      // Only one mounted context owns automation. Reload durable legacy claims
-      // after handover; a context mounted earlier must not use its startup cache.
-      if (WARMUP_OWNERS.has(warmupFile) && WARMUP_OWNERS.get(warmupFile) !== instance) return;
-      if (!WARMUP_OWNERS.has(warmupFile)) WARMUP_OWNERS.set(warmupFile, instance);
-      const legacy = readLegacyWarmup(warmupFile); warmupJournalReadable = legacy.readable;
-      if (!legacy.readable) {
-        warmupJournalAlert = raw?.codexWarmupDaily === true || raw?.codexWarmupStartup === true || raw?.codexWarmupReset === true;
-        multiReadable = false; warmup.active?.abort(); multiWarmup.active?.abort(); snapshot(); return;
+      if (!warmupAuthorized()) { warmup.active?.abort(); warmup.update('disabled', '统一订阅自动预热未授权；旧账号开关不会自动转为新授权。'); return; }
+      const saved = await multiStore.read(); multiReadable = true;
+      legacyDayBlocked = multiBlocksLegacy(saved.data, warmupClock());
+      if (!codexBridge || accountChanging || warmupSwitchUncertain || warmupModeUncertain || legacyDayBlocked || !warmupJournalReadable) {
+        warmup.active?.abort(); warmup.update('blocked', '账号、去重记录或切换结果尚未确认，自动预热暂停；不会补发。'); return;
       }
-      warmupJournalAlert = false;
-      if (!warmup.active) warmup.journal = loadWarmupJournal(legacy.journal);
-      try {
-        const saved = await multiStore.read(); multiReadable = true;
-        legacyDayBlocked = multiBlocksLegacy(saved.data, warmupClock());
-        if (saved.data.paused && !multiWarmup.active) {
-          warmupModeUncertain = true; warmup.active?.abort();
-          multiWarmup.update('paused', '存在未知结果或崩溃认领，所有自动预热保守暂停；关闭开关不能清除记录。'); snapshot(); return;
-        }
-        const enabled = saved.data.config.enabled;
-        if (multiEnabled && !enabled) legacyResumePaused = true;
-        if ((enabled && warmup.active) || (!enabled && multiWarmup.active)) {
-          warmupModeUncertain = true; warmup.active?.abort(); multiWarmup.active?.abort(); snapshot(); return;
-        }
-        multiEnabled = enabled;
-      } catch { multiReadable = false; warmup.active?.abort(); multiWarmup.active?.abort(); snapshot(); return; }
-      const before = JSON.stringify([warmup.view, multiWarmup.view]);
-      try {
-        if (multiEnabled) { await warmup.tick(null); await multiWarmup.tick(); }
-        else { await multiWarmup.tick(); await warmup.tick(accountBackend === 'official' || legacyResumePaused || legacyDayBlocked ? null : raw); }
-      } catch { /* Automatic requests never escalate or fall back to a different account. */ }
-      if (live && before !== JSON.stringify([warmup.view, multiWarmup.view])) snapshot();
+      await warmup.tick(raw, warmupClock());
+    } catch {
+      warmup.active?.abort(); warmup.update('disabled', '设置或预热记录不可读，自动预热暂停；原文件未覆盖。');
     } finally {
-      prefsReading = false;
-      if (live && warmupRefreshPending) {
-        warmupRefreshPending = false;
-        void pollWarmup();
-      } else scheduleWarmup();
+      prefsReading = false; scheduleWarmup();
+      if (warmupRefreshPending && live) { warmupRefreshPending = false; queueMicrotask(() => void pollWarmup()); }
     }
   }
 
@@ -492,7 +441,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       let identity = null;
       const current = backend === 'official' ? await readOfficialQuota(codexBridge, signal, value => { identity = value; })
         : await readCodexQuota(codexBridge, signal, Date.now(), codexProvider,
-          { force: force === true || warmup.prefs.reset || (warmup.prefs.startup && !warmup.startupChecked), onIdentity(value) { identity = value; } });
+          { force: false, allowFallback: false, onIdentity(value) { identity = value; } });
       if (!live || revision !== codexRevision || bridgeGeneration !== bridgeRevision) return;
       for (const delta of quotaDeltas(codex, current)) push(delta);
       if (codex.provider !== current.provider) { accountSourceGeneration++; multiWarmup.active?.abort(); }
@@ -543,15 +492,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     if (seenQueue.length > 512) seen.delete(seenQueue.shift());
     const at = Number.isFinite(new Date(event.time).getTime()) ? new Date(event.time).getTime() : Date.now();
     if (CODEX_PROVIDERS.has(source.provider)) {
-      if (refreshAccountBackend() === 'legacy' && source.provider !== 'codex-accounts' && codexProvider !== source.provider) {
-        codexProvider = source.provider;
-        accountSourceGeneration++;
-        multiWarmup.active?.abort();
-        codexRevision++;
-        codexIdentity = null;
-        codex = { status: 'loading', fiveHour: null, weekly: null, observedAt: null };
-        void pollCodex();
-      }
+
       const items = codexTokenItems(event.data?.usage);
       if (!items.length) return;
       addUsage(codexLedger, event.data?.usage, { items: [] }, at);
@@ -592,13 +533,9 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   });
 
   function panelGrant() {
-    try {
-      const bytes = readFileSync(prefsFile);
-      if (bytes.length > 262144) return null;
-      const values = preferenceValues(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '')));
-      return values.multiAccountManagement && values.billingMode === 'codex'
-        ? createHash('sha256').update(bytes).digest('hex') : null;
-    } catch { return null; }
+    const prefs = unifiedPermissions();
+    if (!live || subscriptionOwner !== 'embedded' || prefs.codexUnifiedControls !== true || prefs.billingMode !== 'codex') return null;
+    return createHash('sha256').update(JSON.stringify([instance, subscriptionOwner, bridgeRevision, prefs.codexUnifiedControls, prefs.billingMode])).digest('hex');
   }
   const panelReady = () => live && petStop?.applicationRuntime?.()?.active === true && !!panelGrant() && !!codexBridge && (refreshAccountBackend() === 'official' || supportsAccountSwitch(codex.provider))
     && !accountChanging && !warmupSwitchUncertain && !warmupModeUncertain && !prefsReading && !warmup.active && !multiWarmup.active;
@@ -663,11 +600,10 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       } catch { return { enabled: true, grant, canSwitch: false, email: '', selection: 'none', validForMs: 2000, reason: '官方账号插件未就绪' }; }
     }
     const grant = panelGrant();
-    if (!grant) return { enabled: false, canSwitch: false, email: '', selection: 'none', validForMs: 2000 };
     const evidence = panelIdentityEvidence(codex, codexIdentity);
     const valid = evidence.status === 'ready';
     return { enabled: true, grant, canSwitch: valid && panelReady() && Number.isSafeInteger(codex.accountCount) && codex.accountCount >= 2,
-      email: valid ? codexIdentity.panelEmail ?? '' : '', selection: valid ? evidence.selection : 'none',
+      email: valid ? (grant ? codexIdentity.panelEmail : codexIdentity.maskedEmail) ?? '' : '', selection: valid ? evidence.selection : 'none',
       accountKey: valid ? evidence.accountKey : null, validForMs: valid ? Math.min(evidence.validForMs, 6000) : 2000,
       reason: !supportsAccountSwitch(codex.provider) ? '请安装并启用支持的订阅依赖版本' : !valid ? '等待账号状态' : codex.accountCount < 2 ? '至少绑定两个账号' : !panelReady() ? '预热或切换中，或结果待核验' : null };
   }
@@ -685,7 +621,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     }), 'simple-pet: read-only embedded subscription ownership');
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/preferences',
-      handler: preferencesHandler(preferencesStore, (req, res) => guard(routeCtx, req, res)),
+      handler: preferencesHandler(preferencesStore, (req, res) => guard(routeCtx, req, res), { allowedKeys: ['skin','cardTheme','unit','size','billingMode','codexUnit','sleepMinutes','compactMode','quietMode','feedbackStyle','reduceMotion','disableFlashes','disableFloats','codexQuotaRefreshSeconds','codexUnifiedControls','codexUnifiedWarmup','codexWarmupDaily','codexWarmupTime','codexWarmupReset','codexWarmupStartup'] }),
     }), 'simple-pet: host settings preferences');
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/application',
@@ -695,25 +631,22 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/account',
       handler: accountIdentityHandler({ authorize: (req, res) => guard(routeCtx, req, res),
-        read: () => live ? identityEvidence(codex, codexIdentity) : { status: 'unavailable' } }),
+        read: () => {
+          const evidence = live ? panelIdentityEvidence(codex, codexIdentity) : { status: 'unavailable' };
+          return evidence.status === 'ready' ? { ...evidence, provider: codexIdentity.provider, maskedEmail: codexIdentity.maskedEmail } : evidence;
+        } }),
     }), 'simple-pet: private read-only account identity');
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/accounts',
-      handler: (req, res) => { if (guard(routeCtx, req, res)) json(res, 410, { error: '切号已移至桌宠信息框，请启用多账号管理。' }); },
-    }), 'simple-pet: retired settings account switch');
+      handler: (req, res) => { if (guard(routeCtx, req, res)) json(res, 410, { error: '账号管理已统一至订阅管理；切号仅通过已授权的桌宠面板。' }, req.method ?? 'GET'); },
+    }), 'simple-pet: retired web account management');
     routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/multi-warmup',
-      handler: multiWarmupHandler({ store: multiStore, discover: discoverAccounts,
-        context: multiContext, authorize: (req, res) => guard(routeCtx, req, res),
-        changed() {
-          if (warmup.active || multiWarmup.active) { warmupModeUncertain = true; warmup.active?.abort(); multiWarmup.active?.abort(); }
-          void pollWarmup({ preferencesChanged: true }); snapshot();
-        },
-      }),
-    }), 'simple-pet: explicitly authorized account-bound warmup');
-    routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: '/api/dsh-plugin-simple-pet/official-accounts',
-      handler: officialAccountsProxy({ bridge: () => live && refreshAccountBackend() === 'official' ? codexBridge : null,sourceSignal:()=>officialRequests.signal, authorize: (req, res) => guard(routeCtx, req, res) }),
-    }), 'simple-pet: explicit official OAuth account management');
+      handler: (req,res) => { if (guard(routeCtx,req,res)) json(res,410,{error:'账号与连接配置已统一至订阅管理。'},req.method??'GET'); },
+    }), 'simple-pet: retired account warmup');
+    routeCtx.effect(() => routeCtx.webServer.register({ kind:'exact',path:'/api/dsh-plugin-simple-pet/official-accounts',
+      handler:(req,res)=>{if(guard(routeCtx,req,res))json(res,410,{error:'账号与连接配置已统一至订阅管理。'},req.method??'GET');},
+    }), 'simple-pet: retired duplicate account management');
     routeCtx.effect(() => routeCtx.webServer.register({ kind: 'exact', path: STATE_PATH, handler(req, res) {
       if (!guard(routeCtx, req, res)) return;
       const method = req.method ?? 'GET';

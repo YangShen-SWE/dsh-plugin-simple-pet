@@ -123,9 +123,9 @@ function Assert-Geometry([string]$mode, [string]$size) {
       Assert-Equal $actual $property.value "$($entry.name) $($property.key) unchanged"
     }
   }
-  $height = if ($mode -eq 'codex') { 360 } else { 296 }
+  $height = if ($mode -eq 'codex') { 388 } else { 296 }
   Assert-Equal $script:Root.Height $height 'native root mode height preserved'
-  Assert-Equal $script:Card.Height $(if ($mode -eq 'codex') { 156 } else { 92 }) 'native card mode height preserved'
+  Assert-Equal $script:Card.Height $(if ($mode -eq 'codex') { 184 } else { 92 }) 'native card mode height preserved'
   Assert-Equal $script:Window.Width (272 * $script:Sizes[$size]) 'four-size window width preserved'
   Assert-Equal $script:Window.Height ($height * $script:Sizes[$size]) 'four-size window height preserved'
   Assert-Equal $script:Window.Left 123.25 'theme and suppressed size application preserve left'
@@ -320,7 +320,7 @@ try {
   Reload-PetPreferences -Force
   Assert-True ($script:ThemeCalls -gt $calls) 'billing mode refresh invokes theme immediately'
   Assert-Brush $script:Card.BorderBrush '#8D9EAA' 'Codex switch uses its palette, never DeepSeek peak override'
-  Assert-Equal $script:Window.Height 360 'mode refresh preserves Codex geometry'
+  Assert-Equal $script:Window.Height 388 'mode refresh includes Codex identity footer'
   Assert-Equal $script:Window.Left 123.25 'mode/theme hot reload preserves left'
   Assert-Equal $script:Window.Top 234.75 'mode/theme hot reload preserves top'
   [void](Write-External ([ordered]@{ skin = 'star'; cardTheme = @('forest'); billingMode = 'codex'; size = 'medium' }))

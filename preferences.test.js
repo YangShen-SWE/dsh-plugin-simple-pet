@@ -28,7 +28,7 @@ test('defaults are exact, frozen, fresh and do not expose unknown values', () =>
   assert.deepEqual(DEFAULT_PREFERENCES, {
     skin: 'default', cardTheme: 'default', unit: 'cny', size: 'medium', billingMode: 'deepseek', codexUnit: 'token', codexAccountBackend: 'legacy',
     codexQuotaRefreshSeconds: 5, codexWarmupDaily: false, codexWarmupTime: '09:30',
-    codexWarmupReset: false, codexWarmupStartup: false, sleepMinutes: 10,
+    codexWarmupReset: false, codexWarmupStartup: false, codexUnifiedControls: false, codexUnifiedWarmup: false, sleepMinutes: 10,
     compactMode: false, multiAccountManagement: false, quietMode: false, feedbackStyle: 'classic', reduceMotion: false, disableFlashes: false, disableFloats: false,
   });
   assert.ok(Object.isFrozen(DEFAULT_PREFERENCES));
@@ -60,7 +60,7 @@ test('integer bounds are typed and inclusive with invalid values defaulted', () 
 });
 
 test('strict booleans and exact HH:mm prevent accidental automatic warm-up', () => {
-  for (const key of ['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup']) {
+  for (const key of ['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup', 'codexUnifiedControls', 'codexUnifiedWarmup']) {
     for (const value of [true, false]) assert.equal(preferenceValues({ [key]: value, codexWarmupTime: '09:30' })[key], value);
     for (const value of ['true', 'false', 1, 0, null, {}, []]) assert.equal(preferenceValues({ [key]: value })[key], false);
   }
@@ -74,10 +74,25 @@ test('strict booleans and exact HH:mm prevent accidental automatic warm-up', () 
   }
 });
 
+test('retired backend and warm-up grants never imply unified subscription authorization', () => {
+  for (const codexAccountBackend of ['legacy', 'official']) {
+    const values = preferenceValues({ codexAccountBackend, multiAccountManagement: true,
+      codexWarmupDaily: true, codexWarmupTime: '09:30', codexWarmupStartup: true, codexWarmupReset: true });
+    assert.equal(values.codexAccountBackend, codexAccountBackend);
+    assert.equal(values.multiAccountManagement, true);
+    for (const key of ['codexWarmupDaily', 'codexWarmupStartup', 'codexWarmupReset']) assert.equal(values[key], true);
+    assert.equal(values.codexUnifiedControls, false); assert.equal(values.codexUnifiedWarmup, false);
+  }
+});
+
 test('sanitization ignores inherited fields and does not invoke accessors', () => {
-  const raw = Object.create({ skin: 'night', codexWarmupDaily: true, codexWarmupTime: '09:30' });
+  const raw = Object.create({ skin: 'night', codexWarmupDaily: true, codexWarmupTime: '09:30', codexUnifiedControls: true, codexUnifiedWarmup: true });
   Object.defineProperty(raw, 'codexWarmupReset', { get() { throw new Error('must not execute'); } });
   assert.deepEqual(preferenceValues(raw), DEFAULT_PREFERENCES);
+  for (const key of ['codexUnifiedControls', 'codexUnifiedWarmup']) {
+    const accessor = Object.defineProperty({}, key, { enumerable: true, get() { throw new Error('authorization getter must not execute'); } });
+    assert.deepEqual(preferenceValues(accessor), DEFAULT_PREFERENCES);
+  }
 });
 
 test('missing reads do not create settings, directories or temp files', async t => {
@@ -114,7 +129,7 @@ test('multi-field updates are atomic and preserve unknown fields and legacy posi
   const before = await f.store.read();
   const patch = { skin: 'star', unit: 'token', size: 'tiny', billingMode: 'codex', codexUnit: 'percent',
     codexQuotaRefreshSeconds: 3600, codexWarmupDaily: true, codexWarmupTime: '00:00',
-    codexWarmupReset: true, codexWarmupStartup: true, sleepMinutes: 240 };
+    codexWarmupReset: true, codexWarmupStartup: true, codexUnifiedControls: true, codexUnifiedWarmup: true, sleepMinutes: 240 };
   const after = await f.store.update(patch, before.revision);
   assert.deepEqual(after.values, { ...DEFAULT_PREFERENCES, ...patch });
   const saved = JSON.parse(await fs.readFile(f.file, 'utf8'));
@@ -138,7 +153,8 @@ test('every enum and inclusive numeric endpoint is valid in patches', async t =>
   let revision = 'missing';
   const choices = { skin: ['default', 'night', 'snow', 'mint', 'cherry', 'star'], unit: ['cny', 'token'],
     size: ['tiny', 'small', 'medium', 'large'], billingMode: ['deepseek', 'codex'], codexUnit: ['token', 'percent'], codexAccountBackend: ['legacy', 'official'],
-    codexQuotaRefreshSeconds: [1, 3600], sleepMinutes: [1, 240], codexWarmupReset: [true, false], codexWarmupStartup: [true, false] };
+    codexQuotaRefreshSeconds: [1, 3600], sleepMinutes: [1, 240], codexWarmupReset: [true, false], codexWarmupStartup: [true, false],
+    codexUnifiedControls: [true, false], codexUnifiedWarmup: [true, false] };
   for (const [key, values] of Object.entries(choices)) for (const value of values) {
     const result = await f.store.update({ [key]: value }, revision);
     assert.equal(result.values[key], value); revision = result.revision;
@@ -157,7 +173,7 @@ test('invalid, unknown, prototype, inherited and accessor patches never write', 
   for (const key of ['codexQuotaRefreshSeconds', 'sleepMinutes']) {
     for (const value of ['5', 0, -1, 1.5, Infinity, NaN, key === 'sleepMinutes' ? 241 : 3601]) invalid.push({ [key]: value });
   }
-  for (const key of ['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup']) {
+  for (const key of ['codexWarmupDaily', 'codexWarmupReset', 'codexWarmupStartup', 'codexUnifiedControls', 'codexUnifiedWarmup']) {
     for (const value of [1, 0, 'true', 'false']) invalid.push({ [key]: value });
   }
   for (const time of ['9:30', '24:00', '09:60', '09:30\n', ' 09:30']) invalid.push({ codexWarmupTime: time });

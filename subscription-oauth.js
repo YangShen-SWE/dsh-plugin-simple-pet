@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 // JWT claims are NOT authentication proof. An unverified exp may only shorten
 // local freshness, never extend it, choose an account or authorize a request.
@@ -63,8 +63,10 @@ export function createSubscriptionRequestAuth({ readAccountKey, readCredential, 
     return Object.freeze({ resolve: options => authorize(captured, options) });
   }
   return Object.freeze({
-    async capture({ signal } = {}) {
+    async capture({ signal, expectedAccountKey } = {}) {
       const captured = await snapshot(signal);
+      if (expectedAccountKey !== undefined && (typeof expectedAccountKey !== 'string' || !/^[a-f0-9]{16}$/.test(expectedAccountKey)
+        || createHash('sha256').update(captured.key).digest('hex').slice(0, 16) !== expectedAccountKey)) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
       for (const [key, value] of pending) if (now() >= value.deadline) pending.delete(key);
       if (pending.size >= maxPending) throw failure('SUBSCRIPTION_AUTH_BUSY');
       const handle = 'simple-pet-oauth-request:' + nonce();

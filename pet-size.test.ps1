@@ -124,12 +124,12 @@ try {
       Update-PetUsageCard
       Set-PetSize
       $expectedScale = @{ tiny = 0.625; small = 0.85; medium = 1.0; large = 1.25 }[$size]
-      $baseHeight = if ($mode -eq 'codex') { 360 } else { 296 }
+      $baseHeight = if ($mode -eq 'codex') { 388 } else { 296 }
       Assert-Near $script:Window.Width (272 * $expectedScale) "$mode/$size width"
       Assert-Near $script:Window.Height ($baseHeight * $expectedScale) "$mode/$size height"
       Assert-Near $script:Root.Width 272 'logical canvas width is unchanged'
       Assert-Near $script:Root.Height $baseHeight 'logical canvas height matches billing mode'
-      Assert-Near $script:Card.Height $(if ($mode -eq 'codex') { 156 } else { 92 }) 'mode card height remains correct'
+      Assert-Near $script:Card.Height $(if ($mode -eq 'codex') { 184 } else { 92 }) 'mode card height remains correct'
       Assert-Persisted "$mode/$size create-or-replace"
       foreach ($entry in $script:ActiveFloats) { $script:Root.Children.Remove($entry.control) }
       $script:ActiveFloats.Clear()
@@ -158,7 +158,7 @@ try {
       $script:Window.Left = $area.Right - $script:Window.Width
       $script:Window.Top = $area.Bottom - $script:Window.Height
       Refresh-BillingMode
-      $baseHeight = if ($mode -eq 'codex') { 360 } else { 296 }
+      $baseHeight = if ($mode -eq 'codex') { 388 } else { 296 }
       Assert-Near $script:Window.Width (272 * $script:Sizes[$size]) "$size switch to $mode preserves width"
       Assert-Near $script:Window.Height ($baseHeight * $script:Sizes[$size]) "$size switch to $mode resizes height"
       Assert-Equal ([string]$script:CodexPanel.Visibility) $(if ($mode -eq 'codex') { 'Visible' } else { 'Collapsed' }) 'mode switch updates panel'

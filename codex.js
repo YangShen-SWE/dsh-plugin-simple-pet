@@ -39,15 +39,17 @@ export function normalizeCodexQuota(usage, accountKey, now = Date.now()) {
   return result;
 }
 
-export async function readCodexQuota(bridge, signal, now = Date.now(), provider = 'openai-codex', { force = false, onIdentity = () => {} } = {}) {
+export async function readCodexQuota(bridge, signal, now = Date.now(), provider = 'openai-codex', { force = false, onIdentity = () => {}, allowFallback = true } = {}) {
   if (provider === 'codex') return readSubscriptionsQuota(bridge, signal, now, onIdentity);
   const before = await subscriptionRpc(bridge, 'codex-subscription/status', {}, signal);
-  if (before === null) return readSubscriptionsQuota(bridge, signal, now, onIdentity);
+  if (before === null) return allowFallback ? readSubscriptionsQuota(bridge, signal, now, onIdentity) : { status: 'unavailable', fiveHour: null, weekly: null, observedAt: null };
   if (!before.authenticated) return { status: 'signed-out', fiveHour: null, weekly: null, observedAt: null };
   const selected = selectedCodexAccount(before, 'openai-codex');
   if (!selected) return { status: 'unavailable', fiveHour: null, weekly: null, observedAt: null };
   const accountKey = createHash('sha256').update(selected.id).digest('hex').slice(0, 16);
-  const usage = await subscriptionRpc(bridge, 'codex-subscription/usage', { force: force === true }, signal);
+  let usage;
+  try { usage = await subscriptionRpc(bridge, 'codex-subscription/usage', { force: force === true }, signal); }
+  catch { signal?.throwIfAborted(); } // A quota failure does not erase a confirmed status identity.
   const after = await subscriptionRpc(bridge, 'codex-subscription/status', {}, signal);
   const confirmed = selectedCodexAccount(after, 'openai-codex');
   if (!confirmed || selected.id !== confirmed.id) {

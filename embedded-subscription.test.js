@@ -72,6 +72,12 @@ test('external provider arriving during settings IO aborts before upstream side 
  assert.equal(await plugin.apply(ctx),undefined);assert.deepEqual(owners,['external']);assert.equal(effects,0);
  assert.equal(adapter.writable,false);assert.throws(()=>adapter.get(),{code:'SUBSCRIPTION_SETTINGS_CLOSED'});
 });
+for(const phase of ['startup','import','settings'])test(`legacy owner conflict at ${phase} never reports the dual engines unified`,async t=>{
+ const file=await fixture(t),owners=[];let legacy=phase==='startup',loads=0,sideEffects=0,adapter;
+ const ctx={logger:{warn(){}},llm:{listProviders:()=>legacy?[{id:'codex-accounts'}]:[]},loader:{entries:()=>[]},effect:f=>f()};
+ const plugin=createEmbeddedSubscription({settingsFile:file,onOwner:x=>owners.push(x),load:async()=>{loads++;if(phase==='import')legacy=true;return{apply:async(_ctx,_config,factory)=>{adapter=await factory(schema);legacy=true;adapter.assertEmbeddedOwner();sideEffects++;}};}});
+ assert.equal(await plugin.apply(ctx),undefined);assert.deepEqual(owners,['failed']);assert.equal(sideEffects,0);if(phase==='startup')assert.equal(loads,0);if(adapter)assert.equal(adapter.writable,false);
+});
 test('compiled frontend registers only Desktop Pet owner and contains the complete child factory',async()=>{
  const code=await fs.readFile(new URL('./lib/client.js',import.meta.url),'utf8');const ids=[];
  vm.runInNewContext(code,{window:{__ModuleLoader__:{load:module=>ids.push(module.id)}}});
