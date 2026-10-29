@@ -1,12 +1,20 @@
 # dsh-plugin-simple-pet
 
-> **v1.1.4 · 多账号预热与重置卡适配：** 同一内置订阅源的实验性多账号预热，默认关闭、逐账号明确授权；修复独立重置卡检查/Credits 未知值展示，兑换持久防重复。发布不自动安装、授权或消费；使用与限制见[多账号预热指南](UNIFIED-WARMUP-USAGE.md)。
+> **v1.1.5 · 预热错误静默日志：** 单当前账号自动预热失败不再弹窗，在设置中查看最近错误；持久去重、未知结果停止和不自动重试的保护保持不变。仅改进通知方式，不保证远端预热成功；发布不自动安装、授权或消费。
 
-**最新版：[v1.1.4 · 多账号预热与重置卡适配](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.4)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz) · [原设计快照](MULTI-ACCOUNT-WARMUP-PLAN.md)
+**最新版：[v1.1.5 · 预热错误静默日志](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.5)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz) · [原设计快照](MULTI-ACCOUNT-WARMUP-PLAN.md)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式和本机统计。只安装桌宠一包，完整内置订阅管理。
 
-## v1.1.4 更新重点
+## v1.1.5 更新重点
+
+- **预热失败不弹窗：** 移除 Windows 模态提示，不再反复打断操作；原生桌宠设置“Codex 自动预热”区域或网页单账号预热的“预热错误日志”中查看。
+- **安全日志：** 最近 20 条、持久保存、按告警去重；仅显示时间与固定安全摘要，不保存账号、令牌、聊天或原始异常，不回填旧弹窗历史。
+- **保护不变：** 未知结果仍停止、不自动重试，诊断文件不修改原消费保护。1063 项离线测试和客户端构建通过；未执行真实预热。
+
+导入 v1.1.5 后完整退出 DSH（含托盘）并重开，不清理账号、聊天或保护文件。详见[更新记录](CHANGELOG.md)与[使用指南](USAGE.md)。
+
+## v1.1.4 更新重点（历史）
 
 - **实验性多账号预热：** 最多八个账号，逐账号固定模型和手动/每日授权，不轮换聊天当前账号；标准速度、无历史或工具，手动与每日共享持久预算。
 - **重置卡与 Credits：** 卡片检查不再依赖额度摘要成功；未知余额不当零，保留零/无限/到期信息，兑换前持久认领，未知或已消费不自动重发。

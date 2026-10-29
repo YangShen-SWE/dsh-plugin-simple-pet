@@ -177,6 +177,16 @@ function Update-SettingsCodexWarmup {
   $control = $script:SettingsWindow.FindName('CodexWarmupStatus')
   if ($null -eq $control) { return }
   $control.Text = Get-CodexWarmupStatusText
+  $logControl = $script:SettingsWindow.FindName('CodexWarmupErrorLog')
+  if ($null -ne $logControl) {
+    $lines = @('预热错误日志（仅在设置中显示，不弹窗）')
+    foreach ($row in @($script:LastSnapshot.codexWarmup.errorLog)) {
+      if ($null -eq $row) { continue }
+      try { $lines += ([DateTimeOffset]::FromUnixTimeMilliseconds([int64]$row.at).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')) + '  ' + [string]$row.detail } catch { }
+    }
+    if ($lines.Count -eq 1) { $lines += '暂无已记录的预热错误。' }
+    $logControl.Text = $lines -join "`n"
+  }
 }
 function Update-SettingsCodexQuota {
   if ($null -eq $script:SettingsWindow -or -not $script:SettingsWindow.IsVisible -or (Get-BillingMode) -ne 'codex') { return }

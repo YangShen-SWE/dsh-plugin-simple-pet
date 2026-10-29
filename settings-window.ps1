@@ -400,8 +400,9 @@ function Show-PetSettings {
                   <TextBlock Text="适合非 24 小时开机；开启后也会检查一次当前额度。同一已知窗口不会重复预热。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"/>
                   <TextBlock Name="CodexWarmupTimezone" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap"/>
                   <TextBlock Name="CodexWarmupScheduleNote" Text="保存后数秒内由后端读取，无需重启。切换显示模式不会停止已启用任务；关闭或退出桌宠窗口也不会停止后端计划。DSH 或插件停止时不会唤醒电脑，也不会补执行错过的每日任务。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
-                  <TextBlock Name="CodexWarmupSafetyNote" Text="按上方检测间隔刷新检查满额新窗口（含提前恢复），同一已知窗口只尝试一次；100% 可能是四舍五入。重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。仅确认请求未发送时重试，最多尝试 3 次、间隔 5 秒；发送后结果不明则停止并提示。连续失败停止本次预热；底层传输仍可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                  <TextBlock Name="CodexWarmupSafetyNote" Text="按上方检测间隔刷新检查满额新窗口（含提前恢复），同一已知窗口只尝试一次；100% 可能是四舍五入。重置预热仅依据新鲜 5h 报告；每次只发极短提示，不带会话或工具。仅确认请求未发送时重试，最多尝试 3 次、间隔 5 秒；发送后结果不明则停止，仅记录错误日志，在设置中查看，不弹窗。连续失败停止本次预热；底层传输仍可能重试；不保证固定 Token 或窗口起点。接口无法锁定调用期间账号。" Foreground="#ABD2E3" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"/>
                   <TextBlock Name="CodexWarmupStatus" Foreground="#D9F5FF" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
+                  <TextBlock Name="CodexWarmupErrorLog" Foreground="#FFE2A7" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
                 </StackPanel>
               </Border>
               <Border Background="#203F5D" BorderBrush="#40738E" BorderThickness="1" CornerRadius="13" Margin="0,0,0,12">

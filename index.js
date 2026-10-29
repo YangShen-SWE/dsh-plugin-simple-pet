@@ -8,6 +8,7 @@ import { isPeak, priceUsage } from './billing.js';
 import { addUsage, loadLedger, seedFromRecentEvents } from './stats.js';
 import { CODEX_PROVIDERS, codexTokenItems, readCodexQuota, quotaDeltas } from './codex.js';
 import { CodexWarmupScheduler, loadWarmupJournal } from './warmup.js';
+import { WarmupErrorLog } from './warmup-error-log.js';
 import { warmupAfterAccountSwitch, multiBlocksLegacy, legacyBlocksMulti } from './warmup-safety.js';
 export { warmupAfterAccountSwitch, multiBlocksLegacy, legacyBlocksMulti };
 import { runCodexWarmup } from './warmup-call.js';
@@ -332,7 +333,8 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       });
     },
   });
-  const warmupView = () => warmupSwitchUncertain ? { ...warmup.view, detail: '共享账号切换结果不明，自动预热已暂停；请在订阅插件核验后完整重启 DSH。', accountSwitchPaused: true }
+  const warmupErrorLog = new WarmupErrorLog(join(dataDir, `warmup-errors-${profile}.json`), { clock: warmupClock, warn: message => ctx.logger?.warn?.(message) });
+  const rawWarmupView = () => warmupSwitchUncertain ? { ...warmup.view, detail: '共享账号切换结果不明，自动预热已暂停；请在订阅插件核验后完整重启 DSH。', accountSwitchPaused: true }
     : warmupModeUncertain ? { ...warmup.view, detail: '预热结果或执行中的授权变更未核验，所有自动预热已暂停；需核验持久记录，不能靠重启/切换开关绕过未知认领。', modeChangePaused: true }
       : !warmupJournalReadable ? { ...warmup.view, status: warmupJournalAlert === null ? 'disabled' : 'failed', detail: '原单账号预热日志不可读，无法排除已尝试请求；所有自动预热暂停，不覆盖原记录。', alertId: warmupJournalAlert ? 'legacy-journal-unavailable' : null }
         : unifiedLegacyPaused ? { ...warmup.view, status: 'disabled', detail: '同源多账号计划已启用、曾启用或保护状态待核验，旧单当前账号计划暂停；关闭计划不会自动恢复旧启动预热。' }
@@ -342,6 +344,11 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
           : legacyResumePaused ? { ...warmup.view, status: 'disabled', detail: '刚退出多账号模式，旧单账号计划本进程保守暂停；核验后完整重启 DSH，不在保存时立即预热。' }
             : legacyDayBlocked ? { ...warmup.view, status: 'disabled', detail: '今天已有多账号认领，保守暂停旧单账号计划以避免重复。' } : warmup.view;
   let prefsReading = false;
+  const warmupView = () => {
+    const view = rawWarmupView();
+    warmupErrorLog.record(view);
+    return { ...view, errorLog: warmupErrorLog.view() };
+  };
   let warmupTimer = null;
   let prefsWatcher = null;
   let prefsChangeTimer = null;

@@ -741,12 +741,8 @@ $script:Timer.Add_Tick({
   }
   $peak = if ((Get-BillingMode) -eq 'codex') { $false } elseif ($Preview) { $script:PreviewPeak } else { Get-Peak }
   if ((Get-BillingMode) -eq 'codex') { Update-PetUsageCard; Update-SettingsCodexQuota }
+  # Failures are recorded by the backend and shown only when settings are opened.
   Update-SettingsCodexWarmup
-  $warmupAlert = $script:LastSnapshot.codexWarmup
-  if (-not $Preview -and $warmupAlert.status -eq 'failed' -and $warmupAlert.alertId -is [string] -and $warmupAlert.alertId -and $warmupAlert.alertId -ne $script:LastWarmupAlert) {
-    $script:LastWarmupAlert = $warmupAlert.alertId
-    [Windows.MessageBox]::Show('自动预热已停止。' + "`n" + [string]$warmupAlert.detail + "`n请检查 Codex 登录、网络和额度；发送后结果不明时不会自动重试。", 'Codex 自动预热', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Warning) | Out-Null
-  }
   $modeChanged = $script:LastPeak -ne $peak
   if ($modeChanged) {
     Set-ModeVisual $peak
