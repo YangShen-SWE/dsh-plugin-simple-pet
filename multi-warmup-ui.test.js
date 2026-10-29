@@ -98,7 +98,7 @@ test('mount and rendering never discover accounts, expose retired pages, or send
     assert.deepEqual(ui.calls.map(c => c.url.split('/').at(-1)), ['preferences', 'state', 'application', 'account']);
     assert(!ui.nodes().some(n => Object.keys(n.props).some(key => /^data-multi-/.test(key))));
     for (const key of ['multiAccountManagement', 'codexAccountBackend', 'codexUsageRefreshMode']) assert(!ui.nodes().some(n => n.props.name === key));
-    assert.match(ui.text(), /不自动轮换账号/); assert.match(ui.text(), /旧逐账号计划保留记录，暂不迁移/);
+    assert.match(ui.text(), /不自动轮换账号/); assert.match(ui.text(), /旧逐账号计划不迁移授权/);
     assert.equal(writes(ui).length, 0);
   } finally { ui.cleanup(); }
 });
@@ -206,7 +206,7 @@ test('shared day arbitration stays symmetric, pauses on unknown/future claims, a
   await writeFile(file, '{bad'); assert.equal(readLegacyWarmup(file).readable, false);
   await writeFile(file, JSON.stringify({ ...first, lastAttemptAt: 'bad' })); assert.equal(readLegacyWarmup(file).readable, false);
 });
-async function desktopHost(t, { legacy = null, multiAttempt = false, enabled = true, authorized = true, owner = 'embedded' } = {}) {
+async function desktopHost(t, { legacy = null, multiAttempt = false, enabled = false, authorized = true, owner = 'embedded' } = {}) {
   const root = await scratch('test-multi-desktop-'), old = process.env.LOCALAPPDATA, profile = process.env.DSH_PET_PROFILE;
   process.env.LOCALAPPDATA = root; process.env.DSH_PET_PROFILE = 'desktop';
   const cleanups = [], routes = new Map(), intervals = [], calls = []; let disposeBridge, releaseMetadata, streams = 0, prepared = 0, deny, activeId = 'SYNTHETIC_RAW';
@@ -251,6 +251,13 @@ async function desktopHost(t, { legacy = null, multiAttempt = false, enabled = t
   await until(() => routes.has('/api/dsh-plugin-simple-pet/state')); for (let i = 0; i < 12; i++) await settle();
   return { store, routes, now, due, intervals, until, calls, legacyFile, multiFile, metadata: () => releaseMetadata, streamCount: () => streams, preparedCount: () => prepared, disposeBridge: () => disposeBridge(), setDeny(value) { deny = value; }, changeAccount() { activeId = 'SYNTHETIC_OTHER'; }, state: () => invoke(routes.get('/api/dsh-plugin-simple-pet/state')) };
 }
+test('enabled retired multi plan conservatively blocks the old current-account startup path', async t => {
+  const f = await desktopHost(t, { enabled: true });
+  await f.until(async () => /保护状态待核验/.test((await f.state()).data.codexWarmup.detail));
+  const status = await invoke(f.routes.get('/api/dsh-plugin-simple-pet/unified-warmup'));
+  assert.equal(status.data.paused, true); assert.equal(status.data.view.status, 'paused_legacy');
+  assert.equal(f.metadata(), undefined); assert.equal(f.preparedCount(), 0); assert.equal(f.streamCount(), 0);
+});
 test('actual bridge disposal during independent owner preflight produces zero late prepared or model calls', async t => {
   const f = await desktopHost(t); await f.until(() => !!f.metadata());
   f.disposeBridge(); f.metadata()({ reasoning: {} });

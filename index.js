@@ -21,6 +21,7 @@ import { MultiWarmupStore, MultiWarmupScheduler, multiWarmupHandler } from './mu
 import { discoverBoundAccounts, runBoundWarmup } from './multi-warmup-provider.js';
 import { officialAccountRpc, readOfficialQuota, discoverOfficialAccounts, runOfficialWarmup, officialAccountsProxy } from './official-accounts.js';
 import { createEmbeddedSubscription } from './embedded-subscription.js';
+import { UnifiedWarmupCoordinator, unifiedWarmupHandler } from './unified-warmup.js';
 import { loadExpertRoutePolicy, installExpertSessionCompatibility, loadExpertMessageFactory } from './expert-session-compat.js';
 
 export const name = 'dsh-plugin-simple-pet';
@@ -161,10 +162,11 @@ export function readLegacyWarmup(file) {
 export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.now, switchSupported = accountSwitchCapability, panelStarter = startPanelAccounts, subscriptionFactory = createEmbeddedSubscription } = {}) {
   // A child fiber shares the host's public services and is disposed with simple-pet.
   // Mock-only contexts without plugin() never activate a real account engine.
-  let subscriptionOwner = 'loading', subscriptionAdapter = null;
+  let subscriptionOwner = 'loading', subscriptionAdapter = null, subscriptionWarmupService = null, unifiedWarmup = null;
   const supportsAccountSwitch = provider => (provider === 'openai-codex' && subscriptionOwner === 'embedded') || switchSupported(provider);
   if (typeof ctx.plugin === 'function') {
-    ctx.plugin(subscriptionFactory({ onOwner: owner => { subscriptionOwner = owner; }, onAdapter: adapter => { subscriptionAdapter = adapter; } }));
+    ctx.plugin(subscriptionFactory({ onOwner: owner => { subscriptionOwner = owner; }, onAdapter: adapter => { subscriptionAdapter = adapter; },
+      onWarmupService: service => { subscriptionWarmupService = service; unifiedWarmup?.setService(service); } }));
   }
   let live = true;
   const instance = randomUUID();
@@ -228,6 +230,16 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   const seen = new Set();
   const seenQueue = [];
   const controller = new AbortController();
+  unifiedWarmup = new UnifiedWarmupCoordinator({ file: join(dataDir, 'unified-warmup.json'), legacyFile: warmupFile,
+    retiredMultiFile: join(dataDir, 'multi-warmup.json'), clock: warmupClock, signal: controller.signal });
+  if (subscriptionWarmupService) unifiedWarmup.setService(subscriptionWarmupService);
+  let unifiedLegacyPaused = true;
+  const pollUnifiedWarmup = async () => {
+    if (!live || profile !== 'desktop') return;
+    await unifiedWarmup.tick();
+    const state = await unifiedWarmup.status();
+    unifiedLegacyPaused = state.config.enabled || state.legacyResumePaused || /^paused_/.test(state.view.status);
+  };
   let writeRequested = false;
   let writing = false;
   let snapshotTask = null;
@@ -323,6 +335,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
   const warmupView = () => warmupSwitchUncertain ? { ...warmup.view, detail: '共享账号切换结果不明，自动预热已暂停；请在订阅插件核验后完整重启 DSH。', accountSwitchPaused: true }
     : warmupModeUncertain ? { ...warmup.view, detail: '预热结果或执行中的授权变更未核验，所有自动预热已暂停；需核验持久记录，不能靠重启/切换开关绕过未知认领。', modeChangePaused: true }
       : !warmupJournalReadable ? { ...warmup.view, status: warmupJournalAlert === null ? 'disabled' : 'failed', detail: '原单账号预热日志不可读，无法排除已尝试请求；所有自动预热暂停，不覆盖原记录。', alertId: warmupJournalAlert ? 'legacy-journal-unavailable' : null }
+        : unifiedLegacyPaused ? { ...warmup.view, status: 'disabled', detail: '同源多账号计划已启用、曾启用或保护状态待核验，旧单当前账号计划暂停；关闭计划不会自动恢复旧启动预热。' }
         : !multiReadable ? { ...warmup.view, detail: '多账号记录不可读，所有自动预热保守暂停。' }
         : accountBackend === 'official' ? { ...warmup.view, status: 'disabled', detail: '官方账号后端使用下方独立逐账号每日授权；旧单账号计划暂停，原开关保持不变。' }
         : multiEnabled ? { ...warmup.view, status: 'disabled', detail: '多账号计划已开启，原单账号计划暂停，原开关保持不变。' }
@@ -338,7 +351,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     catch { return preferenceValues(null); }
   }
   function warmupAuthorized() {
-    return live && profile === 'desktop' && subscriptionOwner === 'embedded' && !!subscriptionAdapter
+    return live && profile === 'desktop' && subscriptionOwner === 'embedded' && !!subscriptionAdapter && !unifiedLegacyPaused
       && unifiedPermissions().codexUnifiedWarmup === true;
   }
   function scheduleWarmup() {
@@ -641,6 +654,14 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       handler: (req, res) => { if (guard(routeCtx, req, res)) json(res, 410, { error: '账号管理已统一至订阅管理；切号仅通过已授权的桌宠面板。' }, req.method ?? 'GET'); },
     }), 'simple-pet: retired web account management');
     routeCtx.effect(() => routeCtx.webServer.register({
+      kind: 'exact', path: '/api/dsh-plugin-simple-pet/unified-warmup',
+      handler: unifiedWarmupHandler({ coordinator: unifiedWarmup, authorize: (req, res) => {
+        if (!guard(routeCtx, req, res)) return false;
+        if (!live || profile !== 'desktop' || subscriptionOwner !== 'embedded') { json(res, 503, { error: 'owner_unavailable' }, req.method ?? 'GET'); return false; }
+        return true;
+      } }),
+    }), 'simple-pet: explicitly authorized unified-account warmup');
+    routeCtx.effect(() => routeCtx.webServer.register({
       kind: 'exact', path: '/api/dsh-plugin-simple-pet/multi-warmup',
       handler: (req,res) => { if (guard(routeCtx,req,res)) json(res,410,{error:'账号与连接配置已统一至订阅管理。'},req.method??'GET'); },
     }), 'simple-pet: retired account warmup');
@@ -674,6 +695,8 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
 
   const timer = setInterval(pollBalance, 60_000);
   const heartbeat = setInterval(snapshot, 30_000);
+  // Continuous minute crossing only: no startup, resume or missed-run replay.
+  const unifiedTimer = profile === 'desktop' ? setInterval(() => { void pollUnifiedWarmup().catch(() => { unifiedLegacyPaused = true; }); }, 15_000) : null;
   // Settings changes wake the scheduler; quota refresh remains a low-frequency safety net.
   if (profile === 'desktop' && process.platform === 'win32') {
     void mkdir(dataDir, { recursive: true }).then(() => {
@@ -695,7 +718,7 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
       prefsWatcher.on('error', () => { prefsWatcher?.close(); prefsWatcher = null; });
     }).catch(() => { /* periodic quota refresh also reads settings */ });
   }
-  void pollWarmup();
+  void pollUnifiedWarmup().then(() => pollWarmup()).catch(() => { unifiedLegacyPaused = true; });
   snapshot();
   pollBalance();
   ctx.effect(() => {
@@ -710,8 +733,8 @@ export function apply(ctx, { petLauncher = launchPetProcess, warmupClock = Date.
     return () => { cancelled = true; panelServer?.close(); panelServer = null; const stop = petStop; petStop = null; stop?.(); };
   }, 'deepseek-pet: window');
   ctx.effect(() => async () => {
-    live = false; accountControl.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
-    officialRequests.abort();clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await Promise.all([warmup.stop(), multiWarmup.stop()]); await snapshotTask;
+    live = false; accountControl.dispose(); clearInterval(timer); clearInterval(heartbeat); clearInterval(unifiedTimer); clearTimeout(warmupTimer); clearTimeout(prefsChangeTimer); prefsWatcher?.close();
+    officialRequests.abort();clearTimeout(quotaRefreshTimer); clearInterval(quotaPollTimer); quotaPollTimer = null; controller.abort(); await Promise.all([warmup.stop(), multiWarmup.stop(), unifiedWarmup.stop()]); await snapshotTask;
     if (warmupUsageDirty) {
       try {
         await mkdir(dataDir, { recursive: true });

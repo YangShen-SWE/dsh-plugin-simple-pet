@@ -6,6 +6,8 @@
 
 本地修改：
 
+- v1.1.4 在同一内置 owner 内增加固定账号预热服务及受审计 SDK 的专用 SSE 请求，不切换全局 active；逐账号目录、授权刷新和额度上下文隔离。调度、逐账号消费同意和持久预算由桌宠持有，浏览器不接收凭据。新增相同旧保护文件的持久重置兑换包装，卡片检查入口独立于额度摘要，未知 Credits 不当零。上游版本和原始发行哈希仍保持 2.6.8；完整用法和边界见根目录 UNIFIED-WARMUP-USAGE.md。
+
 - 后端 `apply(ctx, config, createEmbeddedSettings)` 接受桌宠提供的独立设置存储工厂。未提供时仍按上游 standalone 方式运行。该入口避免父 Loader entry 设置被订阅配置覆盖；不改变账户密钥命名空间。
 - 完整适配器初始化后在同一生命周期注册旧路由包装器 `subscription-legacy-route.js`。它不替代完整后端、不创建账号 store，也不触发历史发送；透传公开请求控制并降级账号原生 replay 元数据。注册前若发现其他旧 provider 所有者则明确失败，不静默维持双所有者。
 - 构建时从前端原始 ModuleLoader 包装提取完整 factory，在桌宠唯一的 factory 内作为子插件显式激活，不再注册第二个全局 ModuleLoader id。前端所有贡献及清理保持完整，而非仅摘取设置组件。

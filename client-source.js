@@ -1,4 +1,5 @@
 import { CARD_THEMES, cardCssVariables } from './card-themes.js';
+import { createUnifiedWarmupSettings } from './unified-warmup-client.js';
 
 // Browser-only UI. Host preferences remain in the original global JSON file.
 export function statBuckets(days, range, unit, now = new Date()) {
@@ -249,6 +250,7 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
     if (!res.ok) { const e = new Error(data.error || `请求失败（${res.status}）`); e.status = res.status; e.code = typeof data.code === 'string' && /^[A-Z_]{1,64}$/.test(data.code) ? data.code : null; throw e; }
     return data;
   }
+  const UnifiedWarmupSettings = createUnifiedWarmupSettings(React, { request });
   function SimplePetSettings() {
     const [loaded,setLoaded]=useState(null),[draft,setDraft]=useState(null),[snapshot,setSnapshot]=useState(null),[identity,setIdentity]=useState(null);
     const [error,setError]=useState(''),[tab,setTab]=useState('appearance'),[range,setRange]=useState('week'),[chartUnit,setChartUnit]=useState('tokens');
@@ -327,10 +329,11 @@ export function createSimplePetClient(React, send = (url, init) => (globalThis._
              h('label', { className: 'pet-settings-row' }, h('span', null, '本地执行时间'), h('input', { name: 'codexWarmupTime', type: 'time', value: draft.codexWarmupTime, disabled: busy, onChange: e => change('codexWarmupTime', e.target.value) })),
              toggle('codexWarmupStartup', '启动时满额窗口预热'), toggle('codexWarmupReset', '确认新的满额 5 小时窗口后预热'),
              h('p', { className: 'pet-settings-hint', 'data-warmup-status': true }, snapshot?.codexWarmup?.detail || '等待预热状态；设置保存本身不代表请求已执行。'),
-             h('p', { className: 'pet-settings-hint' }, '同一窗口持久去重；休眠错过不补发，结果未知不自动重试。旧逐账号计划保留记录，暂不迁移为全局切号计划。')),
+             h('p', { className: 'pet-settings-hint' }, '同一窗口持久去重；休眠错过不补发，结果未知不自动重试。启用下方同源多账号计划后旧单账号路径停止；关闭后不会自动恢复。旧逐账号计划不迁移授权。')),
            saveState.explicitDirty && h('p', { className: 'pet-settings-hint', role: 'status' }, '账号与预热授权尚未保存；外观自动保存不会顺带提交这些更改。'),
            h('button', { type: 'button', 'data-settings-save': true, disabled: busy || saveState.inFlight || !saveState.explicitDirty, onClick: () => void autosave.current?.flush(true) }, '确认保存账号与预热授权')),
-         h('details', { className: 'pet-settings-details pet-settings-advanced pet-appearance-library', hidden: tab !== 'appearance', 'data-appearance-library': true }, h('summary', null, '人物与面板主题'),
+         codex && tab === 'appearance' && h(UnifiedWarmupSettings),
+          h('details', { className: 'pet-settings-details pet-settings-advanced pet-appearance-library', hidden: tab !== 'appearance', 'data-appearance-library': true }, h('summary', null, '人物与面板主题'),
           group('形象', h('div', { className: 'pet-settings-gallery', role: 'radiogroup', 'aria-label': '桌宠形象' }, ...skins.map(([id, name]) => h('button', { type: 'button', role: 'radio', key: id, 'aria-checked': draft.skin === id, disabled: busy, onClick: () => change('skin', id) },
             h('span', { className: 'pet-settings-previews', 'aria-hidden': true }, ...(codex ? ['valley'] : ['valley','peak']).map(mode => h('span', { className: 'pet-settings-sprite', key: mode, title: codex ? '形象预览' : mode === 'peak' ? '峰时' : '谷时', style: { backgroundImage: `url(${base}/asset/${id}-${mode}.png)` } }))), h('span', null, name))))),
           group('信息框主题', h('p', { className: 'pet-settings-hint' }, '每款主题同时包含 DeepSeek 与 Codex 样式；示意数字不是实时余额。'),

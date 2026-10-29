@@ -44,7 +44,8 @@ test('real plugin registers authenticated owner/preferences/assets and retired r
     });
     for(let i=0;i<3;i++)await new Promise(resolve=>setImmediate(resolve));
     assert.equal(factoryCalls,1);assert.equal(pluginCalls,1);assert.equal(launched,1);assert.equal(panels,process.platform==='win32'?1:0);
-    assert.equal(handlers.size,20);
+    assert.equal(handlers.size,21);
+    assert.equal(typeof handlers.get('/api/dsh-plugin-simple-pet/unified-warmup'), 'function');
     const route = '/api/dsh-plugin-simple-pet/preferences', handler = handlers.get(route);
     let result = await call(handler,route); assert.equal(result.code,200);
     const read = JSON.parse(result.data); assert.equal(read.values.skin,'night'); assert.equal(read.values.size,'small');

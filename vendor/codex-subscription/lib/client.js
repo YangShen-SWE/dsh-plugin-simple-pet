@@ -6028,7 +6028,13 @@ window.__ModuleLoader__.load({
 			resetCreditExpires: "有效期至：{value}",
 			resetCreditExpiryUnknown: "到期时间未提供",
 			resetCreditExpiryLoading: "正在读取到期时间…",
-			resetCreditExpiryFailed: "无法读取到期时间",
+			resetCreditExpiryFailed: "无法读取重置卡；可用次数未知，不代表没有重置卡。",
+			resetInspect: "查看重置卡",
+			resetInspectHint: "仅查看，不会使用重置卡。使用仍需单独确认。",
+			resetCreditUnknown: "未提供重置卡信息；可单独查看，不代表可用次数为零。",
+			resetCreditEmpty: "当前未发现可用的重置卡。",
+			resetCreditUnusable: "服务报告有重置卡，但没有返回可使用的卡片。",
+			creditsUnknown: "接口未提供 Credits 余额；不代表余额为零。",
 			resetWait: "请等待 {count} 秒",
 			resetFinal: "确认使用",
 			resetUsing: "使用中…",
@@ -6043,7 +6049,9 @@ window.__ModuleLoader__.load({
 			resetTooEarly: "请等待冷静期结束后再确认。",
 			resetAcknowledgeRequired: "请先确认已了解这次操作可能消耗重置次数。",
 			resetAccountChanged: "登录账号已变更，请重新开始。",
-			resetUncertain: "服务端返回结果不确定。请再次确认，插件会复用同一个请求，不会另外发起一次重置。",
+			resetUncertain: "服务端结果未知；不要再次使用此卡，请先核对额度和账号状态。",
+			resetPaused: "本次使用已暂停，不会再次发送兑换请求。",
+			resetStorage: "重置卡安全保护暂不可用，请检查服务状态；不要绕过保护重试。",
 			creditsNote: "下方的额外 Credits 和额度重置与套餐额度分开计算。",
 			creditsExpires: "预计 {date} 到期，还剩 {days} 天",
 			creditsExpiredToday: "今天 {date} 到期",
@@ -6634,7 +6642,13 @@ window.__ModuleLoader__.load({
 			resetCreditExpires: "Valid until {value}",
 			resetCreditExpiryUnknown: "Expiration time not provided",
 			resetCreditExpiryLoading: "Reading expiration…",
-			resetCreditExpiryFailed: "Could not read expiration",
+			resetCreditExpiryFailed: "Could not read reset cards; availability is unknown, not zero.",
+			resetInspect: "View reset cards",
+			resetInspectHint: "Read only; using a card still requires separate confirmation.",
+			resetCreditUnknown: "Reset card details were not provided. Check separately; this does not mean zero cards.",
+			resetCreditEmpty: "No available reset cards were found.",
+			resetCreditUnusable: "The service reports reset cards but returned no usable card.",
+			creditsUnknown: "The API did not provide a Credits balance; this does not mean zero.",
 			resetWait: "Wait {count} seconds",
 			resetFinal: "Confirm use",
 			resetUsing: "Using…",
@@ -6649,7 +6663,9 @@ window.__ModuleLoader__.load({
 			resetTooEarly: "Wait for the cooldown before confirming.",
 			resetAcknowledgeRequired: "Confirm that you understand this may consume a reset.",
 			resetAccountChanged: "The signed-in account changed. Start again.",
-			resetUncertain: "The server result is uncertain. Confirm again to check the same request; the plugin will not start a separate reset.",
+			resetUncertain: "The server result is unknown. Do not use this card again; check your quota and account status first.",
+			resetPaused: "This attempt is paused; no further redemption request will be sent.",
+			resetStorage: "Reset card safety protection is unavailable. Check the service status; do not bypass protection to retry.",
 			creditsNote: "Extra Credits and quota resets below are counted separately from the plan quota.",
 			creditsExpires: "Expires {date} ({days} days left)",
 			creditsExpiredToday: "Expires today ({date})",
@@ -12018,46 +12034,73 @@ window.__ModuleLoader__.load({
 				})
 			});
 		}
-		function ResetCreditList({ rpc, t, count, nextExpiresAt, initialCredits, refreshKey, hasExhaustedQuota, onConsumed }) {
-			const [credits, setCredits] = (0, react.useState)(initialCredits ?? (nextExpiresAt === void 0 ? [] : [{ expiresAt: nextExpiresAt }]));
-			const [state, setState] = (0, react.useState)("loading");
-			(0, react.useEffect)(() => {
-				let live = true;
+		function ResetCreditList({ rpc, t, count, refreshKey, hasExhaustedQuota, onConsumed }) {
+			const [credits, setCredits] = (0, react.useState)([]);
+			const [availableCount, setAvailableCount] = (0, react.useState)(Number.isSafeInteger(count) && count >= 0 ? count : void 0);
+			const [state, setState] = (0, react.useState)("idle");
+			const request = (0, react.useRef)(0);
+			const inspecting = (0, react.useRef)(false);
+			const inspect = () => {
+				if (inspecting.current) return;
+				inspecting.current = true;
+				const id = ++request.current;
 				setState("loading");
 				setCredits([]);
+				setAvailableCount(void 0);
 				rpc.call(CHANNEL, "reset-credit/inspect", {}).then(unwrap).then((value) => {
-					if (!live) return;
-					setCredits(Array.isArray(value.credits) ? value.credits : []);
+					if (request.current !== id) return;
+					if (!Number.isSafeInteger(value?.availableCount) || value.availableCount < 0 || !Array.isArray(value.credits) || value.credits.some((credit) => !credit || typeof credit.ref !== "string" || credit.ref.length === 0)) throw new Error("Invalid quota reset details");
+					setCredits(value.availableCount === 0 ? [] : value.credits);
+					setAvailableCount(value.availableCount);
 					setState("ready");
-				}).catch(() => {
-					if (live) setState("error");
+				}).catch((error) => {
+					if (request.current !== id) return;
+					if (error instanceof Error && error.message === "No quota reset is available") {
+						setAvailableCount(0);
+						setState("ready");
+					} else setState("error");
+				}).finally(() => {
+					if (request.current === id) inspecting.current = false;
 				});
+			};
+			(0, react.useEffect)(() => {
+				setCredits([]);
+				setAvailableCount(Number.isSafeInteger(count) && count >= 0 ? count : void 0);
+				setState("idle");
+				// Preserve upstream auto-inspection for known positive summaries only.
+				// Missing/zero summaries expose a user-triggered read, never redemption.
+				if (count > 0) inspect();
 				return () => {
-					live = false;
+					request.current += 1;
+					inspecting.current = false;
 				};
-			}, [
-				rpc,
-				count,
-				refreshKey
-			]);
+			}, [rpc, count, refreshKey]);
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "codexSubscriptionResetBalance",
 				"aria-label": t("resetCredits"),
-				children: [credits.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-					className: "codexSubscriptionCreditNote",
-					role: "status",
-					children: state === "loading" ? t("resetCreditExpiryLoading") : t("resetCreditExpiryFailed")
-				}) : credits.map((credit, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ResetCreditControl, {
-					rpc,
-					t,
-					credit,
-					hasExhaustedQuota,
-					onConsumed
-				}, credit.ref ?? `pending-${index}`)), state === "error" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-					className: "codexSubscriptionCreditNote",
-					role: "status",
-					children: t("resetCreditExpiryFailed")
-				}) : null]
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "codexSubscriptionActions",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							type: "button",
+							variant: "outline",
+							disabled: state === "loading",
+							"aria-busy": state === "loading",
+							onClick: inspect,
+							children: t("resetInspect")
+						}), availableCount === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							children: fill(t("resetCreditsAvailable"), { count: availableCount })
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { className: "codexSubscriptionCreditNote", children: t("resetInspectHint") }),
+					credits.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "codexSubscriptionCreditNote",
+						role: "status",
+						children: t(state === "loading" ? "resetCreditExpiryLoading" : state === "error" ? "resetCreditExpiryFailed" : availableCount === 0 ? "resetCreditEmpty" : state === "ready" ? "resetCreditUnusable" : "resetCreditUnknown")
+					}) : credits.map((credit) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ResetCreditControl, {
+						rpc, t, credit, hasExhaustedQuota, onConsumed
+					}, credit.ref))
+				]
 			});
 		}
 		function ResetCreditControl({ rpc, t, credit, hasExhaustedQuota, onConsumed }) {
@@ -12067,6 +12110,9 @@ window.__ModuleLoader__.load({
 			const [resetCountdown, setResetCountdown] = (0, react.useState)(0);
 			const [resetError, setResetError] = (0, react.useState)();
 			const [resetResult, setResetResult] = (0, react.useState)();
+			const operation = (0, react.useRef)(false);
+			const currentChallenge = (0, react.useRef)();
+			const consumeAttempted = (0, react.useRef)(false);
 			(0, react.useEffect)(() => {
 				if (challenge === void 0) {
 					setResetCountdown(0);
@@ -12078,25 +12124,33 @@ window.__ModuleLoader__.load({
 				return () => window.clearInterval(timer);
 			}, [challenge]);
 			const prepareReset = () => {
-				if (resetBusy || typeof credit.ref !== "string") return;
+				if (operation.current || resetBusy || consumeAttempted.current || typeof credit.ref !== "string" || credit.ref.length === 0) return;
+				operation.current = true;
 				setResetBusy(true);
 				setResetError(void 0);
 				setResetResult(void 0);
 				rpc.call(CHANNEL, "reset-credit/prepare", { creditRef: credit.ref }).then(unwrap).then((next) => {
+					if (typeof next?.challengeId !== "string" || next.challengeId.length === 0 || !Number.isSafeInteger(next.readyAt) || !Number.isSafeInteger(next.expiresAt) || next.readyAt >= next.expiresAt || next.expiresAt <= Date.now()) throw new Error("This quota reset confirmation is no longer valid");
+					currentChallenge.current = next;
 					setChallenge(next);
 					setResetAcknowledged(false);
-				}).catch((error) => setResetError(resetCreditErrorText(error, t))).finally(() => setResetBusy(false));
+				}).catch((error) => setResetError(resetCreditErrorText(error, t))).finally(() => { operation.current = false; setResetBusy(false); });
 			};
 			const cancelReset = () => {
-				if (resetBusy) return;
+				if (operation.current || resetBusy) return;
+				currentChallenge.current = void 0;
 				setChallenge(void 0);
 				setResetAcknowledged(false);
-				setResetError(void 0);
+				if (!consumeAttempted.current) setResetError(void 0);
 			};
-			const resetReady = challenge !== void 0 && resetAcknowledged && resetCountdown === 0;
+			const resetReady = !consumeAttempted.current && challenge !== void 0 && resetAcknowledged && resetCountdown === 0 && Date.now() >= challenge.readyAt && Date.now() < challenge.expiresAt;
 			const consumeReset = () => {
-				if (resetBusy) return;
-				if (!resetReady) return;
+				if (operation.current || resetBusy) return;
+				if (consumeAttempted.current || !resetReady || currentChallenge.current !== challenge || Date.now() < challenge.readyAt || Date.now() >= challenge.expiresAt) return;
+				// One explicit dispatch per mounted card; even opaque transport failures
+				// cannot prove that no redemption happened. Durable server claims remain authoritative.
+				consumeAttempted.current = true;
+				operation.current = true;
 				setResetBusy(true);
 				setResetError(void 0);
 				setResetResult(void 0);
@@ -12104,12 +12158,18 @@ window.__ModuleLoader__.load({
 					challengeId: challenge.challengeId,
 					acknowledged: resetAcknowledged
 				}).then(unwrap).then((result) => {
+					const key = new Map([["reset", "resetSuccess"], ["nothing_to_reset", "resetNothing"], ["no_credit", "resetNoCredit"], ["already_redeemed", "resetAlready"]]).get(result?.code);
+					if (key === void 0) throw new Error("Quota reset result is uncertain; retry this confirmation to check the same request");
+					currentChallenge.current = void 0;
 					setChallenge(void 0);
 					setResetAcknowledged(false);
-					const message = result.code === "reset" ? t("resetSuccess") : result.code === "nothing_to_reset" ? t("resetNothing") : result.code === "no_credit" ? t("resetNoCredit") : t("resetAlready");
-					setResetResult(message);
+					setResetResult(t(key));
 					onConsumed();
-				}).catch((error) => setResetError(resetCreditErrorText(error, t))).finally(() => setResetBusy(false));
+				}).catch((error) => {
+					currentChallenge.current = void 0;
+					const message = resetCreditErrorText(error, t);
+					setResetError(message === t("resetPaused") ? message : `${message} ${t("resetPaused")}`);
+				}).finally(() => { operation.current = false; setResetBusy(false); });
 			};
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "codexSubscriptionResetCard",
@@ -12126,7 +12186,7 @@ window.__ModuleLoader__.load({
 							className: "codexSubscriptionResetUse",
 							type: "button",
 							variant: "outline",
-							disabled: resetBusy || typeof credit.ref !== "string",
+							disabled: consumeAttempted.current || resetBusy || typeof credit.ref !== "string",
 							"aria-busy": resetBusy,
 							onClick: prepareReset,
 							children: resetBusy ? t("resetPreparing") : t("resetUse")
@@ -12209,9 +12269,17 @@ window.__ModuleLoader__.load({
 				["This quota reset confirmation is no longer valid", "resetExpired"],
 				["This quota reset is already in progress", "resetInProgress"],
 				["Wait before confirming this quota reset", "resetTooEarly"],
+				["You must acknowledge that one quota reset will be consumed", "resetAcknowledgeRequired"],
 				["You must acknowledge that this may consume one quota reset", "resetAcknowledgeRequired"],
 				["The signed-in ChatGPT account changed", "resetAccountChanged"],
-				["Quota reset result is uncertain; retry this confirmation to check the same request", "resetUncertain"]
+				["Quota reset result is uncertain; retry this confirmation to check the same request", "resetUncertain"],
+				["Quota reset result is uncertain; do not send another redemption request", "resetUncertain"],
+				["This quota reset is paused; check quota and account status before any further action", "resetPaused"],
+				["Quota reset protection storage is locked; no new request was sent", "resetStorage"],
+				["Quota reset protection storage is unavailable; no new request was sent", "resetStorage"],
+				["Quota reset protection storage is full; no new request was sent", "resetStorage"],
+				["Quota reset confirmation was cancelled", "resetPaused"],
+				["Quota reset service is closed", "resetPaused"]
 			])).get(error instanceof Error ? error.message : "") ?? "resetFailed");
 		}
 		function UsageCard({ rpc, t, signedIn, resetKey, preference }) {
@@ -12366,7 +12434,7 @@ window.__ModuleLoader__.load({
 							]
 						}, `chatpass-${window.windowSeconds}-${index}`))
 					}),
-					visibleUsage?.credits === void 0 && visibleUsage?.individualLimit === void 0 && !(visibleUsage?.resetCredits?.availableCount > 0) ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					!signedIn ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "codexSubscriptionCreditSection",
 						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 							className: "codexSubscriptionCreditNote",
@@ -12374,9 +12442,13 @@ window.__ModuleLoader__.load({
 						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: "codexSubscriptionCreditRows",
 							children: [
-								visibleUsage?.credits ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: "codexSubscriptionCreditBalance",
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("creditsBalance") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: visibleUsage.credits.unlimited ? t("unlimited") : visibleUsage.credits.balance == null ? t("unavailable") : `${creditAmount(visibleUsage.credits.balance)} ${t("creditsUnit")}` })]
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("creditsBalance") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: visibleUsage?.credits?.unlimited ? t("unlimited") : visibleUsage?.credits?.balance == null ? t("unavailable") : `${creditAmount(visibleUsage.credits.balance)} ${t("creditsUnit")}` })]
+								}),
+								!visibleUsage?.credits ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+									className: "codexSubscriptionCreditNote",
+									children: t("creditsUnknown")
 								}) : null,
 								visibleUsage?.credits ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CreditExpiry, {
 									credits: visibleUsage.credits,
@@ -12393,7 +12465,7 @@ window.__ModuleLoader__.load({
 										cloud: visibleUsage.credits.approxCloudMessages ? `${count(visibleUsage.credits.approxCloudMessages[0])}–${count(visibleUsage.credits.approxCloudMessages[1])}` : t("unavailable")
 									})
 								}) : null,
-								visibleUsage?.resetCredits?.availableCount > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 									className: "codexSubscriptionResetPanel",
 									"aria-label": t("resetCredits"),
 									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -12403,19 +12475,17 @@ window.__ModuleLoader__.load({
 										className: "codexSubscriptionResetBox",
 										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 											className: "codexSubscriptionResetTabs",
-											children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [t("resetAvailableTab"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("b", { children: visibleUsage.resetCredits.availableCount })] })
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("resetAvailableTab") })
 										}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ResetCreditList, {
 											rpc,
 											t,
-											count: visibleUsage.resetCredits.availableCount,
-											nextExpiresAt: visibleUsage.resetCredits.nextExpiresAt,
-											initialCredits: visibleUsage.resetCredits.credits,
+											count: visibleUsage?.resetCredits?.availableCount,
 											refreshKey: `${resetKey}:${usageRefreshGeneration}`,
 											hasExhaustedQuota: exhausted,
 											onConsumed: () => load(true)
 										})]
 									})]
-								}) : null,
+								}),
 								visibleUsage?.individualLimit ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: "codexSubscriptionSpendLimit",
 									children: [

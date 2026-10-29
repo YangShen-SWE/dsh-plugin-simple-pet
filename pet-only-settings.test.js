@@ -213,7 +213,7 @@ function rootHarness(preferences = {}) {
     live: true, profile: 'desktop', subscriptionOwner: 'embedded', subscriptionAdapter: {}, instance: 'synthetic-run', bridgeRevision: 1,
     preferences: { ...DEFAULT_PREFERENCES, billingMode: 'codex', ...preferences }, prefsFile: 'memory-only-preferences',
     prefsReading: false, warmupRefreshPending: false, warmupTimer: null, codexBridge: {}, accountChanging: false,
-    warmupSwitchUncertain: false, warmupModeUncertain: false, legacyDayBlocked: false, warmupJournalReadable: true, multiReadable: true,
+    warmupSwitchUncertain: false, warmupModeUncertain: false, unifiedLegacyPaused: false, legacyDayBlocked: false, warmupJournalReadable: true, multiReadable: true,
     createHash, clearTimeout() {}, queueMicrotask, warmupClock: () => 1000,
     unifiedPermissions: () => preferenceValues(env.preferences),
     async readFile(file, encoding) { assert.equal(file, 'memory-only-preferences'); assert.equal(encoding, 'utf8'); if (env.readError) throw env.readError; return JSON.stringify(env.preferences); },

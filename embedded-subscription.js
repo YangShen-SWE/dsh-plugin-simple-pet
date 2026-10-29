@@ -8,6 +8,7 @@ export function createEmbeddedSubscription({
   settingsFile = join(process.env.LOCALAPPDATA || join(homedir(), '.local', 'share'), 'DshSimpleDesktopPet', 'subscription-preferences.json'),
   onOwner = () => {},
   onAdapter = () => {},
+  onWarmupService = () => {},
 } = {}) {
   return {
     name: 'simple-pet-embedded-subscription',
@@ -20,7 +21,7 @@ export function createEmbeddedSubscription({
       // coordinate activation before replacing that owner; no hot account swap.
       if (ctx.llm.listProviders().some(row => row.id === 'openai-codex')) { onOwner('external'); return; }
       let live = true;
-      ctx.effect(() => () => { live = false; onAdapter(null); }, 'simple-pet: embedded subscription lifetime');
+      ctx.effect(() => () => { live = false; onAdapter(null); onWarmupService(null); }, 'simple-pet: embedded subscription lifetime');
       const upstream = await load();
       if (!live) return;
       if (legacyConflict()) { reportLegacyConflict(); return; }
@@ -36,6 +37,7 @@ export function createEmbeddedSubscription({
           ctx.effect(() => () => store.dispose(), 'simple-pet: isolated subscription settings');
           const adapter = Object.create(store);
           adapter.onSubscriptionAdapter = value => { if (live) onAdapter(value); };
+          adapter.onSubscriptionWarmupService = value => { if (live) onWarmupService(value); };
           adapter.assertEmbeddedOwner = () => {
             if (!live) throw new Error('SUBSCRIPTION_EMBEDDING_CLOSED');
             if (legacyConflict()) throw Object.assign(new Error('SUBSCRIPTION_LEGACY_OWNER_CONFLICT'), { code: 'SUBSCRIPTION_LEGACY_OWNER_CONFLICT' });

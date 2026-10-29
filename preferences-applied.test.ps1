@@ -115,7 +115,13 @@ try {
   $script:Window.Left = -32000; $script:Window.Top = -32000
   $script:Window.Show()
   [void]$script:Window.Dispatcher.Invoke([Action]{ }, [Windows.Threading.DispatcherPriority]::ApplicationIdle)
-  $script:Window.Hide(); $script:Window.Left = 123; $script:Window.Top = 234
+  $script:Window.Hide()
+  # WPF snaps native coordinates to physical pixels. Choose representable DIPs
+  # so this invariant is valid at 100%, 125%, 150% and mixed-DPI desktops.
+  $nativeDpi = [Windows.Media.VisualTreeHelper]::GetDpi($script:Window)
+  $nativeLeft = [Math]::Ceiling(123 * $nativeDpi.DpiScaleX) / $nativeDpi.DpiScaleX
+  $nativeTop = [Math]::Ceiling(234 * $nativeDpi.DpiScaleY) / $nativeDpi.DpiScaleY
+  $script:Window.Left = $nativeLeft; $script:Window.Top = $nativeTop
   Assert-True $script:Window.IsLoaded 'hidden real WPF Window reaches actual Loaded'
   Assert-Pending 'Loaded revokes predecessor state before full timer success'
   # Startup creation normally already sized the real window. Reapply via genuine reload fixture.
@@ -136,8 +142,8 @@ try {
   Assert-Equal ($receiptKeys -join ',') ($keys -join ',') 'receipt whitelist exactly matches JS DEFAULT_PREFERENCES'
   Assert-Equal $receipt.values.size 'tiny' 'actual native size recorded'
   Assert-Equal $script:Window.Width 170 'real production resize applies'
-  Assert-Equal $script:Window.Left 123 'reload never moves native left'
-  Assert-Equal $script:Window.Top 234 'reload never moves native top'
+  Assert-Equal $script:Window.Left $nativeLeft 'reload never moves native left'
+  Assert-Equal $script:Window.Top $nativeTop 'reload never moves native top'
   Assert-Equal $script:LastActivityAt $activity 'receipt/retry never resets real activity'
   Assert-True ($script:Sprite.Source -eq (Get-Frame 'night' 'valley' 'idle')) 'actual atlas frame matches gentle/static normal path'
   Assert-True ($script:Card.Background -is [Windows.Media.LinearGradientBrush]) 'actual production theme creates native gradient'
@@ -246,8 +252,8 @@ try {
   Assert-Equal (Read-Receipt).status 'applied' 'normal genuine sleep remains confirmed'
   Write-Settings '{}'; Reload-PetPreferences -Force; $script:LastActivityAt = $activity; & $tick
   Assert-Equal $script:DeepSeekPanel.Visibility 'Visible' 'return to native DeepSeek panel completes normally'
-  Assert-Equal $script:Window.Left 123 'real mode transitions preserve left'
-  Assert-Equal $script:Window.Top 234 'real mode transitions preserve top'
+  Assert-Equal $script:Window.Left $nativeLeft 'real mode transitions preserve left'
+  Assert-Equal $script:Window.Top $nativeTop 'real mode transitions preserve top'
   $script:LastSnapshot = $null
 
   # IO failures are harmless, atomic, cleaned and never mutate settings/coordinates.

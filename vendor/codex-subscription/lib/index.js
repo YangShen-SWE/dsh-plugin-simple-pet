@@ -1,8 +1,11 @@
 import { createSubscriptionLegacyAdapter } from '../../../subscription-legacy-route.js';
+import { createSubscriptionWarmupService, verifyWarmupSdk } from '../../../subscription-warmup-service.js';
+import { createDurableSubscriptionResetService } from '../../../durable-subscription-reset.js';
+import { homedir } from 'node:os';
 import { oauthCredentialForResolution, createSubscriptionRequestAuth } from "../../../subscription-oauth.js";
 import { createRequire } from "node:module";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { closeOpenAICodexWebSocketSessions, getOpenAICodexWebSocketDebugStats, resetOpenAICodexWebSocketDebugStats } from "@earendil-works/pi-ai/api/openai-codex-responses";
+import { stream as streamBoundCodexWarmup, closeOpenAICodexWebSocketSessions, getOpenAICodexWebSocketDebugStats, resetOpenAICodexWebSocketDebugStats } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { execFile, spawn } from "node:child_process";
 import { request } from "node:https";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2973,6 +2976,39 @@ var DshOAuthAccountVault = class {
 	}
 	activeId() {
 		return this.#enqueue(async () => (await this.#ensurePayload())?.activeId);
+	}
+	// Private owner-only view. Never registered as RPC and never selects active.
+	warmupSnapshot() {
+		return this.#enqueue(async () => {
+			const payload = await this.#ensurePayload();
+			return (payload?.accounts ?? []).map(account => ({ ...clone$1(account), active: account.id === payload.activeId }));
+		});
+	}
+	forAccount(id, identity) {
+		const verify = account => {
+			if (!account || account.credential?.type !== 'oauth' || account.credential.accountId !== identity) throw new Error('WARMUP_ACCOUNT_REVOKED');
+			return clone$1(account.credential);
+		};
+		return Object.freeze({
+			readActive: () => this.#enqueue(async () => verify((await this.#ensurePayload())?.accounts.find(account => account.id === id))),
+			modifyActive: update => this.#enqueue(async () => {
+				let result;
+				await this.#modifyPayload(async current => {
+					const index = current.accounts.findIndex(account => account.id === id);
+					const previous = verify(current.accounts[index]);
+					const next = await update(previous);
+					if (next === void 0) { result = previous; return current; }
+					const credential = sanitizeOAuthCredential(next);
+					if (credential.accountId !== identity) throw new Error('WARMUP_ACCOUNT_REVOKED');
+					if (credential.email === void 0 && previous.email !== void 0) credential.email = previous.email;
+					result = clone$1(credential);
+					const accounts = [...current.accounts];
+					accounts[index] = { ...accounts[index], credential };
+					return { ...current, accounts };
+				});
+				return result;
+			}),
+		});
 	}
 	add(label, credential) {
 		return this.#enqueue(async () => {
@@ -6416,8 +6452,20 @@ function createSubscriptionRpcHandler({ authHandler, usageReader, resetCreditSer
 				"This quota reset is already in progress",
 				"Wait before confirming this quota reset",
 				"You must acknowledge that one quota reset will be consumed",
+				"You must acknowledge that this may consume one quota reset",
 				"The signed-in ChatGPT account changed"
 			]);
+			const safeResetErrors = {
+				RESET_CLAIM_PAUSED: 'This quota reset is paused; check quota and account status before any further action',
+				RESET_UNCERTAIN: 'Quota reset result is uncertain; do not send another redemption request',
+				RESET_STORE_LOCKED: 'Quota reset protection storage is locked; no new request was sent',
+				RESET_STORE_UNAVAILABLE: 'Quota reset protection storage is unavailable; no new request was sent',
+				RESET_STORE_FULL: 'Quota reset protection storage is full; no new request was sent',
+				RESET_IDENTITY_CHANGED: 'The signed-in ChatGPT account changed',
+				RESET_CANCELLED: 'Quota reset confirmation was cancelled',
+				RESET_CLOSED: 'Quota reset service is closed',
+			};
+			if (Object.hasOwn(safeResetErrors, error?.code)) return publicError('internal', safeResetErrors[error.code]);
 			const fallback = endpoint === "reset-credit/inspect" ? "Could not read quota reset details" : endpoint === "reset-credit/prepare" ? "Could not prepare a quota reset" : "Could not use the quota reset";
 			const message = error instanceof Error && known.has(error.message) ? error.message : fallback;
 			return publicError("internal", message);
@@ -6878,12 +6926,41 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 	ctx.effect(() => settings.watch((value, previous) => {
 		if (normalizeAutoQuotaRetry(value["autoQuotaRetry"]) !== normalizeAutoQuotaRetry(previous?.["autoQuotaRetry"])) quotaRetryHandler.notifyConfigurationChanged();
 	}), "codex-subscription: update quota recovery preference");
-	const resetCreditService = createCodexResetCreditService({
+	const resetCreditService = createDurableSubscriptionResetService({
+		createService: createCodexResetCreditService,
+		// Same protection ledger as the retired managed-account implementation.
+		// Never replace it with a fresh embedded-owner file or erase old claims.
+		storeFile: join(process.env.LOCALAPPDATA || join(homedir(), '.local', 'share'), 'DshCodexAccounts', 'reset-credit-claims.json'),
 		getAuth: resolveAuth,
 		readCredential: (options) => store.read(PROVIDER, options),
 		usageReader,
 		fetch: (input, init) => network.fetch("quota-reset", input, init)
 	});
+	ctx.effect(() => () => resetCreditService.dispose(), 'codex-subscription: durable reset lifetime');
+	let warmupSdkVerified = false;
+	try {
+		const entry = new URL(import.meta.resolve('@earendil-works/pi-ai/api/openai-codex-responses'));
+		warmupSdkVerified = verifyWarmupSdk({
+			version: JSON.parse(readFileSync(new URL('../../package.json', entry), 'utf8')).version,
+			source: readFileSync(entry, 'utf8'),
+		});
+	} catch { /* An unknown runtime never receives model-dispatch capability. */ }
+	const boundWarmupService = createSubscriptionWarmupService({
+		vault: accountVault, sdkVerified: warmupSdkVerified, stream: streamBoundCodexWarmup,
+		modelFetch: (input, init) => network.fetch('warmup-model', input, init),
+		createContext(vault) {
+			const credentials = new DshOAuthCredentialStore(ctx.credentials, CREDENTIAL_REF, [], { expirySkewMs: OAUTH_EXPIRY_SKEW_MS, vault });
+			const models = createModels({ credentials });
+			models.setProvider(baseProvider);
+			const resolveAuth = options => network.run('warmup-auth', () => models.getAuth(PROVIDER, options));
+			const readCredential = options => credentials.read(PROVIDER, options);
+			const catalog = createOfficialModelCatalog({ getAuth: resolveAuth, readCredential, baseModels: () => baseProvider.getModels(), fetch: (input, init) => network.fetch('warmup-catalog', input, init) });
+			const quota = createCodexUsageReader({ getAuth: resolveAuth, readCredential, fetch: (input, init) => network.fetch('warmup-quota', input, init) });
+			return { resolveAuth, catalog, quota };
+		},
+	});
+	settings.onSubscriptionWarmupService?.(boundWarmupService);
+	ctx.effect(() => () => { boundWarmupService.dispose(); settings.onSubscriptionWarmupService?.(null); }, 'codex-subscription: account-bound warmup lifetime');
 	const sketchBridge = createSketchAgentBridge({ enabled: () => settings.get().imageSketchAgent && settings.get().imageSketch && settings.get().imageEditing });
 	ctx.effect(() => {
 		let dispose;
