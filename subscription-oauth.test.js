@@ -92,6 +92,20 @@ test('refresh failure cannot release a bearer, silently switch accounts or repla
   await assert.rejects(f.auth.resolve(handle), { code: 'SUBSCRIPTION_AUTH_REQUEST_EXPIRED' });
   assert.equal(calls, 1);
 });
+test('selection epoch survives the one-shot handle; unchanged account resolves, ABA never releases auth', async () => {
+  let epoch = 0;
+  const f = fixture({ readSelectionEpoch: () => epoch });
+  const first = await f.auth.capture({ expectedSelectionEpoch: 0 });
+  await f.auth.resolve(first);
+  const captured = await f.auth.capture();
+  epoch += 2; // Same row/identity after a switch away and back is still different.
+  await assert.rejects(f.auth.resolve(captured), { code: 'SUBSCRIPTION_AUTH_ACCOUNT_CHANGED' });
+  assert.equal(f.calls, 1);
+  await assert.rejects(f.auth.capture({ expectedSelectionEpoch: 0 }), { code: 'SUBSCRIPTION_AUTH_ACCOUNT_CHANGED' });
+  const during = await f.auth.capture(); f.hook = () => { epoch += 2; };
+  await assert.rejects(f.auth.resolve(during), { code: 'SUBSCRIPTION_AUTH_ACCOUNT_CHANGED' });
+});
+
 test('upstream fork projects expiry at all store boundaries and scopes automatic refresh', () => {
   const source = readFileSync(new URL('./vendor/codex-subscription/lib/index.js', import.meta.url), 'utf8');
   assert.match(source, /resolveAuth = \(options\) => network\.run\("oauth", \(\) => authModels\.getAuth\(PROVIDER, options\)\)/);

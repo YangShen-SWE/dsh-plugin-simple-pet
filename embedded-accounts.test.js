@@ -54,7 +54,7 @@ async function rootFixture(t, { subscriptionFactory, withPlugin = true } = {}) {
 
 test('root defaults to the embedded subscription Cordis child and never reactivates the retired engine; one package declares the official dependencies',async t=>{
  const pkg=JSON.parse(await fs.readFile(new URL('./package.json',import.meta.url),'utf8')),source=await fs.readFile(new URL('./index.js',import.meta.url),'utf8');
- assert.equal(pkg.version,'1.1.5');assert.equal(MODEL_CATALOGUE_PROFILE.userAgent,`${pkg.name}/${pkg.version}`);assert.equal(pkg.dependencies['@earendil-works/pi-ai'],'0.87.1');assert.equal(pkg.dependencies['@deepseek-ai/dsh-llm-pi-ai'],'0.2.0-rc.2');
+ assert.equal(pkg.version,'1.1.6');assert.equal(MODEL_CATALOGUE_PROFILE.userAgent,`${pkg.name}/${pkg.version}`);assert.equal(pkg.dependencies['@earendil-works/pi-ai'],'0.87.1');assert.equal(pkg.dependencies['@deepseek-ai/dsh-llm-pi-ai'],'0.2.0-rc.2');
  assert.deepEqual(embeddedAccountsPlugin.inject,['credentials','llm']);
  assert.match(source,/subscriptionFactory\s*=\s*createEmbeddedSubscription/);assert.match(source,/ctx\.plugin\(subscriptionFactory\(/);
  assert.doesNotMatch(source,/ctx\.plugin\(embeddedAccountsPlugin\)/);assert.doesNotMatch(source,/from ['"]\.\/embedded-accounts\.js['"]/);

@@ -1,4 +1,5 @@
 import { createSubscriptionLegacyAdapter } from '../../../subscription-legacy-route.js';
+import { createSubscriptionRotation, rotationBinding } from '../../../subscription-rotation.js';
 import { createSubscriptionWarmupService, verifyWarmupSdk } from '../../../subscription-warmup-service.js';
 import { createDurableSubscriptionResetService } from '../../../durable-subscription-reset.js';
 import { homedir } from 'node:os';
@@ -897,7 +898,7 @@ function createSubscriptionConnection({ resolveMode = () => "sse", resolveProxy 
 			return totals;
 		},
 		async prepare(options = {}) {
-			if (resolveMode() !== "websocket") return { options: {
+			if (options.transport === "sse" || resolveMode() !== "websocket") return { options: {
 				...options,
 				transport: "sse"
 			} };
@@ -1131,6 +1132,7 @@ function createCompactionBridge({ enabled = () => false, threshold = () => 1e5, 
 //#endregion
 //#region src/rpc-contract.js
 const RPC_ENDPOINTS = Object.freeze([
+	"rotation/status", "rotation/refresh", "rotation/update",
 	"status",
 	"login/start",
 	"login/status",
@@ -2891,6 +2893,8 @@ var PendingOAuthCredentialStore = class {
 */
 var DshOAuthAccountVault = class {
 	#tail = Promise.resolve();
+	#selectionEpoch = 0;
+	selectionEpoch() { return this.#selectionEpoch; }
 	constructor(credentials, options) {
 		if (credentials === void 0 || credentials === null || typeof credentials.readRecord !== "function" || typeof credentials.modifyRecord !== "function") throw new Error("Codex multi-account requires DSH credential records");
 		this.credentials = credentials;
@@ -3011,6 +3015,7 @@ var DshOAuthAccountVault = class {
 		});
 	}
 	add(label, credential) {
+		this.#selectionEpoch++;
 		return this.#enqueue(async () => {
 			const normalizedLabel = normalizeLabel(label);
 			const validated = sanitizeOAuthCredential(credential);
@@ -3035,6 +3040,7 @@ var DshOAuthAccountVault = class {
 		});
 	}
 	select(id) {
+		this.#selectionEpoch++;
 		return this.#enqueue(async () => {
 			await this.#modifyPayload((current) => {
 				if (!current.accounts.some((account) => account.id === id)) throw new Error("Unknown Codex account");
@@ -3043,6 +3049,21 @@ var DshOAuthAccountVault = class {
 					activeId: id
 				};
 			});
+		});
+	}
+	selectRotation({ from, to, validate }) {
+		return this.#enqueue(async () => {
+			let epoch;
+			await this.#modifyPayload(current => {
+				const active = current.accounts.find(row => row.id === current.activeId);
+				const target = current.accounts.find(row => rotationBinding(row).accountKey === to.accountKey);
+				const binding = rotationBinding(active);
+				if (this.#selectionEpoch !== from.selectionEpoch || binding.accountKey !== from.accountKey || binding.accountGeneration !== from.accountGeneration || !target || rotationBinding(target).accountGeneration !== to.accountGeneration || rotationBinding(target).budgetSubject === binding.budgetSubject) throw Object.assign(new Error('ROTATION_ACCOUNT_CHANGED'), { code: 'ROTATION_ACCOUNT_CHANGED' });
+				if (typeof validate !== 'function' || validate() !== true) throw Object.assign(new Error('ROTATION_CONFIGURATION_CHANGED'), { code: 'ROTATION_CONFIGURATION_CHANGED' });
+				epoch = ++this.#selectionEpoch;
+				return { ...current, activeId: target.id };
+			});
+			return epoch;
 		});
 	}
 	modifyActive(update) {
@@ -3066,6 +3087,7 @@ var DshOAuthAccountVault = class {
 				}
 				const credential = sanitizeOAuthCredential(next);
 				if (credential.email === void 0 && previous.email !== void 0) credential.email = previous.email;
+				if (credential.accountId !== previous.accountId) this.#selectionEpoch++;
 				const accounts = [...current.accounts];
 				accounts[index] = {
 					...accounts[index],
@@ -3081,6 +3103,7 @@ var DshOAuthAccountVault = class {
 		});
 	}
 	deleteAll() {
+		this.#selectionEpoch++;
 		return this.#enqueue(async () => {
 			await this.credentials.deleteRecord(this.key);
 			await this.credentials.unset(this.legacyRef);
@@ -3088,6 +3111,7 @@ var DshOAuthAccountVault = class {
 		});
 	}
 	remove(id) {
+		this.#selectionEpoch++;
 		return this.#enqueue(async () => {
 			await this.#modifyPayload((current) => {
 				if (!current.accounts.some((account) => account.id === id)) throw new Error("Unknown Codex account");
@@ -3759,7 +3783,7 @@ function isDshAutoReview(context) {
 * persistence, headers, transport, and model behavior remain owned by the
 * original provider.
 */
-function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, standardSpeedOnly = false, resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT, resolveInputImageDetail = () => void 0, resolveReasoningSummary = () => void 0, resolveContextMode = () => void 0, resolveCustomContextWindow = () => void 0, resolveReviewModel = () => REVIEW_MODEL_SESSION, catalog, connection, compaction, bindRequestAuth, runNetwork = (_area, operation) => operation() } = {}) {
+function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, standardSpeedOnly = false, resolveOutputVerbosity = () => OUTPUT_VERBOSITY_DEFAULT, resolveInputImageDetail = () => void 0, resolveReasoningSummary = () => void 0, resolveContextMode = () => void 0, resolveCustomContextWindow = () => void 0, resolveReviewModel = () => REVIEW_MODEL_SESSION, catalog, connection, compaction, bindRequestAuth, requestOptions, runNetwork = (_area, operation) => operation() } = {}) {
 	const provider = createOpenAICodexProvider();
 	const requestToken = Object.freeze({
 		name: "DSH-managed Codex OAuth request token",
@@ -3928,6 +3952,7 @@ function openaiCodexSubscriptionProvider({ resolveSpeedMode = () => void 0, stan
 		};
 	};
 	const routed = (method, model, context, options) => {
+		options = requestOptions?.(options) ?? options;
 		const route = reviewRoute(model, context);
 		let requestAuth;
 		const authorize = bindRequestAuth ? async (prepared) => {
@@ -6537,6 +6562,10 @@ function createSearchProviderSwitcher(loader) {
 	});
 }
 const settingsFields = {
+	rotationEnabled: z.boolean().default(false),
+	rotationStrategy: z.union(['balanced', 'most-remaining', 'low-tier-first', 'high-tier-first', 'reset-soon']).default('balanced'),
+	rotationReservePercent: z.number().step(1).min(0).max(90).default(10),
+	rotationAccounts: z.array(z.object({ accountKey: z.string(), accountGeneration: z.string() })).max(32).default([]),
 	[DISABLED_MODELS_FIELD]: z.transform(z.array(z.string()).max(100), normalizeDisabledModels).default([]),
 	[AUTO_QUOTA_RETRY_FIELD]: z.boolean().default(false),
 	...Object.fromEntries(Object.entries(PREFERENCE_FIELDS).map(([field, rule]) => [field, rule.default === void 0 ? z.union(rule.choices) : z.union(rule.choices).default(rule.default)])),
@@ -6610,9 +6639,12 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		resolveService: () => ctx.get?.("agentDefaultModel"),
 		listModels: () => modelCatalog.getModels().map((model) => model.id)
 	});
+	let rotation;
 	const compaction = createCompactionBridge({
 		enabled: () => settings.get().compactionMode === "cloud",
 		accountScope: async () => {
+			const bound = rotation?.binding();
+			if (bound) return bound.identity;
 			await resolveAuth();
 			const credential = await store.read(PROVIDER);
 			return credential?.type === "oauth" ? credential.accountId : void 0;
@@ -6621,6 +6653,7 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 	ctx.effect(() => () => connection.dispose());
 	const providerOptions = {
 		bindRequestAuth: (handle, signal) => requestAuth.bind(handle, signal),
+		requestOptions: options => rotation?.requestOptions(options) ?? options,
 		connection,
 		compaction,
 		resolveSpeedMode: () => settings.get()[SPEED_MODE_FIELD],
@@ -6733,6 +6766,7 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 	resolveAuth = (options) => network.run("oauth", () => authModels.getAuth(PROVIDER, options));
 	const requestAuth = createSubscriptionRequestAuth({
 		readAccountKey: () => accountVault ? accountVault.activeId() : "legacy-oauth",
+		readSelectionEpoch: () => accountVault?.selectionEpoch(),
 		readCredential: (options) => store.read(PROVIDER, options),
 		resolveAuth
 	});
@@ -6832,8 +6866,14 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 			return petCallScope.run({ signal, expectedAccountKey }, () => petWarmupAdapter.prepareCall(provider, model, signal));
 		}
 	}));
-	ctx.llm.registerAdapter([PROVIDER], completeAdapter);
-	if (createEmbeddedSettings) ctx.llm.registerAdapter(['codex-accounts'], createSubscriptionLegacyAdapter(completeAdapter));
+	const rotationAdapter = new Proxy(completeAdapter, { get(target, key) {
+		const active = rotation ? rotationPublicAdapter : target;
+		const value = Reflect.get(active, key, active);
+		return typeof value === 'function' ? value.bind(active) : value;
+	} });
+	let rotationPublicAdapter;
+	ctx.llm.registerAdapter([PROVIDER], rotationAdapter);
+	if (createEmbeddedSettings) ctx.llm.registerAdapter(['codex-accounts'], createSubscriptionLegacyAdapter(rotationAdapter));
 	const currentAgent = () => ctx.get?.("agents")?.currentInitiator?.();
 	const codexSearch = createCodexSearchProvider({
 		resolvePreferences: () => readCapabilitySettings(settings.get()),
@@ -6911,10 +6951,8 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 	const disposeQuotaRetry = ctx.on("agent/request-error", (payload, next) => {
 		if (quotaRetryLifetime.signal.aborted) return Promise.resolve(void 0);
 		const signal = payload.signal === void 0 ? quotaRetryLifetime.signal : AbortSignal.any([payload.signal, quotaRetryLifetime.signal]);
-		const tracked = quotaRetryHandler({
-			...payload,
-			signal
-		}, next).finally(() => activeQuotaRetries.delete(tracked));
+		const request = { ...payload, signal };
+		const tracked = Promise.resolve(rotation ? rotation.handle(request, () => quotaRetryHandler(request, next)) : quotaRetryHandler(request, next)).finally(() => activeQuotaRetries.delete(tracked));
 		activeQuotaRetries.add(tracked);
 		return tracked;
 	});
@@ -6961,6 +6999,31 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 	});
 	settings.onSubscriptionWarmupService?.(boundWarmupService);
 	ctx.effect(() => () => { boundWarmupService.dispose(); settings.onSubscriptionWarmupService?.(null); }, 'codex-subscription: account-bound warmup lifetime');
+	rotation = createSubscriptionRotation({
+		vault: accountVault,
+		readConfig: () => { const value = settings.get(); return { enabled: value.rotationEnabled ?? false, strategy: value.rotationStrategy ?? 'balanced', reservePercent: value.rotationReservePercent ?? 10, accounts: value.rotationAccounts ?? [] }; },
+		writeConfig: async value => {
+			if (!settingsWritable()) throw new Error('ROTATION_SETTINGS_READ_ONLY');
+			await settings.update({ rotationEnabled: value.enabled, rotationStrategy: value.strategy, rotationReservePercent: value.reservePercent, rotationAccounts: value.accounts });
+		},
+		createContext(vault) {
+			const credentials = new DshOAuthCredentialStore(ctx.credentials, CREDENTIAL_REF, [], { expirySkewMs: OAUTH_EXPIRY_SKEW_MS, vault });
+			const models = createModels({ credentials }); models.setProvider(baseProvider);
+			const getAuth = options => network.run('rotation-auth', () => models.getAuth(PROVIDER, options));
+			const readCredential = options => credentials.read(PROVIDER, options);
+			return {
+				quota: createCodexUsageReader({ getAuth, readCredential, fetch: (input, init) => network.fetch('rotation-quota', input, init) }),
+				catalog: createOfficialModelCatalog({ getAuth, readCredential, baseModels: () => baseProvider.getModels(), fetch: (input, init) => network.fetch('rotation-catalog', input, init) }),
+			};
+		},
+		onSelected: async ({ signal }) => {
+			connection.dispose(); resetCreditService.clear(); originalImages.clear(); usageReader.clearCache(); modelCatalog.clear();
+			await modelCatalog.refresh({ signal });
+			if (modelCatalog.status().source !== 'online' || modelCatalog.status().refresh !== 'ok') throw new Error('ROTATION_CATALOG_UNAVAILABLE');
+		},
+	});
+	rotationPublicAdapter = rotation.wrapAdapter(completeAdapter, (binding, signal, operation) => petCallScope.run({ signal, expectedAccountKey: binding.accountKey, expectedSelectionEpoch: binding.selectionEpoch }, operation));
+	ctx.effect(() => () => rotation.dispose(), 'codex-subscription: account rotation lifetime');
 	const sketchBridge = createSketchAgentBridge({ enabled: () => settings.get().imageSketchAgent && settings.get().imageSketch && settings.get().imageEditing });
 	ctx.effect(() => {
 		let dispose;
@@ -7009,7 +7072,16 @@ async function apply(ctx, config = {}, createEmbeddedSettings) {
 		originalImages,
 		resolveInheritedOriginal: (sessionId, assetId) => inheritedOriginalImageRef(ctx.get?.("sessions")?.get?.(sessionId), assetId)
 	});
-	const handler = diagnosticOperations.wrap((endpoint, payload, signal) => endpoint.startsWith("sketch/") ? sketchBridge.rpc(endpoint, payload) : subscriptionHandler(endpoint, payload, signal));
+	const handler = diagnosticOperations.wrap(async (endpoint, payload, signal) => {
+		if (endpoint.startsWith('rotation/')) {
+			try {
+				const value = endpoint === 'rotation/status' ? await rotation.status() : endpoint === 'rotation/refresh' ? await rotation.refresh({ signal }) : endpoint === 'rotation/update' ? await rotation.update(payload) : null;
+				if (value === null) return { ok: false, error: { code: 'invalid_request', message: 'Unknown rotation operation' } };
+				return { ok: true, value };
+			} catch { return { ok: false, error: { code: 'rotation_unavailable', message: 'Account rotation operation could not be completed; check settings and try again.' } }; }
+		}
+		return endpoint.startsWith('sketch/') ? sketchBridge.rpc(endpoint, payload) : subscriptionHandler(endpoint, payload, signal);
+	});
 	ctx.effect(() => {
 		modelCatalog.refresh().catch((error) => ctx.logger?.debug?.("could not refresh Codex model catalog: %s", error.message));
 	}, "codex-subscription: official model catalog");

@@ -22,7 +22,7 @@ const failure = code => Object.assign(new Error(code), { code });
 // AFTER the SDK's explicit apiKey override, context conversion and proxy setup.
 // The adapter receives a short-lived, single-use in-memory handle, not a frozen
 // bearer. Refresh is still owned by Models + the serialized credential store.
-export function createSubscriptionRequestAuth({ readAccountKey, readCredential, resolveAuth, now = Date.now, nonce = randomUUID, maxPending = 256, ttlMs = 3600000 }) {
+export function createSubscriptionRequestAuth({ readAccountKey, readCredential, resolveAuth, readSelectionEpoch, now = Date.now, nonce = randomUUID, maxPending = 256, ttlMs = 3600000 }) {
   const pending = new Map();
   let live = true;
   const check = signal => { if (!live) throw failure('SUBSCRIPTION_AUTH_CLOSED'); signal?.throwIfAborted(); };
@@ -34,14 +34,15 @@ export function createSubscriptionRequestAuth({ readAccountKey, readCredential, 
   };
   async function snapshot(signal) {
     check(signal);
+    const epoch = readSelectionEpoch?.();
     const key = await readAccountKey();
     const credential = await readCredential({ signal });
     check(signal);
-    if (key == null || key !== await readAccountKey()) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
-    return { key, identity: identity(credential), access: credential.access };
+    if (key == null || key !== await readAccountKey() || epoch !== readSelectionEpoch?.()) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
+    return { key, identity: identity(credential), access: credential.access, epoch };
   }
   function same(first, second) {
-    if (first.key !== second.key || first.identity !== second.identity) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
+    if (first.key !== second.key || first.identity !== second.identity || first.epoch !== second.epoch) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
   }
   async function authorize(captured, { signal } = {}) {
     check(signal);
@@ -63,15 +64,16 @@ export function createSubscriptionRequestAuth({ readAccountKey, readCredential, 
     return Object.freeze({ resolve: options => authorize(captured, options) });
   }
   return Object.freeze({
-    async capture({ signal, expectedAccountKey } = {}) {
+    async capture({ signal, expectedAccountKey, expectedSelectionEpoch } = {}) {
       const captured = await snapshot(signal);
+      if (expectedSelectionEpoch !== undefined && captured.epoch !== expectedSelectionEpoch) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
       if (expectedAccountKey !== undefined && (typeof expectedAccountKey !== 'string' || !/^[a-f0-9]{16}$/.test(expectedAccountKey)
         || createHash('sha256').update(captured.key).digest('hex').slice(0, 16) !== expectedAccountKey)) throw failure('SUBSCRIPTION_AUTH_ACCOUNT_CHANGED');
       for (const [key, value] of pending) if (now() >= value.deadline) pending.delete(key);
       if (pending.size >= maxPending) throw failure('SUBSCRIPTION_AUTH_BUSY');
       const handle = 'simple-pet-oauth-request:' + nonce();
       if (pending.has(handle)) throw failure('SUBSCRIPTION_AUTH_BUSY');
-      pending.set(handle, { key: captured.key, identity: captured.identity, deadline: now() + ttlMs });
+      pending.set(handle, { key: captured.key, identity: captured.identity, epoch: captured.epoch, deadline: now() + ttlMs });
       return handle;
     },
     bind,

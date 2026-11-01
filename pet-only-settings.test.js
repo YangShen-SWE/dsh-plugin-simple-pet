@@ -236,8 +236,9 @@ test('root keeps the subscription as sole owner and legacy route uses its exact 
   assert.ok(!/ctx\.plugin\(embeddedAccountsPlugin\)/.test(rootSource));
   assert.ok(/const accountBackend = 'legacy';/.test(rootSource));
   assert.ok(/function refreshAccountBackend\(\) \{ return accountBackend; \}/.test(rootSource));
-  assert.ok(/registerAdapter\(\[PROVIDER\], completeAdapter\)/.test(vendor));
-  assert.ok(/registerAdapter\(\['codex-accounts'\], createSubscriptionLegacyAdapter\(completeAdapter\)\)/.test(vendor));
+  assert.ok(/registerAdapter\(\[PROVIDER\], rotationAdapter\)/.test(vendor));
+  assert.ok(/registerAdapter\(\['codex-accounts'\], createSubscriptionLegacyAdapter\(rotationAdapter\)\)/.test(vendor));
+  assert.ok(/rotationPublicAdapter = rotation\.wrapAdapter\(completeAdapter,/.test(vendor));
 });
 
 test('retired account grants never authorize unified controls or warmup, and the two new grants remain independent', () => {

@@ -1,12 +1,21 @@
 # dsh-plugin-simple-pet
 
-> **v1.1.5 · 预热错误静默日志：** 单当前账号自动预热失败不再弹窗，在设置中查看最近错误；持久去重、未知结果停止和不自动重试的保护保持不变。仅改进通知方式，不保证远端预热成功；发布不自动安装、授权或消费。
+> **v1.1.6 · 账号轮换与自动继续：** 识别官方套餐与额度，提供五种可选策略；默认关闭，仅在明确额度拒绝且确认没有生成内容时切换授权账号并续接原步骤。启用会改变共享当前账号、向目标账号发送必要聊天历史并可能消耗额度；网络/未知结果不自动重发，发布不自动安装或授权。
 
-**最新版：[v1.1.5 · 预热错误静默日志](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.5)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz) · [原设计快照](MULTI-ACCOUNT-WARMUP-PLAN.md)
+**最新版：[v1.1.6 · 账号轮换与自动继续](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/tag/v1.1.6)** · [使用指南](USAGE.md) · [更新记录](CHANGELOG.md) · [安装包](https://github.com/YangShen-SWE/dsh-plugin-simple-pet/releases/latest/download/dsh-plugin-simple-pet.tgz) · [原设计快照](MULTI-ACCOUNT-WARMUP-PLAN.md)
 
 陪你工作的 Windows 二次元桌宠：查看 DeepSeek 余额与 Codex 额度，六款人物与五种卡片自由搭配，支持简洁模式和本机统计。只安装桌宠一包，完整内置订阅管理。
 
-## v1.1.5 更新重点
+## v1.1.6 更新重点
+
+- **五种策略：** 均衡轮换、剩余额度最多、低档优先、高档优先、即将重置优先；使用官方套餐与新鲜额度，不从 Credits 或未知字段猜测资格。
+- **自动继续：** 明确 `usage_limit_reached`、完整零用量和无生成内容三重证据；目标须支持同模型，单步骤最多八个不同订阅主体。断网、认证错误、一般限流及未知结果不换号重发。
+- **独立授权与竞态保护：** 至少两个参与账号，默认关闭，策略与保留额度单独确认保存；新账号/重绑不自动加入。取消、手动切号、撤销和原子提交冲突均停止，不改写历史或兑换卡片。
+- **验证：** 1174 项完整离线回归、客户端构建及公开 SDK 合成宿主生命周期验证通过；未使用真实账号、额度或模型进行在线验收。
+
+导入 v1.1.6 后完整退出 DSH（含托盘）并重开，不清理账号、聊天和保护文件。入口：**设置 → 订阅管理（桌宠内置）→ 账号 → 账号轮换与自动继续**。发布不自动安装或启用；详见[账号轮换指南](ACCOUNT-ROTATION-USAGE.md)。
+
+## v1.1.5 更新重点（历史）
 
 - **预热失败不弹窗：** 移除 Windows 模态提示，不再反复打断操作；原生桌宠设置“Codex 自动预热”区域或网页单账号预热的“预热错误日志”中查看。
 - **安全日志：** 最近 20 条、持久保存、按告警去重；仅显示时间与固定安全摘要，不保存账号、令牌、聊天或原始异常，不回填旧弹窗历史。

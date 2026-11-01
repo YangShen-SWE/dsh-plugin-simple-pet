@@ -28,7 +28,7 @@ const executable = [
   section('\tconst providerOptions = {', '\n\tconst preferences = {', applyStart),
   section('\tconst profile = Object.freeze({', '\n\tresolveAuth = ', applyStart),
   section('\tconst petCallScope = new AsyncLocalStorage();', '\n\tconst currentAgent = ', applyStart),
-  '({ provider, petWarmupProvider, completeAdapter, petWarmupAdapter });',
+  '({ provider, petWarmupProvider, completeAdapter, petWarmupAdapter, rotationAdapter });',
 ].join('\n');
 const PROVIDER = 'openai-codex';
 const MODEL = 'gpt-offline-speed-test';
@@ -120,7 +120,7 @@ function fixture(initialSpeed = 'fast') {
     networkOptions: options => options,
   };
   const exports = vm.runInNewContext(executable, {
-    PROVIDER, AsyncLocalStorage, PiAiAdapter, requestAuth, settings, compaction,
+    PROVIDER, AsyncLocalStorage, PiAiAdapter, requestAuth, settings, compaction, rotation: undefined,
     createOpenAICodexProvider: baseProvider,
     createSubscriptionLegacyAdapter,
     createEmbeddedSettings: () => {},
@@ -191,7 +191,7 @@ for (const mode of ['standard', 'fast', 'ultrafast']) {
     const { piProvider: warmupProvider, ...warmupProfile } = f.adapters[1].options.profiles().get(PROVIDER);
     assert.deepEqual(warmupProfile, chatProfile, 'all non-provider profile controls stay identical');
     assert.equal(chatProvider, f.provider); assert.equal(warmupProvider, f.petWarmupProvider);
-    assert.equal(f.registered.get(PROVIDER), f.completeAdapter);
+    assert.equal(f.registered.get(PROVIDER), f.rotationAdapter);
     assert.notEqual(f.registered.get(PROVIDER), f.petWarmupAdapter);
   });
 }
